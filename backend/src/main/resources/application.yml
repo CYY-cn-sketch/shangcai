@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: sufe-ai-backend
+  datasource:
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/sufe_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USERNAME:sufe_ai}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+sufe:
+  providers:
+    workbuddy:
+      enabled: ${WORKBUDDY_ENABLED:false}
+      base-url: ${WORKBUDDY_API_BASE:http://127.0.0.1:49678}
+      jobs-root: ${WORKBUDDY_JOBS_ROOT:./data/workbuddy/jobs}
+      max-concurrency: ${WORKBUDDY_MAX_CONCURRENCY:1}
+    lexiang:
+      enabled: ${LEXIANG_ENABLED:false}
+      api-base: ${LEXIANG_API_BASE:https://lxapi.lexiangla.com}
+      app-key: ${LEXIANG_APP_KEY:}
+      app-secret: ${LEXIANG_APP_SECRET:}
+      staff-id: ${LEXIANG_STAFF_ID:system-bot}
+      space-id: ${LEXIANG_SPACE_ID:}
+      max-concurrency: ${LEXIANG_MAX_CONCURRENCY:2}

@@ -1,0 +1,23 @@
+{
+  "name": "workbuddy-video-test",
+  "version": "1.0.0",
+  "description": "Remotion smoke test for SUFE AI Demo (WorkBuddy Video validation)",
+  "type": "module",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render src/index.ts sufe-workbuddy-video \"D:/桌面/上财/public/generated-videos/sufe-workbuddy-video.mp4\"",
+    "render:smoke": "remotion render src/index.ts sufe-smoke output/sufe-workbuddy-smoke.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.409",
+    "@remotion/google-fonts": "4.0.409",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "remotion": "4.0.409"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  }
+}

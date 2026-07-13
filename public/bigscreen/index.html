@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 创业实践教学 · 运行监控中心</title>
+    <link rel="stylesheet" href="./bigscreen.css" />
+    <script src="./vendor/echarts.min.js"></script>
+  </head>
+  <body>
+    <div id="stage">
+      <div class="ambient ambient-a"></div>
+      <div class="ambient ambient-b"></div>
+      <div class="ambient ambient-c"></div>
+
+      <header class="screen-header">
+        <a class="brand" href="/" aria-label="返回主系统">
+          <img src="/demo-assets/sufe-logo.png" alt="上海财经大学" />
+          <span>
+            <b>上海财经大学商学院</b>
+            <em>AI 创业实践教学示范平台</em>
+          </span>
+        </a>
+
+        <div class="screen-title">
+          <h1>运行监控中心</h1>
+          <p>AI-EMPOWERED ENTREPRENEURSHIP PRACTICE · LIVE OPERATIONS</p>
+        </div>
+
+        <div class="screen-actions">
+          <a class="glass-button" href="/">返回管理端</a>
+          <button class="glass-button" id="themeToggle" type="button">
+            <span id="themeIcon">☀</span>
+            <b id="themeLabel">LIGHT</b>
+          </button>
+          <button class="glass-button" id="fullscreenToggle" type="button" aria-label="进入全屏">
+            <span id="fullscreenIcon">⛶</span>
+            <b id="fullscreenLabel">FULL</b>
+          </button>
+          <div class="clock">
+            <strong id="clockTime">--:--:--</strong>
+            <span id="clockDate">----.--.--</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="kpi-grid" id="kpiGrid" aria-label="平台关键指标"></section>
+
+      <main class="screen-grid">
+        <section class="column column-left">
+          <article class="panel panel-chart">
+            <div class="panel-head">
+              <span>LIVE TREND</span>
+              <h2>学习活跃趋势</h2>
+              <em>近 14 天</em>
+            </div>
+            <div class="chart" id="activityChart"></div>
+          </article>
+
+          <article class="panel panel-chart">
+            <div class="panel-head">
+              <span>CAPABILITY ROUTING</span>
+              <h2>能力调用分布</h2>
+              <em>文本 / PPT / 视频 / 知识库</em>
+            </div>
+            <div class="chart" id="modelChart"></div>
+          </article>
+
+          <article class="panel panel-queue">
+            <div class="panel-head">
+              <span>TEACHER QUEUE</span>
+              <h2>教师审核队列</h2>
+              <em id="queueHint">实时同步</em>
+            </div>
+            <div class="queue-list" id="teacherQueue"></div>
+          </article>
+        </section>
+
+        <section class="column column-center">
+          <article class="panel panel-matrix">
+            <div class="panel-head">
+              <span>PROJECT STAGES</span>
+              <h2>小组项目阶段推进</h2>
+              <em id="matrixHint">8 个阶段</em>
+            </div>
+            <div class="matrix" id="projectMatrix"></div>
+          </article>
+
+          <div class="center-bottom">
+            <article class="panel panel-chart token-panel">
+              <div class="panel-head">
+                <span>TEXT CONSUMPTION</span>
+                <h2>文本交互用量趋势</h2>
+                <em>近 14 天估算</em>
+              </div>
+              <div class="chart" id="tokenChart"></div>
+            </article>
+
+            <article class="panel panel-radar">
+              <div class="panel-head">
+                <span>QUALITY SNAPSHOT</span>
+                <h2>成果质量概览</h2>
+                <em>Rubric 预评</em>
+              </div>
+              <div class="chart" id="qualityChart"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="column column-right">
+          <article class="panel panel-feed">
+            <div class="panel-head">
+              <span>ACTIVITY TRACE</span>
+              <h2>系统实时流水</h2>
+              <em>悬停暂停</em>
+            </div>
+            <div class="feed-viewport">
+              <div class="feed-track" id="activityFeed"></div>
+            </div>
+          </article>
+
+          <article class="panel panel-knowledge">
+            <div class="panel-head">
+              <span>KNOWLEDGE BASE</span>
+              <h2>知识库运行状态</h2>
+              <em id="knowledgeHint">可调用范围</em>
+            </div>
+            <div class="knowledge-list" id="knowledgeList"></div>
+          </article>
+
+          <article class="panel panel-assets">
+            <div class="panel-head">
+              <span>ASSET OUTPUT</span>
+              <h2>成果沉淀统计</h2>
+              <div class="asset-tabs" id="assetTabs" aria-label="成果统计切换">
+                <button class="active" type="button" data-asset-mode="submitted">提交</button>
+                <button type="button" data-asset-mode="excellent">优秀</button>
+                <button type="button" data-asset-mode="revision">退回</button>
+              </div>
+            </div>
+            <div class="asset-meter" id="assetMeter"></div>
+          </article>
+        </section>
+      </main>
+
+      <footer class="screen-footer">
+        <span><i></i> SYSTEM NORMAL · LOCAL DATA CONNECTED · AUTO REFRESH 60S</span>
+        <span id="dataSource">DATA SOURCE: CHECKING</span>
+        <span id="updatedAt">UPDATED: --:--:--</span>
+      </footer>
+
+      <div id="projectDetailHost"></div>
+
+      <div class="modal-mask" id="detailModal" hidden>
+        <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+          <button class="modal-close" id="modalClose" type="button" aria-label="关闭">×</button>
+          <div id="modalContent"></div>
+        </section>
+      </div>
+    </div>
+
+    <script src="./bigscreen.js"></script>
+  </body>
+</html>
