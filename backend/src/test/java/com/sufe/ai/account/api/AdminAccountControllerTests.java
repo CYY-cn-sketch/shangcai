@@ -6,6 +6,7 @@ import com.sufe.ai.account.domain.GroupMembership;
 import com.sufe.ai.account.domain.ProjectGroup;
 import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
+import com.sufe.ai.account.repository.AccountPermissionDenialRepository;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
@@ -49,6 +50,9 @@ class AdminAccountControllerTests {
 
     @Autowired
     private GroupMembershipRepository groupMembershipRepository;
+
+    @Autowired
+    private AccountPermissionDenialRepository accountPermissionDenialRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -110,14 +114,23 @@ class AdminAccountControllerTests {
                                   "displayName": "新教师",
                                   "title": "课程教师",
                                   "status": "ACTIVE",
-                                  "quotaRemaining": 120
+                                  "quotaRemaining": 120,
+                                  "disabledPermissions": ["上传教学资料"]
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("TEACHER"))
+                .andExpect(jsonPath("$.disabledPermissions[0]").value("上传教学资料"))
                 .andExpect(jsonPath("$.groupId").doesNotExist());
 
         assertThat(groupMembershipRepository.findByUserId(accountId)).isEmpty();
+        assertThat(accountPermissionDenialRepository.findByUserIdOrderByPermissionKey(accountId))
+                .extracting("permissionKey")
+                .containsExactly("上传教学资料");
+
+        mockMvc.perform(get("/api/admin/audit-logs").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.resourceId == '" + accountId + "')]").exists());
 
         mockMvc.perform(delete("/api/admin/accounts/{accountId}", accountId)
                         .with(csrf())
@@ -142,6 +155,9 @@ class AdminAccountControllerTests {
         Cookie sessionCookie = login("student-admin-api@test.local");
 
         mockMvc.perform(get("/api/admin/accounts").cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/admin/audit-logs").cookie(sessionCookie))
                 .andExpect(status().isForbidden());
     }
 

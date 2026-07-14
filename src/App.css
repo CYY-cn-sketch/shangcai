@@ -10326,6 +10326,16 @@ button.status-pill {
   width: 100%;
 }
 
+.audit-log-table .table-row {
+  grid-template-columns: minmax(150px, 0.75fr) minmax(180px, 0.9fr) minmax(110px, 0.55fr) minmax(90px, 0.45fr) minmax(280px, 1.5fr);
+}
+
+.audit-log-table .table-row > span:nth-child(2) {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+}
+
 .account-table .table-head {
   position: sticky;
   top: 0;
@@ -12112,6 +12122,86 @@ button.status-pill {
 
   .account-summary-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .account-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-resource-toolbar,
+  .student-group-create,
+  .student-group-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-resource-toolbar > .primary-button,
+  .student-group-create {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .student-group-create input,
+  .student-group-create button {
+    width: 100%;
+  }
+
+  .account-table {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .account-table .table-row:not(.table-head) {
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: 10px 12px;
+  }
+
+  .account-table .table-row:not(.table-head) > span {
+    display: grid;
+    grid-template-columns: 82px minmax(0, 1fr);
+    align-items: start;
+    min-height: auto;
+    padding: 7px 0;
+    overflow-wrap: anywhere;
+  }
+
+  .account-table .table-row:not(.table-head) > span + span {
+    border-top: 1px solid rgba(93, 145, 207, 0.18);
+  }
+
+  .account-table .table-row:not(.table-head) > span::before {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .account-management-layout .account-table .table-row > span:nth-child(1)::before { content: "姓名"; }
+  .account-management-layout .account-table .table-row > span:nth-child(2)::before { content: "角色"; }
+  .account-management-layout .account-table .table-row > span:nth-child(3)::before { content: "登录账号"; }
+  .account-management-layout .account-table .table-row > span:nth-child(4)::before { content: "认证方式"; }
+  .account-management-layout .account-table .table-row > span:nth-child(5)::before { content: "调用配额"; }
+  .account-management-layout .account-table .table-row > span:nth-child(6)::before { content: "状态"; }
+  .account-management-layout .account-table .table-row > span:nth-child(7)::before { content: "操作"; }
+
+  .audit-log-table .table-row > span:nth-child(1)::before { content: "时间"; }
+  .audit-log-table .table-row > span:nth-child(2)::before { content: "操作人"; }
+  .audit-log-table .table-row > span:nth-child(3)::before { content: "动作"; }
+  .audit-log-table .table-row > span:nth-child(4)::before { content: "对象"; }
+  .audit-log-table .table-row > span:nth-child(5)::before { content: "摘要"; }
+
+  .account-table .table-row:not(.table-head) > span:first-child {
+    grid-template-columns: 82px minmax(0, 1fr);
+    justify-content: stretch;
+  }
+
+  .account-table .table-row:not(.table-head) > span:first-child::before {
+    grid-row: 1 / span 2;
+  }
+
+  .account-table .table-row:not(.table-head) > span:first-child strong,
+  .account-table .table-row:not(.table-head) > span:first-child small {
+    grid-column: 2;
   }
 
   .stage-list,

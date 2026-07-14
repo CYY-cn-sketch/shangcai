@@ -1,13 +1,16 @@
 package com.sufe.ai.account.api;
 
+import com.sufe.ai.account.domain.AccountPermissionDenial;
 import com.sufe.ai.account.domain.GroupMembership;
 import com.sufe.ai.account.domain.ProjectGroup;
 import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.domain.UserStatus;
+import com.sufe.ai.account.repository.AccountPermissionDenialRepository;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.audit.service.AuditLogService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -30,6 +33,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 
@@ -40,18 +44,24 @@ public class AdminAccountController {
     private final UserAccountRepository userAccountRepository;
     private final ProjectGroupRepository projectGroupRepository;
     private final GroupMembershipRepository groupMembershipRepository;
+    private final AccountPermissionDenialRepository accountPermissionDenialRepository;
     private final PasswordEncoder passwordEncoder;
+    private final AuditLogService auditLogService;
 
     public AdminAccountController(
             UserAccountRepository userAccountRepository,
             ProjectGroupRepository projectGroupRepository,
             GroupMembershipRepository groupMembershipRepository,
-            PasswordEncoder passwordEncoder
+            AccountPermissionDenialRepository accountPermissionDenialRepository,
+            PasswordEncoder passwordEncoder,
+            AuditLogService auditLogService
     ) {
         this.userAccountRepository = userAccountRepository;
         this.projectGroupRepository = projectGroupRepository;
         this.groupMembershipRepository = groupMembershipRepository;
+        this.accountPermissionDenialRepository = accountPermissionDenialRepository;
         this.passwordEncoder = passwordEncoder;
+        this.auditLogService = auditLogService;
     }
 
     @GetMapping("/accounts")
@@ -64,7 +74,10 @@ public class AdminAccountController {
 
     @PostMapping("/accounts")
     @Transactional
-    public ResponseEntity<?> createAccount(@Valid @RequestBody CreateAccountRequest request) {
+    public ResponseEntity<?> createAccount(
+            Authentication authentication,
+            @Valid @RequestBody CreateAccountRequest request
+    ) {
         if (userAccountRepository.findByAccountIgnoreCase(request.account()).isPresent()) {
             return conflict("ACCOUNT_EXISTS", "账号已存在");
         }
@@ -89,6 +102,13 @@ public class AdminAccountController {
             return conflict("ACCOUNT_EXISTS", "账号已存在");
         }
         replaceMembership(user.getId(), request.role(), request.groupId());
+        auditLogService.record(
+                authentication.getName(),
+                "ACCOUNT_CREATE",
+                "ACCOUNT",
+                user.getId(),
+                "创建账号 " + user.getAccount()
+        );
         return ResponseEntity.created(URI.create("/api/admin/accounts/" + user.getId()))
                 .body(toAccountResponse(user));
     }
@@ -123,6 +143,14 @@ public class AdminAccountController {
         );
         user = userAccountRepository.saveAndFlush(user);
         replaceMembership(user.getId(), request.role(), request.groupId());
+        replacePermissionDenials(user.getId(), request.disabledPermissions());
+        auditLogService.record(
+                authentication.getName(),
+                "ACCOUNT_UPDATE",
+                "ACCOUNT",
+                user.getId(),
+                "更新账号 " + user.getAccount() + " 的资料、状态或权限"
+        );
         return ResponseEntity.ok(toAccountResponse(user));
     }
 
@@ -137,7 +165,15 @@ public class AdminAccountController {
             return badRequest("CANNOT_DELETE_SELF", "不能删除当前登录账号");
         }
         groupMembershipRepository.deleteByUserId(user.getId());
+        accountPermissionDenialRepository.deleteByUserId(user.getId());
         userAccountRepository.delete(user);
+        auditLogService.record(
+                authentication.getName(),
+                "ACCOUNT_DELETE",
+                "ACCOUNT",
+                accountId,
+                "删除账号 " + user.getAccount()
+        );
         return ResponseEntity.noContent().build();
     }
 
@@ -151,26 +187,48 @@ public class AdminAccountController {
 
     @PostMapping("/groups")
     @Transactional
-    public ResponseEntity<GroupResponse> createGroup(@Valid @RequestBody CreateGroupRequest request) {
+    public ResponseEntity<GroupResponse> createGroup(
+            Authentication authentication,
+            @Valid @RequestBody CreateGroupRequest request
+    ) {
         ProjectGroup group = projectGroupRepository.saveAndFlush(ProjectGroup.create(request.groupLabel(), request.projectName()));
+        auditLogService.record(
+                authentication.getName(),
+                "GROUP_CREATE",
+                "GROUP",
+                group.getId(),
+                "创建项目小组 " + group.getGroupLabel() + " / " + group.getProjectName()
+        );
         return ResponseEntity.created(URI.create("/api/admin/groups/" + group.getId()))
                 .body(toGroupResponse(group));
     }
 
     @PatchMapping("/groups/{groupId}")
     @Transactional
-    public ResponseEntity<?> updateGroup(@PathVariable String groupId, @Valid @RequestBody UpdateGroupRequest request) {
+    public ResponseEntity<?> updateGroup(
+            Authentication authentication,
+            @PathVariable String groupId,
+            @Valid @RequestBody UpdateGroupRequest request
+    ) {
         ProjectGroup group = projectGroupRepository.findById(groupId).orElse(null);
         if (group == null) {
             return notFound("GROUP_NOT_FOUND", "项目小组不存在");
         }
         group.updateDetails(request.groupLabel(), request.projectName(), request.active());
-        return ResponseEntity.ok(toGroupResponse(projectGroupRepository.saveAndFlush(group)));
+        group = projectGroupRepository.saveAndFlush(group);
+        auditLogService.record(
+                authentication.getName(),
+                "GROUP_UPDATE",
+                "GROUP",
+                group.getId(),
+                "更新项目小组 " + group.getGroupLabel() + " / " + group.getProjectName()
+        );
+        return ResponseEntity.ok(toGroupResponse(group));
     }
 
     @DeleteMapping("/groups/{groupId}")
     @Transactional
-    public ResponseEntity<?> deleteGroup(@PathVariable String groupId) {
+    public ResponseEntity<?> deleteGroup(Authentication authentication, @PathVariable String groupId) {
         ProjectGroup group = projectGroupRepository.findById(groupId).orElse(null);
         if (group == null) {
             return notFound("GROUP_NOT_FOUND", "项目小组不存在");
@@ -179,6 +237,13 @@ public class AdminAccountController {
             return conflict("GROUP_HAS_MEMBERS", "项目小组已有成员，不能删除");
         }
         projectGroupRepository.delete(group);
+        auditLogService.record(
+                authentication.getName(),
+                "GROUP_DELETE",
+                "GROUP",
+                groupId,
+                "删除项目小组 " + group.getGroupLabel() + " / " + group.getProjectName()
+        );
         return ResponseEntity.noContent().build();
     }
 
@@ -187,6 +252,25 @@ public class AdminAccountController {
         if (role == UserRole.STUDENT && hasText(groupId)) {
             groupMembershipRepository.save(GroupMembership.create(userId, groupId.trim()));
         }
+    }
+
+    private void replacePermissionDenials(String userId, List<String> disabledPermissions) {
+        accountPermissionDenialRepository.deleteByUserId(userId);
+        normalizePermissionKeys(disabledPermissions).forEach(permission ->
+                accountPermissionDenialRepository.save(AccountPermissionDenial.create(userId, permission))
+        );
+    }
+
+    private static List<String> normalizePermissionKeys(List<String> permissions) {
+        if (permissions == null) {
+            return List.of();
+        }
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        permissions.stream()
+                .filter(AdminAccountController::hasText)
+                .map(String::trim)
+                .forEach(normalized::add);
+        return List.copyOf(normalized);
     }
 
     private AccountResponse toAccountResponse(UserAccount user) {
@@ -202,6 +286,9 @@ public class AdminAccountController {
                 user.getTitle(),
                 user.getStatus(),
                 user.getQuotaRemaining(),
+                accountPermissionDenialRepository.findByUserIdOrderByPermissionKey(user.getId()).stream()
+                        .map(AccountPermissionDenial::getPermissionKey)
+                        .toList(),
                 group == null ? null : group.getId(),
                 group == null ? null : group.getGroupLabel(),
                 group == null ? null : group.getProjectName()
@@ -242,6 +329,7 @@ public class AdminAccountController {
             String title,
             UserStatus status,
             int quotaRemaining,
+            List<String> disabledPermissions,
             String groupId,
             String groupLabel,
             String groupName
@@ -279,6 +367,7 @@ public class AdminAccountController {
             @NotBlank @Size(max = 150) String title,
             @NotNull UserStatus status,
             @Min(0) int quotaRemaining,
+            @Size(max = 64) List<@NotBlank @Size(max = 100) String> disabledPermissions,
             @Size(max = 36) String groupId
     ) {
     }

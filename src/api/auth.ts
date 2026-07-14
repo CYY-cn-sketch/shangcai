@@ -8,6 +8,7 @@ export type RemoteAuthSession = {
   groupLabel?: string;
   groupName?: string;
   quota: number;
+  disabledPermissions: string[];
 };
 
 export type AuthProfileUpdate = {

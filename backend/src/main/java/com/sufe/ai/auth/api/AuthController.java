@@ -1,8 +1,10 @@
 package com.sufe.ai.auth.api;
 
+import com.sufe.ai.account.domain.AccountPermissionDenial;
 import com.sufe.ai.account.domain.GroupMembership;
 import com.sufe.ai.account.domain.ProjectGroup;
 import com.sufe.ai.account.domain.UserAccount;
+import com.sufe.ai.account.repository.AccountPermissionDenialRepository;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
@@ -31,6 +33,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Locale;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -39,6 +42,7 @@ public class AuthController {
     private final AuthenticationManager authenticationManager;
     private final SecurityContextRepository securityContextRepository;
     private final UserAccountRepository userAccountRepository;
+    private final AccountPermissionDenialRepository accountPermissionDenialRepository;
     private final GroupMembershipRepository groupMembershipRepository;
     private final ProjectGroupRepository projectGroupRepository;
     private final PasswordEncoder passwordEncoder;
@@ -47,6 +51,7 @@ public class AuthController {
             AuthenticationManager authenticationManager,
             SecurityContextRepository securityContextRepository,
             UserAccountRepository userAccountRepository,
+            AccountPermissionDenialRepository accountPermissionDenialRepository,
             GroupMembershipRepository groupMembershipRepository,
             ProjectGroupRepository projectGroupRepository,
             PasswordEncoder passwordEncoder
@@ -54,6 +59,7 @@ public class AuthController {
         this.authenticationManager = authenticationManager;
         this.securityContextRepository = securityContextRepository;
         this.userAccountRepository = userAccountRepository;
+        this.accountPermissionDenialRepository = accountPermissionDenialRepository;
         this.groupMembershipRepository = groupMembershipRepository;
         this.projectGroupRepository = projectGroupRepository;
         this.passwordEncoder = passwordEncoder;
@@ -174,7 +180,10 @@ public class AuthController {
                 group == null ? null : group.getId(),
                 group == null ? null : group.getGroupLabel(),
                 group == null ? null : group.getProjectName(),
-                user.getQuotaRemaining()
+                user.getQuotaRemaining(),
+                accountPermissionDenialRepository.findByUserIdOrderByPermissionKey(user.getId()).stream()
+                        .map(AccountPermissionDenial::getPermissionKey)
+                        .toList()
         );
     }
 
@@ -200,7 +209,8 @@ public class AuthController {
             String groupId,
             String groupLabel,
             String groupName,
-            int quota
+            int quota,
+            List<String> disabledPermissions
     ) {
     }
 

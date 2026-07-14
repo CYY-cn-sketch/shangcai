@@ -11,6 +11,7 @@ import {
   FileText,
   Filter,
   GraduationCap,
+  History,
   Layers3,
   LineChart,
   LogOut,
@@ -31,6 +32,20 @@ import {
   X,
 } from "lucide-react";
 import * as THREE from "three";
+import {
+  createAdminAccount,
+  createAdminGroup,
+  deleteAdminAccount,
+  deleteAdminGroup,
+  listAdminAccounts,
+  listAdminAuditLogs,
+  listAdminGroups,
+  updateAdminAccount,
+  updateAdminGroup,
+  type AdminAccount,
+  type AdminAuditLog,
+  type AdminGroup,
+} from "./api/admin";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
 import { requestLexiangPptContext, submitWorkBuddyRun } from "./api/provider";
 import "./App.css";
@@ -836,6 +851,7 @@ const emptyKnowledgeUploadSearch: KnowledgeUploadSearch = {
 };
 
 type AuthSession = {
+  id?: string;
   role: Role;
   name: string;
   account: string;
@@ -843,6 +859,8 @@ type AuthSession = {
   groupId?: string;
   groupLabel?: string;
   groupName?: string;
+  quota?: number;
+  disabledPermissions?: string[];
 };
 
 type AccountRecord = AuthSession & {
@@ -861,6 +879,8 @@ type StudentGroup = {
   id: string;
   label: string;
   projectName: string;
+  active?: boolean;
+  memberCount?: number;
 };
 
 type PermissionAccess = {
@@ -1615,28 +1635,6 @@ const initialAccountRecords: AccountRecord[] = [
   },
 ];
 
-const demoGroupExpansionKey = "sufe-demo-data-20260703-extra-groups";
-const demoAccountExpansionKey = "sufe-demo-data-20260703-extra-accounts";
-
-function withExtraDemoStudentGroups(groups: StudentGroup[]) {
-  if (localStorage.getItem(demoGroupExpansionKey) === "done") return groups;
-  const groupIds = new Set(groups.map((group) => group.id));
-  const additions = extraDemoStudentGroups.filter((group) => !groupIds.has(group.id));
-  return additions.length ? [...groups, ...additions] : groups;
-}
-
-function appendMissingExtraDemoStudentAccounts(records: AccountRecord[]) {
-  const accountIds = new Set(records.map((account) => account.id));
-  const accounts = new Set(records.map((account) => account.account));
-  const additions = extraDemoStudentAccounts.filter((account) => !accountIds.has(account.id) && !accounts.has(account.account));
-  return additions.length ? [...records, ...additions] : records;
-}
-
-function withExtraDemoStudentAccounts(records: AccountRecord[]) {
-  if (localStorage.getItem(demoAccountExpansionKey) === "done") return records;
-  return appendMissingExtraDemoStudentAccounts(records);
-}
-
 function formatGroupScope(group?: Pick<StudentGroup, "label" | "projectName"> | null) {
   if (!group) return "未分配项目小组";
   return `${group.label} / ${group.projectName}`;
@@ -1686,6 +1684,71 @@ function normalizeAccountRecords(records: AccountRecord[], groups: StudentGroup[
       disabledPermissions,
     };
   });
+}
+
+function mapAdminGroup(group: AdminGroup): StudentGroup {
+  return {
+    id: group.id,
+    label: group.groupLabel,
+    projectName: group.projectName,
+    active: group.active,
+    memberCount: group.memberCount,
+  };
+}
+
+function getBaseRolePermissions(role: Role) {
+  if (role === "student") return studentExpertPermissionNames;
+  if (role === "teacher") return ["提交审核中心", "节点解答与指导", "优秀成果标记", "上传教学资料"];
+  return ["账号权限管理", "知识库维护", "专家提示词管理", "试点数据看板"];
+}
+
+function mapAdminAccount(account: AdminAccount, groups: StudentGroup[]): AccountRecord {
+  const role = account.role.toLowerCase() as Role;
+  const group = account.groupId ? groups.find((item) => item.id === account.groupId) : undefined;
+  return {
+    id: account.id,
+    role,
+    name: account.displayName,
+    account: account.account,
+    title: account.title,
+    groupOrScope:
+      role === "student"
+        ? formatGroupScope(group || (account.groupLabel ? { label: account.groupLabel, projectName: account.groupName || "未命名项目" } : null))
+        : role === "teacher"
+          ? "创业实践课程教师"
+          : "全平台运营",
+    groupId: account.groupId,
+    groupLabel: account.groupLabel,
+    groupName: account.groupName,
+    permissions: getBaseRolePermissions(role),
+    disabledPermissions: account.disabledPermissions || [],
+    quota: account.quotaRemaining,
+    status: account.status === "ACTIVE" ? "已开通" : "已停用",
+  };
+}
+
+function buildAuthenticatedAccount(auth: AuthSession, groups: StudentGroup[]): AccountRecord {
+  const group = auth.groupId ? groups.find((item) => item.id === auth.groupId) : undefined;
+  return {
+    id: auth.id || auth.account,
+    role: auth.role,
+    name: auth.name,
+    account: auth.account,
+    title: auth.title,
+    groupOrScope:
+      auth.role === "student"
+        ? formatGroupScope(group || (auth.groupLabel ? { label: auth.groupLabel, projectName: auth.groupName || "未命名项目" } : null))
+        : auth.role === "teacher"
+          ? "创业实践课程教师"
+          : "全平台运营",
+    groupId: auth.groupId,
+    groupLabel: auth.groupLabel,
+    groupName: auth.groupName,
+    permissions: getBaseRolePermissions(auth.role),
+    disabledPermissions: auth.disabledPermissions || [],
+    quota: auth.quota || 0,
+    status: "已开通",
+  };
 }
 
 function getStudentIdentity(auth: AuthSession | null, account?: AccountRecord) {
@@ -4535,15 +4598,8 @@ function App() {
   const [ideas, setIdeas] = useState<Idea[]>(() => readStored("sufe-ideas", initialIdeas));
   const [messages, setMessages] = useState<ChatMessage[]>(() => readStored("sufe-messages", initialMessages));
   const [submissions, setSubmissions] = useState<Submission[]>(() => readStored("sufe-submissions", []));
-  const [studentGroups, setStudentGroups] = useState<StudentGroup[]>(() =>
-    withExtraDemoStudentGroups(readStored<StudentGroup[]>("sufe-student-groups", initialStudentGroups)),
-  );
-  const [accountRecords, setAccountRecords] = useState<AccountRecord[]>(() =>
-    normalizeAccountRecords(
-      withExtraDemoStudentAccounts(readStored<AccountRecord[]>("sufe-admin-account-records", initialAccountRecords)),
-      withExtraDemoStudentGroups(readStored<StudentGroup[]>("sufe-student-groups", initialStudentGroups)),
-    ),
-  );
+  const [studentGroups, setStudentGroups] = useState<StudentGroup[]>(initialStudentGroups);
+  const [accountRecords, setAccountRecords] = useState<AccountRecord[]>(() => normalizeAccountRecords(initialAccountRecords, initialStudentGroups));
   const [studentProfiles, setStudentProfiles] = useState<StudentProfileState>(() => readStored<StudentProfileState>("sufe-student-profiles", {}));
   const [knowledgeUploads, setKnowledgeUploads] = useState<KnowledgeUpload[]>(() =>
     readStored("sufe-knowledge-uploads", []),
@@ -4612,7 +4668,9 @@ function App() {
   const pendingKnowledgeAsset = pendingKnowledgeAssetAction
     ? knowledgeUploads.find((asset) => asset.id === pendingKnowledgeAssetAction.id) || null
     : null;
-  const activeAccountRecord = auth ? accountRecords.find((account) => account.account === auth.account) : undefined;
+  const activeAccountRecord = auth
+    ? accountRecords.find((account) => account.account === auth.account) || buildAuthenticatedAccount(auth, studentGroups)
+    : undefined;
   const activeStudentAvatarId = auth?.role === "student" ? getStudentProfileAvatar(auth.account, studentProfiles) : defaultStudentAvatarId;
   const studentExperts = experts.filter((expert) => isStudentExpertId(expert.id) && isStudentExpertEnabled(expert, activeAccountRecord));
   const fallbackStudentExperts = experts.filter((expert) => isStudentExpertId(expert.id));
@@ -4658,25 +4716,6 @@ function App() {
   useEffect(() => localStorage.setItem("sufe-ideas", JSON.stringify(ideas)), [ideas]);
   useEffect(() => localStorage.setItem("sufe-messages", JSON.stringify(messages)), [messages]);
   useEffect(() => localStorage.setItem("sufe-submissions", JSON.stringify(submissions)), [submissions]);
-  useEffect(() => {
-    if (localStorage.getItem(demoAccountExpansionKey) === "done") return;
-    setAccountRecords((current) => {
-      const next = appendMissingExtraDemoStudentAccounts(current);
-      return next === current ? current : normalizeAccountRecords(next, studentGroups);
-    });
-  }, [studentGroups]);
-  useEffect(() => localStorage.setItem("sufe-student-groups", JSON.stringify(studentGroups)), [studentGroups]);
-  useEffect(() => localStorage.setItem("sufe-admin-account-records", JSON.stringify(accountRecords)), [accountRecords]);
-  useEffect(() => {
-    if (extraDemoStudentGroups.every((group) => studentGroups.some((item) => item.id === group.id))) {
-      localStorage.setItem(demoGroupExpansionKey, "done");
-    }
-  }, [studentGroups]);
-  useEffect(() => {
-    if (extraDemoStudentAccounts.every((account) => accountRecords.some((item) => item.id === account.id || item.account === account.account))) {
-      localStorage.setItem(demoAccountExpansionKey, "done");
-    }
-  }, [accountRecords]);
   useEffect(() => localStorage.setItem("sufe-student-profiles", JSON.stringify(studentProfiles)), [studentProfiles]);
   useEffect(() => localStorage.setItem("sufe-knowledge-uploads", JSON.stringify(knowledgeUploads)), [knowledgeUploads]);
   useEffect(() => localStorage.setItem("sufe-knowledge-base-catalog", JSON.stringify(knowledgeCatalog)), [knowledgeCatalog]);
@@ -10541,8 +10580,8 @@ function AdminView(props: {
   onToggleKnowledge: (id: string) => void;
   submissions: Submission[];
 }) {
-  const { onAccountRecordsChange } = props;
-  const [adminTab, setAdminTab] = useState<"resources" | "monitor" | "knowledge" | "prompts" | "evaluation">("resources");
+  const { onAccountRecordsChange, onStudentGroupsChange } = props;
+  const [adminTab, setAdminTab] = useState<"resources" | "audit" | "monitor" | "knowledge" | "prompts" | "evaluation">("resources");
   const [selectedKanbanGroupId, setSelectedKanbanGroupId] = useState<string | null>(null);
   const [selectedGroupDetailId, setSelectedGroupDetailId] = useState<string | null>(null);
   const [promptExpertId, setPromptExpertId] = useState<ExpertId>("brainstorm");
@@ -10551,12 +10590,7 @@ function AdminView(props: {
   const [adminNewExpertName, setAdminNewExpertName] = useState("");
   const [adminNewExpertRole, setAdminNewExpertRole] = useState("");
   const [adminNewExpertScenario, setAdminNewExpertScenario] = useState("");
-  const [accountRecords, setAccountRecords] = useState<AccountRecord[]>(() =>
-    normalizeAccountRecords(
-      withExtraDemoStudentAccounts(readStored<AccountRecord[]>("sufe-admin-account-records", initialAccountRecords)),
-      props.studentGroups,
-    ),
-  );
+  const accountRecords = props.accountRecords;
   const [selectedAccountId, setSelectedAccountId] = useState(() => accountRecords[0]?.id || "");
   const [accountDetailId, setAccountDetailId] = useState<string | null>(null);
   const [pendingDeleteGroupId, setPendingDeleteGroupId] = useState<string | null>(null);
@@ -10565,6 +10599,7 @@ function AdminView(props: {
   const [newAccountRole, setNewAccountRole] = useState<Role>("student");
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLogin, setNewAccountLogin] = useState("");
+  const [newAccountPassword, setNewAccountPassword] = useState("");
   const [newAccountQuota, setNewAccountQuota] = useState("240");
   const [newAccountGroupId, setNewAccountGroupId] = useState(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
   const [newGroupLabel, setNewGroupLabel] = useState("");
@@ -10598,12 +10633,36 @@ function AdminView(props: {
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
   const [isAdminSkillFolderGuideOpen, setIsAdminSkillFolderGuideOpen] = useState(false);
   const [accountSaveMessage, setAccountSaveMessage] = useState<string | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
+  const [adminDataLoading, setAdminDataLoading] = useState(true);
   const adminUploadInputRef = useRef<HTMLInputElement | null>(null);
   const adminExpertSkillFolderUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    onAccountRecordsChange(accountRecords);
-  }, [accountRecords, onAccountRecordsChange]);
+    let active = true;
+    setAdminDataLoading(true);
+    Promise.all([listAdminGroups(), listAdminAccounts(), listAdminAuditLogs()])
+      .then(([remoteGroups, remoteAccounts, remoteAuditLogs]) => {
+        if (!active) return;
+        const groups = remoteGroups.map(mapAdminGroup);
+        onStudentGroupsChange(groups);
+        onAccountRecordsChange(remoteAccounts.map((account) => mapAdminAccount(account, groups)));
+        setAuditLogs(remoteAuditLogs);
+      })
+      .catch((error) => {
+        if (active) setAccountSaveMessage(error instanceof Error ? error.message : "管理端数据加载失败");
+      })
+      .finally(() => {
+        if (active) setAdminDataLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [onAccountRecordsChange, onStudentGroupsChange]);
+
+  async function refreshAuditLogs() {
+    setAuditLogs(await listAdminAuditLogs());
+  }
 
   function openAccountDetail(account: AccountRecord) {
     setAccountEditDraft({
@@ -10631,11 +10690,20 @@ function AdminView(props: {
   const evaluationPassRate = Math.max(passRate, 68);
   const tabs = [
     ["resources", "账号与权限管理", Settings2],
+    ["audit", "操作审计", History],
     ["monitor", "运行监控中心", BarChart3],
     ["knowledge", "知识库管理", BookOpen],
     ["prompts", "专家提示词管理", Sparkles],
     ["evaluation", "试点运营评估", LineChart],
   ] as const;
+  const auditActionLabels: Record<string, string> = {
+    ACCOUNT_CREATE: "创建账号",
+    ACCOUNT_UPDATE: "更新账号",
+    ACCOUNT_DELETE: "删除账号",
+    GROUP_CREATE: "创建小组",
+    GROUP_UPDATE: "更新小组",
+    GROUP_DELETE: "删除小组",
+  };
   const kanbanProjects = props.studentGroups.map((group, index) => {
     const groupSubmissions = props.submissions.filter(
       (submission) => submission.group === group.label || submission.groupName === group.projectName || submission.group === group.projectName,
@@ -10920,10 +10988,6 @@ ${modeInstructions[promptMode]}
     ["待重点跟进", "3 组", "需要补充收入模型、用户证据和试点指标"],
   ];
 
-  useEffect(() => {
-    localStorage.setItem("sufe-admin-account-records", JSON.stringify(accountRecords));
-  }, [accountRecords]);
-
   function applyAdminKnowledgeSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAdminKnowledgeSearch(adminKnowledgeSearchDraft);
@@ -11171,19 +11235,24 @@ ${modeInstructions[promptMode]}
     };
   }
 
-  function handleCreateStudentGroup() {
+  async function handleCreateStudentGroup() {
     const label = newGroupLabel.trim();
     const projectName = newGroupProjectName.trim();
     if (!label || !projectName) {
       setAccountSaveMessage("请填写组号和项目名称。");
       return;
     }
-    const nextGroup = { id: makeId("G"), label, projectName };
-    props.onStudentGroupsChange([nextGroup, ...props.studentGroups]);
-    setNewAccountGroupId(nextGroup.id);
-    setNewGroupLabel("");
-    setNewGroupProjectName("");
-    setAccountSaveMessage("学生小组已新增，可在新建学生账号时选择。");
+    try {
+      const nextGroup = mapAdminGroup(await createAdminGroup(label, projectName));
+      onStudentGroupsChange([nextGroup, ...props.studentGroups]);
+      setNewAccountGroupId(nextGroup.id);
+      setNewGroupLabel("");
+      setNewGroupProjectName("");
+      await refreshAuditLogs();
+      setAccountSaveMessage("学生小组已新增并写入数据库。");
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "新增小组失败");
+    }
   }
 
   function handleDeleteStudentGroup(group: StudentGroup, studentCount: number) {
@@ -11194,15 +11263,21 @@ ${modeInstructions[promptMode]}
     setPendingDeleteGroupId(group.id);
   }
 
-  function handleConfirmDeleteStudentGroup() {
+  async function handleConfirmDeleteStudentGroup() {
     if (!pendingDeleteGroup) return;
-    const nextGroups = props.studentGroups.filter((item) => item.id !== pendingDeleteGroup.id);
-    props.onStudentGroupsChange(nextGroups);
-    if (newAccountGroupId === pendingDeleteGroup.id) {
-      setNewAccountGroupId(nextGroups[2]?.id || nextGroups[0]?.id || "");
+    try {
+      await deleteAdminGroup(pendingDeleteGroup.id);
+      const nextGroups = props.studentGroups.filter((item) => item.id !== pendingDeleteGroup.id);
+      onStudentGroupsChange(nextGroups);
+      if (newAccountGroupId === pendingDeleteGroup.id) {
+        setNewAccountGroupId(nextGroups[2]?.id || nextGroups[0]?.id || "");
+      }
+      setPendingDeleteGroupId(null);
+      await refreshAuditLogs();
+      setAccountSaveMessage("学生小组已从数据库删除。");
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "删除小组失败");
     }
-    setPendingDeleteGroupId(null);
-    setAccountSaveMessage("学生小组已删除。");
   }
 
   function openGroupEditor(group: StudentGroup) {
@@ -11210,35 +11285,38 @@ ${modeInstructions[promptMode]}
     setGroupEditDraft({ label: group.label, projectName: group.projectName });
   }
 
-  function handleSaveStudentGroup(groupId: string) {
+  async function handleSaveStudentGroup(groupId: string) {
     const label = groupEditDraft.label.trim();
     const projectName = groupEditDraft.projectName.trim();
     if (!label || !projectName) {
       setAccountSaveMessage("请填写组号和小组名称。");
       return;
     }
-    const currentGroup = props.studentGroups.find((group) => group.id === groupId);
-    if (!currentGroup) return;
-    const nextGroup = { ...currentGroup, label, projectName };
-    props.onStudentGroupsChange(props.studentGroups.map((group) => (group.id === groupId ? nextGroup : group)));
-    setAccountRecords((current) =>
-      current.map((account) =>
-        account.role === "student" && resolveAccountGroup(account, props.studentGroups).groupId === groupId
-          ? {
-              ...account,
-              groupId,
-              groupLabel: label,
-              groupName: projectName,
-              groupOrScope: formatGroupScope(nextGroup),
-            }
-          : account,
-      ),
-    );
-    setEditingGroupId(null);
-    setAccountSaveMessage("小组名称已更新。");
+    try {
+      const nextGroup = mapAdminGroup(await updateAdminGroup(groupId, label, projectName));
+      onStudentGroupsChange(props.studentGroups.map((group) => (group.id === groupId ? nextGroup : group)));
+      onAccountRecordsChange(
+        accountRecords.map((account) =>
+          account.role === "student" && resolveAccountGroup(account, props.studentGroups).groupId === groupId
+            ? {
+                ...account,
+                groupId,
+                groupLabel: label,
+                groupName: projectName,
+                groupOrScope: formatGroupScope(nextGroup),
+              }
+            : account,
+        ),
+      );
+      setEditingGroupId(null);
+      await refreshAuditLogs();
+      setAccountSaveMessage("小组名称已更新并写入数据库。");
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "更新小组失败");
+    }
   }
 
-  function handleCreateAccount() {
+  async function handleCreateAccount() {
     const name = newAccountName.trim() || (newAccountRole === "student" ? `学生${accountRecords.length + 1}` : newAccountRole === "teacher" ? `教师${accountRecords.length + 1}` : `管理员${accountRecords.length + 1}`);
     const prefix = newAccountRole === "student" ? "student" : newAccountRole === "teacher" ? "teacher" : "admin";
     const loginAccount = newAccountLogin.trim() || `${prefix}${accountRecords.length + 1}@sufe.demo`;
@@ -11248,46 +11326,63 @@ ${modeInstructions[promptMode]}
       setAccountSaveMessage("请先为学生账号选择所属项目小组。");
       return;
     }
-    const next: AccountRecord = {
-      id: makeId("A"),
-      role: newAccountRole,
-      name,
-      account: loginAccount,
-      title: getRoleTitle(newAccountRole),
-      groupOrScope: newAccountRole === "student" ? "待分配项目小组" : newAccountRole === "teacher" ? "待分配课程班级" : "平台运营范围",
-      ...groupPatch,
-      permissions: getDefaultPermissions(newAccountRole),
-      quota,
-      status: "待后端开通",
-    };
-    setAccountRecords((current) => [next, ...current]);
-    setSelectedAccountId(next.id);
-    setNewAccountName("");
-    setNewAccountLogin("");
-    setNewAccountQuota(String(getDefaultQuota(newAccountRole)));
-    setNewAccountGroupId(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
-    setIsAccountCreateOpen(false);
-    setAccountSaveMessage("本地账号配置已创建；登录能力需等待后端账号管理接口接入后开通。");
-  }
-
-  function handleToggleAccountStatus(id: string) {
-    const target = accountRecords.find((account) => account.id === id);
-    if (target?.status === "待后端开通") {
-      setAccountSaveMessage("该账号尚未接入后端账号管理接口，当前不能开通登录。");
+    if (newAccountPassword.length < 8) {
+      setAccountSaveMessage("初始密码至少需要 8 位，且只在本次创建时提交。");
       return;
     }
-    setAccountRecords((current) =>
-      current.map((account) =>
-        account.id === id ? { ...account, status: account.status === "已开通" ? "已停用" : "已开通" } : account,
-      ),
-    );
+    try {
+      const remoteAccount = await createAdminAccount({
+        account: loginAccount,
+        password: newAccountPassword,
+        role: newAccountRole.toUpperCase() as AdminAccount["role"],
+        displayName: name,
+        title: getRoleTitle(newAccountRole),
+        quotaRemaining: quota,
+        groupId: newAccountRole === "student" ? newAccountGroupId : undefined,
+      });
+      const next = mapAdminAccount(remoteAccount, props.studentGroups);
+      onAccountRecordsChange([next, ...accountRecords]);
+      setSelectedAccountId(next.id);
+      setNewAccountName("");
+      setNewAccountLogin("");
+      setNewAccountPassword("");
+      setNewAccountQuota(String(getDefaultQuota(newAccountRole)));
+      setNewAccountGroupId(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
+      setIsAccountCreateOpen(false);
+      await refreshAuditLogs();
+      setAccountSaveMessage("账号已创建并可使用后端认证登录，密码未在前端保存。");
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "创建账号失败");
+    }
+  }
+
+  async function handleToggleAccountStatus(id: string) {
+    const target = accountRecords.find((account) => account.id === id);
+    if (!target) return;
+    try {
+      const remoteAccount = await updateAdminAccount(id, {
+        role: target.role.toUpperCase() as AdminAccount["role"],
+        displayName: target.name,
+        title: target.title,
+        status: target.status === "已开通" ? "DISABLED" : "ACTIVE",
+        quotaRemaining: target.quota,
+        disabledPermissions: target.disabledPermissions || [],
+        groupId: target.role === "student" ? target.groupId : undefined,
+      });
+      const next = mapAdminAccount(remoteAccount, props.studentGroups);
+      onAccountRecordsChange(accountRecords.map((account) => (account.id === id ? next : account)));
+      await refreshAuditLogs();
+      setAccountSaveMessage(`账号已${next.status === "已开通" ? "开通" : "停用"}。`);
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "更新账号状态失败");
+    }
   }
 
   function isPermissionEnabled(account: AccountRecord, permission: string) {
     return !(account.disabledPermissions || []).includes(permission);
   }
 
-  function handleToggleAccountPermission(accountId: string, permission: string) {
+  async function handleToggleAccountPermission(accountId: string, permission: string) {
     const targetAccount = accountRecords.find((account) => account.id === accountId);
     const targetDisabledPermissions = targetAccount?.disabledPermissions || [];
     const studentExpertPermissions = getStudentExpertPermissionNames();
@@ -11300,41 +11395,53 @@ ${modeInstructions[promptMode]}
       setAccountSaveMessage("学生账号至少需要保留 1 个可用专家。");
       return;
     }
-    setAccountRecords((current) =>
-      current.map((account) => {
-        if (account.id !== accountId) return account;
-        const disabledPermissions = account.disabledPermissions || [];
-        const nextDisabledPermissions = disabledPermissions.includes(permission)
-          ? disabledPermissions.filter((item) => item !== permission)
-          : [...disabledPermissions, permission];
-        return { ...account, disabledPermissions: nextDisabledPermissions };
-      }),
-    );
+    if (!targetAccount) return;
+    const nextDisabledPermissions = targetDisabledPermissions.includes(permission)
+      ? targetDisabledPermissions.filter((item) => item !== permission)
+      : [...targetDisabledPermissions, permission];
+    try {
+      const remoteAccount = await updateAdminAccount(accountId, {
+        role: targetAccount.role.toUpperCase() as AdminAccount["role"],
+        displayName: targetAccount.name,
+        title: targetAccount.title,
+        status: targetAccount.status === "已停用" ? "DISABLED" : "ACTIVE",
+        quotaRemaining: targetAccount.quota,
+        disabledPermissions: nextDisabledPermissions,
+        groupId: targetAccount.role === "student" ? targetAccount.groupId : undefined,
+      });
+      const next = mapAdminAccount(remoteAccount, props.studentGroups);
+      onAccountRecordsChange(accountRecords.map((account) => (account.id === accountId ? next : account)));
+      await refreshAuditLogs();
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "更新账号权限失败");
+    }
   }
 
-  function handleSaveAccountDetail() {
+  async function handleSaveAccountDetail() {
     if (!accountDetail) return;
     const name = accountEditDraft.name.trim();
-    const account = accountEditDraft.account.trim();
     const quota = Math.max(0, Number.parseInt(accountEditDraft.quota, 10) || 0);
-    if (!name || !account) {
-      setAccountSaveMessage("姓名和登录账号不能为空。");
+    if (!name) {
+      setAccountSaveMessage("姓名不能为空。");
       return;
     }
-    setAccountRecords((current) =>
-      current.map((item) =>
-        item.id === accountDetail.id
-          ? {
-              ...item,
-              name,
-              account,
-              quota,
-              ...(item.role === "student" ? buildStudentGroupPatch(accountEditDraft.groupId) : {}),
-            }
-          : item,
-      ),
-    );
-    setAccountSaveMessage("账号信息已保存。");
+    try {
+      const remoteAccount = await updateAdminAccount(accountDetail.id, {
+        role: accountDetail.role.toUpperCase() as AdminAccount["role"],
+        displayName: name,
+        title: accountDetail.title,
+        status: accountDetail.status === "已停用" ? "DISABLED" : "ACTIVE",
+        quotaRemaining: quota,
+        disabledPermissions: accountDetail.disabledPermissions || [],
+        groupId: accountDetail.role === "student" ? accountEditDraft.groupId : undefined,
+      });
+      const next = mapAdminAccount(remoteAccount, props.studentGroups);
+      onAccountRecordsChange(accountRecords.map((item) => (item.id === accountDetail.id ? next : item)));
+      await refreshAuditLogs();
+      setAccountSaveMessage("账号信息已保存到数据库。");
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "保存账号失败");
+    }
   }
 
   function handleDeleteAccount(id: string) {
@@ -11343,15 +11450,21 @@ ${modeInstructions[promptMode]}
     setPendingDeleteAccountId(id);
   }
 
-  function handleConfirmDeleteAccount() {
+  async function handleConfirmDeleteAccount() {
     if (!pendingDeleteAccount) return;
-    const id = pendingDeleteAccount.id;
-    const remaining = accountRecords.filter((item) => item.id !== id);
-    setAccountRecords(remaining);
-    if (selectedAccountId === id) setSelectedAccountId(remaining[0]?.id || "");
-    if (accountDetailId === id) setAccountDetailId(null);
-    setPendingDeleteAccountId(null);
-    setAccountSaveMessage("账号已删除。");
+    try {
+      const id = pendingDeleteAccount.id;
+      await deleteAdminAccount(id);
+      const remaining = accountRecords.filter((item) => item.id !== id);
+      onAccountRecordsChange(remaining);
+      if (selectedAccountId === id) setSelectedAccountId(remaining[0]?.id || "");
+      if (accountDetailId === id) setAccountDetailId(null);
+      setPendingDeleteAccountId(null);
+      await refreshAuditLogs();
+      setAccountSaveMessage("账号已从数据库删除。");
+    } catch (error) {
+      setAccountSaveMessage(error instanceof Error ? error.message : "删除账号失败");
+    }
   }
 
   return (
@@ -11391,7 +11504,7 @@ ${modeInstructions[promptMode]}
             <article>
               <Settings2 size={22} />
               <h4>账号与权限管理</h4>
-              <p>管理员按学生、教师、管理员三类角色开通账号，查看密码、权限范围和调用配额，并可删除不再使用的账号。</p>
+              <p>管理员按学生、教师、管理员三类角色维护后端账号、权限范围、项目小组和调用配额；密码仅在创建时提交，不保存也不回显。</p>
             </article>
           </div>
           <div className="account-summary-grid">
@@ -11411,8 +11524,8 @@ ${modeInstructions[promptMode]}
                   <span>维护项目小组及学生归属，新建学生账号时可直接绑定对应小组</span>
                 </div>
                 <div className="student-group-create">
-                  <input value={newGroupLabel} onChange={(event) => setNewGroupLabel(event.target.value)} placeholder="如：第 11 组" />
-                  <input value={newGroupProjectName} onChange={(event) => setNewGroupProjectName(event.target.value)} placeholder="项目名称" />
+                  <input aria-label="小组名称" value={newGroupLabel} onChange={(event) => setNewGroupLabel(event.target.value)} placeholder="如：第 11 组" />
+                  <input aria-label="小组项目名称" value={newGroupProjectName} onChange={(event) => setNewGroupProjectName(event.target.value)} placeholder="项目名称" />
                   <button className="primary-button" type="button" onClick={handleCreateStudentGroup}>
                     新增小组
                   </button>
@@ -11446,7 +11559,7 @@ ${modeInstructions[promptMode]}
               <div className="account-table-toolbar admin-resource-toolbar">
                 <div>
                   <strong>账号权限管理</strong>
-                  <span>当前停用、权限、编辑和删除仅作用于本地配置预览，不影响后端登录；正式账号接口接入后统一生效</span>
+                  <span>{adminDataLoading ? "正在同步后端账号与小组数据…" : "账号、状态、配额、小组归属和权限开关均以 MySQL 为准"}</span>
                 </div>
                 <button className="primary-button" type="button" onClick={() => setIsAccountCreateOpen(true)}>
                   <Save size={16} />
@@ -11471,15 +11584,14 @@ ${modeInstructions[promptMode]}
                   </span>
                   <span>{account.role === "student" ? "学生端" : account.role === "teacher" ? "教师端" : "管理端"}</span>
                   <span title={account.account}>{account.account}</span>
-                  <span>{account.status === "待后端开通" ? "待接入账号接口" : "本地配置预览"}</span>
+                  <span>平台后端认证</span>
                   <span>{account.quota} 次</span>
                   <span>
                     <button
                       className={`account-status-toggle ${account.status === "已开通" ? "enabled" : "disabled"}`}
                       type="button"
                       onClick={() => handleToggleAccountStatus(account.id)}
-                      disabled={account.status === "待后端开通"}
-                      title={account.status === "待后端开通" ? "需等待后端账号管理接口接入" : undefined}
+                      disabled={adminDataLoading}
                     >
                       {account.status}
                     </button>
@@ -11497,6 +11609,48 @@ ${modeInstructions[promptMode]}
               </div>
             </section>
           </div>
+        </div>
+      )}
+
+      {adminTab === "audit" && (
+        <div className="admin-page" key="admin-audit">
+          <section className="admin-resource-section">
+            <div className="account-table-toolbar admin-resource-toolbar">
+              <div>
+                <strong>基础操作审计</strong>
+                <span>记录账号、小组、状态、配额和权限调整；不记录密码、Token 或供应商密钥</span>
+              </div>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => refreshAuditLogs().catch((error) => setAccountSaveMessage(error instanceof Error ? error.message : "审计日志刷新失败"))}
+              >
+                刷新日志
+              </button>
+            </div>
+            <div className="account-table audit-log-table">
+              <div className="table-row table-head">
+                <span>时间</span>
+                <span>操作人</span>
+                <span>动作</span>
+                <span>对象</span>
+                <span>摘要</span>
+              </div>
+              {auditLogs.length === 0 && !adminDataLoading && <p className="kanban-empty">暂无操作审计记录</p>}
+              {auditLogs.map((log) => (
+                <article className="table-row" key={log.id}>
+                  <span>{formatSubmittedAt(log.createdAt)}</span>
+                  <span title={log.actorAccount}>
+                    <strong>{log.actorDisplayName}</strong>
+                    <small>{log.actorAccount}</small>
+                  </span>
+                  <span>{auditActionLabels[log.action] || log.action}</span>
+                  <span>{log.resourceType === "ACCOUNT" ? "账号" : "项目小组"}</span>
+                  <span title={log.summary}>{log.summary}</span>
+                </article>
+              ))}
+            </div>
+          </section>
         </div>
       )}
 
@@ -12461,6 +12615,16 @@ ${modeInstructions[promptMode]}
                 <input value={newAccountLogin} onChange={(event) => setNewAccountLogin(event.target.value)} placeholder="输入登录账号，留空则自动生成" />
               </label>
               <label>
+                <span>初始密码</span>
+                <input
+                  autoComplete="new-password"
+                  type="password"
+                  value={newAccountPassword}
+                  onChange={(event) => setNewAccountPassword(event.target.value)}
+                  placeholder="至少 8 位，仅在创建时提交"
+                />
+              </label>
+              <label>
                 <span>调用配额</span>
                 <input
                   min="0"
@@ -12487,7 +12651,7 @@ ${modeInstructions[promptMode]}
               </div>
               <div className="account-create-permissions">
                 <span>登录能力</span>
-                <strong>仅创建本地配置，需等待后端账号管理接口接入后开通。</strong>
+                <strong>创建成功后立即写入 MySQL，可使用平台后端认证登录。</strong>
               </div>
             </div>
             <footer className="context-actions">
@@ -12496,7 +12660,7 @@ ${modeInstructions[promptMode]}
               </button>
               <button className="primary-button" type="button" onClick={handleCreateAccount}>
                 <Save size={16} />
-                创建本地配置
+                创建账号
               </button>
             </footer>
           </section>
@@ -12549,10 +12713,10 @@ ${modeInstructions[promptMode]}
                   />
                 </label>
                 <label>
-                  <span>登录账号</span>
+                  <span>登录账号（不可修改）</span>
                   <input
+                    readOnly
                     value={accountEditDraft.account}
-                    onChange={(event) => setAccountEditDraft((current) => ({ ...current, account: event.target.value }))}
                   />
                 </label>
                 <label>

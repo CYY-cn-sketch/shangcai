@@ -1,9 +1,11 @@
 package com.sufe.ai.auth.api;
 
+import com.sufe.ai.account.domain.AccountPermissionDenial;
 import com.sufe.ai.account.domain.GroupMembership;
 import com.sufe.ai.account.domain.ProjectGroup;
 import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
+import com.sufe.ai.account.repository.AccountPermissionDenialRepository;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
@@ -47,6 +49,9 @@ class AuthControllerTests {
     private GroupMembershipRepository groupMembershipRepository;
 
     @Autowired
+    private AccountPermissionDenialRepository accountPermissionDenialRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @BeforeEach
@@ -62,6 +67,7 @@ class AuthControllerTests {
                 100
         ));
         groupMembershipRepository.save(GroupMembership.create("M-TEST", student.getId(), group.getId()));
+        accountPermissionDenialRepository.save(AccountPermissionDenial.create(student.getId(), "答辩模拟"));
     }
 
     @Test
@@ -73,6 +79,7 @@ class AuthControllerTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.role").value("student"))
                 .andExpect(jsonPath("$.groupId").value("G-TEST"))
+                .andExpect(jsonPath("$.disabledPermissions[0]").value("答辩模拟"))
                 .andReturn()
                 .getResponse()
                 .getCookie("SUFE_SESSION");
