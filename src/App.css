@@ -487,6 +487,7 @@ input:disabled {
   justify-content: flex-end;
   gap: 10px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .account-chip {
@@ -500,6 +501,7 @@ input:disabled {
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
   font-weight: 850;
+  min-width: 0;
 }
 
 button.account-chip {
@@ -542,6 +544,14 @@ button.account-chip {
   font-size: 12px;
   font-style: normal;
   font-weight: 600;
+}
+
+.account-chip span,
+.account-chip em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .login-page {
@@ -11908,6 +11918,16 @@ button.status-pill {
 
   .topbar {
     align-items: flex-start;
+    flex-wrap: nowrap;
+  }
+
+  .account-bar {
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+  }
+
+  .account-chip {
+    max-width: min(42vw, 260px);
   }
 
   .knowledge-create-panel {
@@ -11998,7 +12018,71 @@ button.status-pill {
   }
 
   .topbar {
-    padding: 14px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .brand-block {
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .brand-block .seal {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+  }
+
+  .brand-block p {
+    display: none;
+  }
+
+  .brand-block h1 {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: clamp(15px, 4vw, 17px);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .account-bar {
+    gap: 6px;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .topbar .account-chip {
+    max-width: min(34vw, 150px);
+    min-height: 36px;
+    padding: 0 8px;
+  }
+
+  .topbar .account-chip em,
+  .topbar .account-chip-arrow {
+    display: none;
+  }
+
+  .topbar .student-cartoon-avatar {
+    width: 26px;
+    height: 26px;
+  }
+
+  .topbar .ghost-button {
+    flex: 0 0 38px;
+    width: 38px;
+    min-width: 38px;
+    min-height: 36px;
+    padding: 0;
+    font-size: 0;
+    white-space: nowrap;
+  }
+
+  .topbar .ghost-button svg {
+    width: 16px;
+    height: 16px;
   }
 
   .teacher-module-tabs button {
