@@ -52,6 +52,13 @@ public class ProjectGroup {
         return create(UUID.randomUUID().toString(), groupLabel, projectName);
     }
 
+    public void updateDetails(String groupLabel, String projectName, boolean active) {
+        this.groupLabel = requireText(groupLabel, "groupLabel");
+        this.projectName = requireText(projectName, "projectName");
+        this.active = active;
+        this.updatedAt = Instant.now();
+    }
+
     private static String requireText(String value, String fieldName) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(fieldName + " 不能为空");

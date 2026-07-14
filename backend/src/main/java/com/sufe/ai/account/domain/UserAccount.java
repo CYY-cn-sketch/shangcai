@@ -109,6 +109,18 @@ public class UserAccount {
         this.updatedAt = Instant.now();
     }
 
+    public void updateAdminProfile(UserRole role, String displayName, String title, int quotaRemaining, UserStatus status) {
+        this.role = Objects.requireNonNull(role, "role 不能为空");
+        this.displayName = normalizeDisplayName(displayName);
+        this.title = requireText(title, "title");
+        if (quotaRemaining < 0) {
+            throw new IllegalArgumentException("quotaRemaining 不能小于 0");
+        }
+        this.quotaRemaining = quotaRemaining;
+        this.status = Objects.requireNonNull(status, "status 不能为空");
+        this.updatedAt = Instant.now();
+    }
+
     public void updatePasswordHash(String passwordHash) {
         this.passwordHash = requireText(passwordHash, "passwordHash");
         this.updatedAt = Instant.now();

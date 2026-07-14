@@ -10,4 +10,8 @@ public interface GroupMembershipRepository extends JpaRepository<GroupMembership
     Optional<GroupMembership> findByUserId(String userId);
 
     boolean existsByUserId(String userId);
+
+    long countByGroupId(String groupId);
+
+    void deleteByUserId(String userId);
 }
