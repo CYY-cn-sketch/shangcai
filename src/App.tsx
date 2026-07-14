@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import * as THREE from "three";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
+import { requestLexiangPptContext, submitWorkBuddyRun } from "./api/provider";
 import "./App.css";
 
 const sufeLogoSrc = "/demo-assets/sufe-logo.png";
@@ -2002,7 +2003,6 @@ const studentFeaturePermissionSet = new Set(studentFeaturePermissionNames);
 const demoPptUrl = "/demo-assets/AI_Coach_Roadshow.pptx";
 const demoVideoUrl = "/demo-assets/AI_Coach_30s.mp4";
 const workBuddyGeneratedVideoUrl = "/generated-videos/sufe-workbuddy-video.mp4";
-const workBuddyApiBase = (import.meta.env.VITE_WORKBUDDY_API_BASE || "/workbuddy-api").replace(/\/$/, "");
 const pptPreviewImages = Array.from({ length: 10 }, (_, index) => `/demo-assets/ppt-preview/slide-${String(index + 1).padStart(2, "0")}.png`);
 const artifactExpertMap: Record<ArtifactType, ExpertId> = {
   BRAINSTORM: "brainstorm",
@@ -4231,27 +4231,17 @@ function downloadPptAsset(asset?: GeneratedAsset) {
 }
 
 async function generateLexiangPptContext(message: ChatMessage, idea: Idea) {
-  const response = await fetch("/lexiang-api/ppt-context", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      title: `${idea.title} - 路演 PPT`,
-      prompt: message.content,
-      blocks: message.blocks || [],
-    }),
+  const query = [
+    `请基于课程知识库，为《${idea.title}》生成路演 PPT 结构。`,
+    `学生输入：${message.content}`,
+    ...(message.blocks || []).slice(0, 6).map((block) => `${block.title}：${block.items.slice(0, 4).join("；")}`),
+  ].join("\n").slice(0, 1024);
+  return requestLexiangPptContext({
+    projectId: idea.id,
+    conversationId: message.ideaId,
+    expertId: message.expertId || "pitch",
+    query,
   });
-  const result = (await response.json()) as {
-    configured?: boolean;
-    content?: string;
-    references?: PptKnowledgeReference[];
-    pptUrl?: string;
-    pptFileName?: string;
-    message?: string;
-  };
-  if (!response.ok) {
-    throw new Error(result.message || "乐享知识库生成 PPT 失败");
-  }
-  return result;
 }
 
 function buildMediaAsset(idea: Idea, sourceMessage?: ChatMessage): GeneratedAsset {
@@ -4385,51 +4375,17 @@ function buildWorkBuddyVideoPrompt(asset: GeneratedAsset) {
 }
 
 async function submitWorkBuddyVideoRun(asset: GeneratedAsset) {
-  const response = await fetch(`${workBuddyApiBase}/api/v1/runs`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CodeBuddy-Request": "1",
-      "X-Codebuddy-Run-Timeout": "600000",
-    },
-    body: JSON.stringify({
-      id: `sufe-video-${asset.id}-${Date.now()}`,
-      type: "message",
-      payload: { text: buildWorkBuddyVideoPrompt(asset) },
-      sender: { id: "sufe-demo", name: "SUFE AI Demo" },
-    }),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(text || `WorkBuddy 提交失败：HTTP ${response.status}`);
-  }
-  const result = JSON.parse(text) as { data?: { runId?: string; status?: string } };
-  if (!result.data?.runId) {
+  const result = await submitWorkBuddyRun(buildWorkBuddyVideoPrompt(asset));
+  if (!result.runId) {
     throw new Error("WorkBuddy 已响应，但没有返回 runId。");
   }
-  return result.data.runId;
+  return result.runId;
 }
 
 async function checkWorkBuddyConnection() {
-  const headers = { "X-CodeBuddy-Request": "1" };
-  const response = await fetch(`${workBuddyApiBase}/api/v1/health`, {
-    headers,
-  });
-  if (!response.ok) {
-    throw new Error(`WorkBuddy 连接检查失败：HTTP ${response.status}`);
-  }
-
-  const pluginsResponse = await fetch(`${workBuddyApiBase}/api/v1/plugins`, {
-    headers,
-  });
-  if (!pluginsResponse.ok) {
-    throw new Error(`WorkBuddy 插件检查失败：HTTP ${pluginsResponse.status}`);
-  }
-  const plugins = (await pluginsResponse.json()) as { data?: Array<{ name?: string }> };
-  const hasRemotionPlugin = plugins.data?.some((plugin) => plugin.name === "remotion-video-generator");
-  if (!hasRemotionPlugin) {
-    throw new Error("WorkBuddy 已连接，但 remotion-video-generator 插件未加载。");
-  }
+  // 真实连通性检查会触达供应商侧服务。这里保持无消耗策略：
+  // 只在提交任务时访问 Java 网关；网关默认 disabled，会返回 503 且不会发起供应商调用。
+  return;
 }
 
 async function checkGeneratedWorkBuddyVideo() {
@@ -7785,18 +7741,18 @@ function MediaGenerationModal(props: {
     setWorkBuddyRunId("");
     setWorkBuddyError("");
     setWorkBuddyStatus("checking");
-    setWorkBuddyStatusMessage("正在连接 WorkBuddy / CodeBuddy。");
+    setWorkBuddyStatusMessage("正在连接平台 Java 网关；默认不会直连 WorkBuddy。");
     setGeneratedVideoVersion(0);
     setVideoCheckMessage("");
     try {
       await checkWorkBuddyConnection();
       setWorkBuddyStatus("connected");
-      setWorkBuddyStatusMessage("已连接 WorkBuddy，正在提交视频生成任务。");
+      setWorkBuddyStatusMessage("已连接平台 Java 网关，正在检查 WorkBuddy 网关是否启用。");
       const runId = await submitWorkBuddyVideoRun(regeneratingAsset);
       setWorkBuddyRunId(runId);
     } catch (error) {
       setWorkBuddyStatus("offline");
-      setWorkBuddyStatusMessage("WorkBuddy 服务未连接或提交失败。");
+      setWorkBuddyStatusMessage("WorkBuddy 网关未启用或提交失败，未发起供应商消耗。");
       setWorkBuddyError(error instanceof Error ? error.message : "WorkBuddy 提交失败。");
     } finally {
       setIsRendering(false);
