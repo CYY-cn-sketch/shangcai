@@ -137,13 +137,19 @@ public class GenerationJob {
         );
     }
 
-    public void start(String providerWorkerId, String externalRunId) {
+    public void start(String providerWorkerId) {
         requireStatus(GenerationJobStatus.QUEUED);
+        String normalizedProviderWorkerId = requireText(providerWorkerId, "providerWorkerId");
         this.status = GenerationJobStatus.RUNNING;
-        this.providerWorkerId = normalizeOptional(providerWorkerId);
-        this.externalRunId = normalizeOptional(externalRunId);
+        this.providerWorkerId = normalizedProviderWorkerId;
         this.startedAt = Instant.now();
         this.updatedAt = this.startedAt;
+    }
+
+    public void recordExternalRunId(String externalRunId) {
+        requireStatus(GenerationJobStatus.RUNNING);
+        this.externalRunId = requireText(externalRunId, "externalRunId");
+        this.updatedAt = Instant.now();
     }
 
     public void complete(String outputPath, String externalSessionId) {
