@@ -48,6 +48,17 @@ import {
 } from "./api/admin";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
 import { requestLexiangPptContext, submitWorkBuddyRun } from "./api/provider";
+import {
+  appendStudentMessage,
+  createStudentIdea,
+  deleteStudentIdea,
+  loadStudentWorkspace,
+  saveStudentConversation,
+  updateStudentIdea,
+  type RemoteConversationMessage,
+  type RemoteStudentConversation,
+  type RemoteStudentIdea,
+} from "./api/studentWorkspace";
 import "./App.css";
 
 const sufeLogoSrc = "/demo-assets/sufe-logo.png";
@@ -2501,6 +2512,57 @@ function getSubmittedDateKey(value: string) {
   return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
+function formatWorkspaceTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+function mapRemoteIdea(idea: RemoteStudentIdea): Idea {
+  return {
+    id: idea.id,
+    title: idea.title,
+    description: idea.description,
+    stage: idea.stage,
+    updatedAt: formatWorkspaceTime(idea.updatedAt),
+  };
+}
+
+function normalizeRemoteBlocks(value: unknown): ResultBlock[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const blocks = value.filter(
+    (item): item is ResultBlock =>
+      Boolean(
+        item &&
+          typeof item === "object" &&
+          typeof (item as ResultBlock).title === "string" &&
+          Array.isArray((item as ResultBlock).items) &&
+          (item as ResultBlock).items.every((entry) => typeof entry === "string"),
+      ),
+  );
+  return blocks.length ? blocks : undefined;
+}
+
+function mapRemoteMessage(message: RemoteConversationMessage): ChatMessage {
+  return {
+    id: message.id,
+    ideaId: message.ideaId,
+    sender: message.sender === "AI" ? "ai" : "user",
+    mode: message.inputMode === "录音" || message.inputMode === "语音" ? message.inputMode : message.inputMode === "文本" ? "文本" : undefined,
+    expertId: message.expertId,
+    expertName: message.expertName,
+    skillName: message.skillName,
+    artifactType: isArtifactType(message.artifactType) ? message.artifactType : undefined,
+    content: message.content,
+    blocks: normalizeRemoteBlocks(message.blocks),
+    createdAt: formatWorkspaceTime(message.createdAt),
+  };
+}
+
+function isModelMode(value: string): value is ModelMode {
+  return modelModes.includes(value as ModelMode);
+}
+
 function matchesTeacherReviewSearch(submission: Submission, search: TeacherReviewSearch) {
   const keyword = search.keyword.trim().toLowerCase();
   const submittedDate = getSubmittedDateKey(submission.submittedAt);
@@ -4595,8 +4657,10 @@ function App() {
   const [auth, setAuth] = useState<AuthSession | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [role, setRole] = useState<Role>(() => readStored<Role>("sufe-role", "student"));
-  const [ideas, setIdeas] = useState<Idea[]>(() => readStored("sufe-ideas", initialIdeas));
-  const [messages, setMessages] = useState<ChatMessage[]>(() => readStored("sufe-messages", initialMessages));
+  const [ideas, setIdeas] = useState<Idea[]>(initialIdeas);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [studentConversations, setStudentConversations] = useState<RemoteStudentConversation[]>([]);
+  const [studentWorkspaceAccount, setStudentWorkspaceAccount] = useState<string | null>(null);
   const [submissions, setSubmissions] = useState<Submission[]>(() => readStored("sufe-submissions", []));
   const [studentGroups, setStudentGroups] = useState<StudentGroup[]>(initialStudentGroups);
   const [accountRecords, setAccountRecords] = useState<AccountRecord[]>(() => normalizeAccountRecords(initialAccountRecords, initialStudentGroups));
@@ -4624,7 +4688,7 @@ function App() {
   const [defensePractices, setDefensePractices] = useState<DefensePractice[]>(() =>
     readStored("sufe-defense-practices", []),
   );
-  const [activeIdeaId, setActiveIdeaId] = useState(() => localStorage.getItem("sufe-active-idea") || initialIdeas[0].id);
+  const [activeIdeaId, setActiveIdeaId] = useState(initialIdeas[0].id);
   const [selectedExpertId, setSelectedExpertId] = useState<ExpertId>("pitch");
   const [selectedSkillId, setSelectedSkillId] = useState("deck");
   const [model, setModel] = useState<ModelMode>("Auto");
@@ -4695,6 +4759,9 @@ function App() {
   useEffect(() => {
     let active = true;
     localStorage.removeItem("sufe-auth");
+    localStorage.removeItem("sufe-ideas");
+    localStorage.removeItem("sufe-messages");
+    localStorage.removeItem("sufe-active-idea");
     loadCurrentAuth()
       .then((session) => {
         if (!active || !session) return;
@@ -4712,9 +4779,96 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!auth || auth.role !== "student") {
+      setStudentWorkspaceAccount(null);
+      return undefined;
+    }
+    let active = true;
+    const account = auth.account;
+
+    async function restoreStudentWorkspace() {
+      try {
+        let workspace = await loadStudentWorkspace();
+        if (workspace.ideas.length === 0) {
+          const idea = await createStudentIdea({
+            title: "新的创业创意",
+            description: "请在聊天框中描述目标用户、问题场景和你希望验证的商业假设。",
+            stage: "新建创意",
+          });
+          workspace = { ideas: [idea], conversations: [] };
+        }
+        if (!active) return;
+
+        const nextIdeas = workspace.ideas.map(mapRemoteIdea);
+        const nextActiveIdea = nextIdeas[0];
+        const activeConversation = workspace.conversations.find((item) => item.ideaId === nextActiveIdea.id);
+        setIdeas(nextIdeas);
+        setMessages(workspace.conversations.flatMap((conversation) => conversation.messages.map(mapRemoteMessage)));
+        setStudentConversations(workspace.conversations);
+        setActiveIdeaId(nextActiveIdea.id);
+        if (activeConversation) {
+          setSelectedExpertId(activeConversation.selectedExpertId);
+          setSelectedSkillId(activeConversation.selectedSkillId);
+          setModel(isModelMode(activeConversation.modelMode) ? activeConversation.modelMode : "Auto");
+          setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection));
+        }
+        setPrompt(getScenarioPrompt(activeConversation?.selectedExpertId || "pitch", nextActiveIdea));
+        setStudentWorkspaceAccount(account);
+      } catch (error) {
+        if (!active) return;
+        setStudentWorkspaceAccount(null);
+        setSystemNotice({
+          title: "学生工作台同步失败",
+          message: error instanceof Error ? error.message : "暂时无法读取创意与对话数据。",
+        });
+      }
+    }
+
+    restoreStudentWorkspace();
+    return () => {
+      active = false;
+    };
+  }, [auth?.account, auth?.role]);
+
+  useEffect(() => {
+    if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account || !activeIdeaId) return undefined;
+    const timer = window.setTimeout(() => {
+      saveStudentConversation(activeIdeaId, {
+        selectedExpertId,
+        selectedSkillId,
+        modelMode: model,
+        knowledgeSelection: selectedKnowledgeSelection,
+      })
+        .then((saved) => {
+          setStudentConversations((current) => {
+            const existing = current.find((item) => item.ideaId === saved.ideaId);
+            const next = { ...saved, messages: existing?.messages || [] };
+            return existing
+              ? current.map((item) => (item.ideaId === saved.ideaId ? next : item))
+              : [next, ...current];
+          });
+        })
+        .catch((error) => {
+          setSystemNotice({
+            title: "对话设置保存失败",
+            message: error instanceof Error ? error.message : "专家、技能与知识库选择暂未保存。",
+          });
+        });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeIdeaId,
+    auth?.account,
+    auth?.role,
+    model,
+    selectedExpertId,
+    selectedKnowledgeSelection,
+    selectedSkillId,
+    studentWorkspaceAccount,
+  ]);
+
   useEffect(() => localStorage.setItem("sufe-role", role), [role]);
-  useEffect(() => localStorage.setItem("sufe-ideas", JSON.stringify(ideas)), [ideas]);
-  useEffect(() => localStorage.setItem("sufe-messages", JSON.stringify(messages)), [messages]);
   useEffect(() => localStorage.setItem("sufe-submissions", JSON.stringify(submissions)), [submissions]);
   useEffect(() => localStorage.setItem("sufe-student-profiles", JSON.stringify(studentProfiles)), [studentProfiles]);
   useEffect(() => localStorage.setItem("sufe-knowledge-uploads", JSON.stringify(knowledgeUploads)), [knowledgeUploads]);
@@ -4725,7 +4879,6 @@ function App() {
   useEffect(() => localStorage.setItem("sufe-prompt-knowledge-routes", JSON.stringify(promptKnowledgeRoutes)), [promptKnowledgeRoutes]);
   useEffect(() => localStorage.setItem("sufe-defense-practices", JSON.stringify(defensePractices)), [defensePractices]);
   useEffect(() => localStorage.setItem("sufe-generated-assets", JSON.stringify(generatedAssets)), [generatedAssets]);
-  useEffect(() => localStorage.setItem("sufe-active-idea", activeIdeaId), [activeIdeaId]);
   useEffect(() => localStorage.setItem("sufe-student-knowledge-selection", JSON.stringify(selectedKnowledgeSelection)), [selectedKnowledgeSelection]);
   knowledgeBaseCatalog = knowledgeCatalog.length ? knowledgeCatalog : defaultKnowledgeBaseCatalog;
   useEffect(() => {
@@ -4824,28 +4977,78 @@ function App() {
     block: blockPermission,
   };
 
+  function applyConversationSettings(ideaId: string) {
+    const conversation = studentConversations.find((item) => item.ideaId === ideaId);
+    if (!conversation) {
+      const defaultExpert = studentExperts[0] || fallbackStudentExperts[0];
+      setSelectedExpertId(defaultExpert.id);
+      setSelectedSkillId(defaultExpert.skills[0]?.id || "");
+      setModel("Auto");
+      setSelectedKnowledgeSelection({ categories: [], uploadIds: [] });
+      return defaultExpert.id;
+    }
+    setSelectedExpertId(conversation.selectedExpertId);
+    setSelectedSkillId(conversation.selectedSkillId);
+    setModel(isModelMode(conversation.modelMode) ? conversation.modelMode : "Auto");
+    setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(conversation.knowledgeSelection));
+    return conversation.selectedExpertId;
+  }
+
+  function persistStudentMessage(message: ChatMessage) {
+    if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account) return;
+    appendStudentMessage(message.ideaId, {
+      clientMessageId: message.id,
+      sender: message.sender === "ai" ? "AI" : "USER",
+      inputMode: message.mode,
+      expertId: message.expertId,
+      expertName: message.expertName,
+      skillName: message.skillName,
+      artifactType: message.artifactType,
+      content: message.content,
+      blocks: message.blocks,
+    })
+      .then((saved) => {
+        const persisted = mapRemoteMessage(saved);
+        setMessages((current) => current.map((item) => (item.id === message.id ? persisted : item)));
+      })
+      .catch((error) => {
+        setSystemNotice({
+          title: "对话消息保存失败",
+          message: error instanceof Error ? error.message : "当前消息暂未写入后端。",
+        });
+      });
+  }
+
   function handleSelectIdea(ideaId: string) {
     const idea = ideas.find((item) => item.id === ideaId);
     if (!idea) return;
     setActiveIdeaId(ideaId);
-    setPrompt(getScenarioPrompt(selectedExpert.id, idea));
+    const expertId = applyConversationSettings(ideaId);
+    setPrompt(getScenarioPrompt(expertId, idea));
   }
 
-  function handleCreateIdea() {
+  async function handleCreateIdea() {
     if (!canUsePermission("AI 创意工作台")) {
       blockPermission("AI 创意工作台");
       return;
     }
-    const idea: Idea = {
-      id: makeId("I"),
-      title: "新的创业创意",
-      description: "请在聊天框中描述目标用户、问题场景和你希望验证的商业假设。",
-      stage: "新建创意",
-      updatedAt: nowTime(),
-    };
-    setIdeas((current) => [idea, ...current]);
-    setActiveIdeaId(idea.id);
-    setPrompt(getScenarioPrompt((studentExperts[0] || fallbackStudentExperts[0]).id, idea));
+    try {
+      const saved = await createStudentIdea({
+        title: "新的创业创意",
+        description: "请在聊天框中描述目标用户、问题场景和你希望验证的商业假设。",
+        stage: "新建创意",
+      });
+      const idea = mapRemoteIdea(saved);
+      setIdeas((current) => [idea, ...current]);
+      setActiveIdeaId(idea.id);
+      applyConversationSettings(idea.id);
+      setPrompt(getScenarioPrompt((studentExperts[0] || fallbackStudentExperts[0]).id, idea));
+    } catch (error) {
+      setSystemNotice({
+        title: "新建创意失败",
+        message: error instanceof Error ? error.message : "创意未写入后端。",
+      });
+    }
   }
 
   function requestDeleteIdea(ideaId: string) {
@@ -4854,7 +5057,7 @@ function App() {
     setPendingDeleteIdeaId(ideaId);
   }
 
-  function handleConfirmDeleteIdea() {
+  async function handleConfirmDeleteIdea() {
     if (!pendingDeleteIdeaId) return;
     const ideaId = pendingDeleteIdeaId;
     const idea = ideas.find((item) => item.id === ideaId);
@@ -4862,23 +5065,45 @@ function App() {
       setPendingDeleteIdeaId(null);
       return;
     }
-    const remaining = ideas.filter((item) => item.id !== ideaId);
-    if (remaining.length === 0) {
-      const fallback = { ...initialIdeas[0], id: makeId("I"), updatedAt: nowTime() };
-      setIdeas([fallback]);
-      setActiveIdeaId(fallback.id);
+    try {
+      await deleteStudentIdea(ideaId);
+      let remaining = ideas.filter((item) => item.id !== ideaId);
+      if (remaining.length === 0) {
+        const saved = await createStudentIdea({
+          title: "新的创业创意",
+          description: "请在聊天框中描述目标用户、问题场景和你希望验证的商业假设。",
+          stage: "新建创意",
+        });
+        remaining = [mapRemoteIdea(saved)];
+      }
+      setIdeas(remaining);
+      setMessages((current) => current.filter((message) => message.ideaId !== ideaId));
+      setStudentConversations((current) => current.filter((conversation) => conversation.ideaId !== ideaId));
+      if (activeIdeaId === ideaId) {
+        setActiveIdeaId(remaining[0].id);
+        applyConversationSettings(remaining[0].id);
+      }
       setPendingDeleteIdeaId(null);
-      return;
+    } catch (error) {
+      setSystemNotice({
+        title: "删除创意失败",
+        message: error instanceof Error ? error.message : "创意仍保留在后端。",
+      });
     }
-    setIdeas(remaining);
-    if (activeIdeaId === ideaId) setActiveIdeaId(remaining[0].id);
-    setPendingDeleteIdeaId(null);
   }
 
-  function handleRenameIdea(ideaId: string, nextTitle: string) {
+  async function handleRenameIdea(ideaId: string, nextTitle: string) {
     const title = nextTitle.trim();
     if (!title) return;
-    setIdeas((current) => current.map((idea) => (idea.id === ideaId ? { ...idea, title, updatedAt: nowTime() } : idea)));
+    try {
+      const saved = await updateStudentIdea(ideaId, { title });
+      setIdeas((current) => current.map((idea) => (idea.id === ideaId ? mapRemoteIdea(saved) : idea)));
+    } catch (error) {
+      setSystemNotice({
+        title: "重命名失败",
+        message: error instanceof Error ? error.message : "创意名称未写入后端。",
+      });
+    }
   }
 
   function handleStudentKnowledgeSelectionChange(selection: StudentKnowledgeSelection) {
@@ -4997,6 +5222,7 @@ function App() {
       createdAt: nowTime(),
     };
     setMessages((current) => [...current, userMessage]);
+    persistStudentMessage(userMessage);
     setPrompt("");
     const round = getExpertDialogueRound(messages, activeIdea.id, selectedExpert.id);
     const artifactType = getArtifactType(selectedExpert.id);
@@ -5039,11 +5265,22 @@ function App() {
         createdAt: nowTime(),
       };
       setMessages((current) => [...current, aiMessage]);
+      persistStudentMessage(aiMessage);
       setIdeas((current) =>
         current.map((idea) =>
           idea.id === activeIdea.id ? { ...idea, stage: selectedSkill.stage, updatedAt: aiMessage.createdAt } : idea,
         ),
       );
+      updateStudentIdea(activeIdea.id, { stage: selectedSkill.stage })
+        .then((saved) => {
+          setIdeas((current) => current.map((idea) => (idea.id === saved.id ? mapRemoteIdea(saved) : idea)));
+        })
+        .catch((error) => {
+          setSystemNotice({
+            title: "创意阶段保存失败",
+            message: error instanceof Error ? error.message : "生成结果已保留，但当前阶段暂未同步。",
+          });
+        });
       setIsGenerating(false);
     }, getChatGenerationDelay(selectedExpert.id, shouldOutput));
   }
