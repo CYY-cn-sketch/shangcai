@@ -47,6 +47,19 @@ import {
   type AdminGroup,
 } from "./api/admin";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
+import {
+  deleteStudentSubmission,
+  listStudentArtifacts,
+  listStudentSubmissions,
+  listTeacherSubmissions,
+  recordArtifactClientDownload,
+  reviewTeacherSubmission,
+  saveStudentArtifact,
+  submitStudentArtifact,
+  withdrawStudentSubmission,
+  type RemoteArtifact,
+  type RemoteSubmission,
+} from "./api/artifacts";
 import { requestLexiangPptContext, submitWorkBuddyRun } from "./api/provider";
 import {
   appendStudentMessage,
@@ -1291,6 +1304,7 @@ type WordPreview = { title: string; blocks: ResultBlock[] };
 
 type Submission = {
   id: string;
+  artifactId: string;
   ideaId: string;
   student: string;
   group: string;
@@ -2556,6 +2570,47 @@ function mapRemoteMessage(message: RemoteConversationMessage): ChatMessage {
     content: message.content,
     blocks: normalizeRemoteBlocks(message.blocks),
     createdAt: formatWorkspaceTime(message.createdAt),
+  };
+}
+
+function formatRemoteDateTime(value?: string) {
+  if (!value) return undefined;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function mapRemoteSubmission(submission: RemoteSubmission): Submission {
+  const statusMap: Record<RemoteSubmission["status"], SubmissionStatus> = {
+    PENDING: "pending",
+    APPROVED: "approved",
+    REVISION: "revision",
+    WITHDRAWN: "withdrawn",
+  };
+  return {
+    id: submission.id,
+    artifactId: submission.artifactId,
+    ideaId: submission.ideaId,
+    student: submission.student,
+    group: submission.group,
+    groupName: submission.groupName,
+    artifactType: isArtifactType(submission.artifactType) ? submission.artifactType : "BP",
+    artifactTitle: submission.artifactTitle,
+    artifactSummary: submission.artifactSummary,
+    blocks: normalizeRemoteBlocks(submission.content) || [],
+    status: statusMap[submission.status],
+    submittedAt: formatRemoteDateTime(submission.submittedAt) || submission.submittedAt,
+    reviewedAt: formatRemoteDateTime(submission.reviewedAt),
+    teacherComment: submission.teacherComment,
+    sourceMessageId: submission.sourceMessageId,
+    isExcellent: submission.excellent,
   };
 }
 
@@ -4661,7 +4716,8 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [studentConversations, setStudentConversations] = useState<RemoteStudentConversation[]>([]);
   const [studentWorkspaceAccount, setStudentWorkspaceAccount] = useState<string | null>(null);
-  const [submissions, setSubmissions] = useState<Submission[]>(() => readStored("sufe-submissions", []));
+  const [artifactRecords, setArtifactRecords] = useState<RemoteArtifact[]>([]);
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [studentGroups, setStudentGroups] = useState<StudentGroup[]>(initialStudentGroups);
   const [accountRecords, setAccountRecords] = useState<AccountRecord[]>(() => normalizeAccountRecords(initialAccountRecords, initialStudentGroups));
   const [studentProfiles, setStudentProfiles] = useState<StudentProfileState>(() => readStored<StudentProfileState>("sufe-student-profiles", {}));
@@ -4696,7 +4752,7 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [studentView, setStudentView] = useState<StudentViewMode>("workspace");
   const [teacherFilter, setTeacherFilter] = useState<ArtifactType | "ALL">("ALL");
-  const [activeSubmissionId, setActiveSubmissionId] = useState<string>(() => readStored<Submission[]>("sufe-submissions", [])[0]?.id || "");
+  const [activeSubmissionId, setActiveSubmissionId] = useState("");
   const [teacherComment, setTeacherComment] = useState(getDefaultTeacherComment());
   const [teacherStatusFilter, setTeacherStatusFilter] = useState<SubmissionStatus | "ALL">("ALL");
   const [generatedAssets, setGeneratedAssets] = useState<GeneratedAsset[]>(() => readStored<GeneratedAsset[]>("sufe-generated-assets", []));
@@ -4762,6 +4818,7 @@ function App() {
     localStorage.removeItem("sufe-ideas");
     localStorage.removeItem("sufe-messages");
     localStorage.removeItem("sufe-active-idea");
+    localStorage.removeItem("sufe-submissions");
     loadCurrentAuth()
       .then((session) => {
         if (!active || !session) return;
@@ -4780,6 +4837,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!auth) return;
+    window.requestAnimationFrame(() => window.scrollTo(0, 0));
+  }, [auth?.account]);
+
+  useEffect(() => {
     if (!auth || auth.role !== "student") {
       setStudentWorkspaceAccount(null);
       return undefined;
@@ -4789,7 +4851,11 @@ function App() {
 
     async function restoreStudentWorkspace() {
       try {
-        let workspace = await loadStudentWorkspace();
+        let [workspace, remoteArtifacts, remoteSubmissions] = await Promise.all([
+          loadStudentWorkspace(),
+          listStudentArtifacts(),
+          listStudentSubmissions(),
+        ]);
         if (workspace.ideas.length === 0) {
           const idea = await createStudentIdea({
             title: "新的创业创意",
@@ -4806,6 +4872,8 @@ function App() {
         setIdeas(nextIdeas);
         setMessages(workspace.conversations.flatMap((conversation) => conversation.messages.map(mapRemoteMessage)));
         setStudentConversations(workspace.conversations);
+        setArtifactRecords(remoteArtifacts);
+        setSubmissions(remoteSubmissions.map(mapRemoteSubmission));
         setActiveIdeaId(nextActiveIdea.id);
         if (activeConversation) {
           setSelectedExpertId(activeConversation.selectedExpertId);
@@ -4826,6 +4894,28 @@ function App() {
     }
 
     restoreStudentWorkspace();
+    return () => {
+      active = false;
+    };
+  }, [auth?.account, auth?.role]);
+
+  useEffect(() => {
+    if (!auth || auth.role !== "teacher") return undefined;
+    let active = true;
+    listTeacherSubmissions()
+      .then((items) => {
+        if (!active) return;
+        const mapped = items.map(mapRemoteSubmission);
+        setSubmissions(mapped);
+        setActiveSubmissionId(mapped[0]?.id || "");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setSystemNotice({
+          title: "审核列表同步失败",
+          message: error instanceof Error ? error.message : "暂时无法读取学生提交记录。",
+        });
+      });
     return () => {
       active = false;
     };
@@ -4869,7 +4959,6 @@ function App() {
   ]);
 
   useEffect(() => localStorage.setItem("sufe-role", role), [role]);
-  useEffect(() => localStorage.setItem("sufe-submissions", JSON.stringify(submissions)), [submissions]);
   useEffect(() => localStorage.setItem("sufe-student-profiles", JSON.stringify(studentProfiles)), [studentProfiles]);
   useEffect(() => localStorage.setItem("sufe-knowledge-uploads", JSON.stringify(knowledgeUploads)), [knowledgeUploads]);
   useEffect(() => localStorage.setItem("sufe-knowledge-base-catalog", JSON.stringify(knowledgeCatalog)), [knowledgeCatalog]);
@@ -4994,29 +5083,50 @@ function App() {
     return conversation.selectedExpertId;
   }
 
-  function persistStudentMessage(message: ChatMessage) {
-    if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account) return;
-    appendStudentMessage(message.ideaId, {
-      clientMessageId: message.id,
-      sender: message.sender === "ai" ? "AI" : "USER",
-      inputMode: message.mode,
-      expertId: message.expertId,
-      expertName: message.expertName,
-      skillName: message.skillName,
-      artifactType: message.artifactType,
-      content: message.content,
-      blocks: message.blocks,
-    })
-      .then((saved) => {
-        const persisted = mapRemoteMessage(saved);
-        setMessages((current) => current.map((item) => (item.id === message.id ? persisted : item)));
-      })
-      .catch((error) => {
-        setSystemNotice({
-          title: "对话消息保存失败",
-          message: error instanceof Error ? error.message : "当前消息暂未写入后端。",
-        });
+  async function persistStudentMessage(message: ChatMessage) {
+    if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account) return null;
+    try {
+      const saved = await appendStudentMessage(message.ideaId, {
+        clientMessageId: message.id,
+        sender: message.sender === "ai" ? "AI" : "USER",
+        inputMode: message.mode,
+        expertId: message.expertId,
+        expertName: message.expertName,
+        skillName: message.skillName,
+        artifactType: message.artifactType,
+        content: message.content,
+        blocks: message.blocks,
       });
+      const persisted = mapRemoteMessage(saved);
+      setMessages((current) => current.map((item) => (item.id === message.id ? persisted : item)));
+      return persisted;
+    } catch (error) {
+      setSystemNotice({
+        title: "对话消息保存失败",
+        message: error instanceof Error ? error.message : "当前消息暂未写入后端。",
+      });
+      return null;
+    }
+  }
+
+  async function saveMessageArtifact(message: ChatMessage) {
+    if (!isArtifactType(message.artifactType) || !message.blocks) return null;
+    const idea = ideas.find((item) => item.id === message.ideaId) || activeIdea;
+    const saved = await saveStudentArtifact({
+      ideaId: message.ideaId,
+      sourceMessageId: message.id,
+      artifactType: message.artifactType,
+      title: `${idea.title} - ${artifactLabels[message.artifactType]}`,
+      summary: message.content,
+      content: message.blocks,
+    });
+    setArtifactRecords((current) => {
+      const exists = current.some((item) => item.id === saved.id || item.sourceMessageId === saved.sourceMessageId);
+      return exists
+        ? current.map((item) => (item.id === saved.id || item.sourceMessageId === saved.sourceMessageId ? saved : item))
+        : [saved, ...current];
+    });
+    return saved;
   }
 
   function handleSelectIdea(ideaId: string) {
@@ -5222,7 +5332,7 @@ function App() {
       createdAt: nowTime(),
     };
     setMessages((current) => [...current, userMessage]);
-    persistStudentMessage(userMessage);
+    void persistStudentMessage(userMessage);
     setPrompt("");
     const round = getExpertDialogueRound(messages, activeIdea.id, selectedExpert.id);
     const artifactType = getArtifactType(selectedExpert.id);
@@ -5265,7 +5375,15 @@ function App() {
         createdAt: nowTime(),
       };
       setMessages((current) => [...current, aiMessage]);
-      persistStudentMessage(aiMessage);
+      void persistStudentMessage(aiMessage).then((persisted) => {
+        if (!persisted?.artifactType || !persisted.blocks) return;
+        saveMessageArtifact(persisted).catch((error) => {
+          setSystemNotice({
+            title: "成果记录保存失败",
+            message: error instanceof Error ? error.message : "生成结果已保留，但成果记录暂未写入后端。",
+          });
+        });
+      });
       setIdeas((current) =>
         current.map((idea) =>
           idea.id === activeIdea.id ? { ...idea, stage: selectedSkill.stage, updatedAt: aiMessage.createdAt } : idea,
@@ -5366,6 +5484,16 @@ function App() {
         blockPermission("下载个人成果");
         return;
       }
+      try {
+        const artifact = artifactRecords.find((item) => item.sourceMessageId === message.id) || (await saveMessageArtifact(message));
+        if (artifact) await recordArtifactClientDownload(artifact.id);
+      } catch (error) {
+        setSystemNotice({
+          title: "成果下载准备失败",
+          message: error instanceof Error ? error.message : "暂时无法记录本次下载，请稍后再试。",
+        });
+        return;
+      }
       if (message.artifactType === "PPT") {
         downloadPptAsset(generatedAssets.find((asset) => asset.type === "PPT" && asset.sourceMessageId === message.id));
         return;
@@ -5417,7 +5545,7 @@ function App() {
     setMediaDraft(cached || buildMediaAsset(activeIdea, message));
   }
 
-  function handleSubmitMessage(message: ChatMessage) {
+  async function handleSubmitMessage(message: ChatMessage) {
     if (!canUsePermission("提交老师审核")) {
       blockPermission("提交老师审核");
       return;
@@ -5428,30 +5556,21 @@ function App() {
       setSystemNotice({ title: "暂时不能提交", message: "当前学生账号尚未分配项目小组，请先联系管理员在管理端完成小组分配。" });
       return;
     }
-    const submission: Submission = {
-      id: makeId("S"),
-      ideaId: message.ideaId,
-      student: studentIdentity.student,
-      group: studentIdentity.group,
-      groupName: studentIdentity.groupName,
-      artifactType: message.artifactType,
-      artifactTitle: `${activeIdea.title} - ${artifactLabels[message.artifactType]}`,
-      artifactSummary: message.content,
-      blocks: message.blocks,
-      status: "pending",
-      submittedAt: nowDateTime(),
-      sourceMessageId: message.id,
-    };
-    setSubmissions((current) => {
-      const exists = current.find((item) => item.sourceMessageId === message.id);
-      if (!exists) return [submission, ...current];
-      return current.map((item) =>
-        item.sourceMessageId === message.id
-          ? { ...submission, id: item.id, submittedAt: nowDateTime(), status: "pending", teacherComment: undefined, reviewedAt: undefined }
-          : item,
-      );
-    });
-    setStudentView("feedback");
+    try {
+      const artifact = await saveMessageArtifact(message);
+      if (!artifact) return;
+      const submission = mapRemoteSubmission(await submitStudentArtifact(artifact.id));
+      setSubmissions((current) => {
+        const exists = current.some((item) => item.id === submission.id);
+        return exists ? current.map((item) => (item.id === submission.id ? submission : item)) : [submission, ...current];
+      });
+      setStudentView("feedback");
+    } catch (error) {
+      setSystemNotice({
+        title: "成果提交失败",
+        message: error instanceof Error ? error.message : "暂时无法提交老师审核。",
+      });
+    }
   }
 
   function handleSaveMediaAsset(asset: GeneratedAsset) {
@@ -5464,7 +5583,7 @@ function App() {
     setMediaDraft(normalized);
   }
 
-  function handleSaveDefense(practice: DefensePractice) {
+  async function handleSaveDefense(practice: DefensePractice) {
     if (!canUsePermission("答辩模拟")) {
       blockPermission("答辩模拟");
       return;
@@ -5479,31 +5598,33 @@ function App() {
         setSystemNotice({ title: "暂时不能保存", message: "当前学生账号尚未分配项目小组，请先联系管理员在管理端完成小组分配。" });
         return;
       }
-      setDefensePractices((current) => [practice, ...current]);
       const blocks = defenseBlocks(practice);
-      setSubmissions((current) => [
-        {
-          id: makeId("S"),
+      try {
+        const artifact = await saveStudentArtifact({
           ideaId: activeIdea.id,
-          student: studentIdentity.student,
-          group: studentIdentity.group,
-          groupName: studentIdentity.groupName,
+          sourceMessageId: practice.id,
           artifactType: "DEFENSE",
-          artifactTitle: `${activeIdea.title} - 答辩模拟记录`,
-          artifactSummary: "已基于 BP + PPT 生成 1/3/5 分钟演讲稿、评委压力测试问题和回答建议。",
-          blocks,
-          status: "pending",
-          submittedAt: practice.createdAt,
-        },
-        ...current,
-      ]);
-      setStudentView("feedback");
+          title: `${activeIdea.title} - 答辩模拟记录`,
+          summary: "已基于 BP + PPT 生成 1/3/5 分钟演讲稿、评委压力测试问题和回答建议。",
+          content: blocks,
+        });
+        const submission = mapRemoteSubmission(await submitStudentArtifact(artifact.id));
+        setArtifactRecords((current) => [artifact, ...current.filter((item) => item.id !== artifact.id)]);
+        setSubmissions((current) => [submission, ...current.filter((item) => item.id !== submission.id)]);
+        setDefensePractices((current) => [practice, ...current]);
+        setStudentView("feedback");
+      } catch (error) {
+        setSystemNotice({
+          title: "答辩记录提交失败",
+          message: error instanceof Error ? error.message : "暂时无法提交老师审核。",
+        });
+      }
       return;
     }
     setDefensePractices((current) => [practice, ...current]);
   }
 
-  function handleReviewSubmission(status: SubmissionStatus) {
+  async function handleReviewSubmission(status: SubmissionStatus) {
     if (!canUsePermission("提交审核中心")) {
       blockPermission("提交审核中心");
       return;
@@ -5513,51 +5634,70 @@ function App() {
       setSystemNotice({ title: "无法继续审核", message: "该成果已由学生撤回，无法继续审核。" });
       return;
     }
-    setSubmissions((current) =>
-      current.map((item) =>
-        item.id === activeSubmission.id
-          ? { ...item, status, teacherComment, reviewedAt: nowTime() }
-          : item,
-      ),
-    );
+    try {
+      const statusMap: Record<Exclude<SubmissionStatus, "withdrawn">, "PENDING" | "APPROVED" | "REVISION"> = {
+        pending: "PENDING",
+        approved: "APPROVED",
+        revision: "REVISION",
+      };
+      if (status === "withdrawn") return;
+      const saved = mapRemoteSubmission(await reviewTeacherSubmission(activeSubmission.id, {
+        status: statusMap[status],
+        teacherComment,
+      }));
+      setSubmissions((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+    } catch (error) {
+      setSystemNotice({ title: "审核保存失败", message: error instanceof Error ? error.message : "暂时无法保存审核结果。" });
+    }
   }
 
-  function handleSaveTeacherComment(submissionId: string, comment: string) {
+  async function handleSaveTeacherComment(submissionId: string, comment: string) {
     if (!canUsePermission("节点解答与指导")) {
       blockPermission("节点解答与指导");
       return;
     }
-    setSubmissions((current) =>
-      current.map((item) =>
-        item.id === submissionId
-          ? { ...item, teacherComment: comment.trim() || getDefaultTeacherComment(item), reviewedAt: nowTime() }
-          : item,
-      ),
-    );
+    const currentSubmission = submissions.find((item) => item.id === submissionId);
+    try {
+      const saved = mapRemoteSubmission(await reviewTeacherSubmission(submissionId, {
+        teacherComment: comment.trim() || getDefaultTeacherComment(currentSubmission),
+      }));
+      setSubmissions((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+    } catch (error) {
+      setSystemNotice({ title: "评语保存失败", message: error instanceof Error ? error.message : "暂时无法保存教师评语。" });
+    }
   }
 
-  function handleWithdrawSubmission(submissionId: string) {
-    setSubmissions((current) =>
-      current.map((item) =>
-        item.id === submissionId
-          ? { ...item, status: "withdrawn", teacherComment: "学生已撤回本次提交。", reviewedAt: nowTime() }
-          : item,
-      ),
-    );
+  async function handleWithdrawSubmission(submissionId: string) {
+    try {
+      const saved = mapRemoteSubmission(await withdrawStudentSubmission(submissionId));
+      setSubmissions((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+    } catch (error) {
+      setSystemNotice({ title: "撤回失败", message: error instanceof Error ? error.message : "暂时无法撤回本次提交。" });
+    }
   }
 
-  function handleDeleteWithdrawnSubmission(submissionId: string) {
-    setSubmissions((current) => current.filter((item) => item.id !== submissionId || item.status !== "withdrawn"));
+  async function handleDeleteWithdrawnSubmission(submissionId: string) {
+    try {
+      await deleteStudentSubmission(submissionId);
+      setSubmissions((current) => current.filter((item) => item.id !== submissionId));
+    } catch (error) {
+      setSystemNotice({ title: "删除失败", message: error instanceof Error ? error.message : "暂时无法删除撤回记录。" });
+    }
   }
 
-  function handleToggleExcellent(submissionId: string) {
+  async function handleToggleExcellent(submissionId: string) {
     if (!canUsePermission("优秀成果标记")) {
       blockPermission("优秀成果标记");
       return;
     }
-    setSubmissions((current) =>
-      current.map((item) => (item.id === submissionId ? { ...item, isExcellent: !item.isExcellent } : item)),
-    );
+    const submission = submissions.find((item) => item.id === submissionId);
+    if (!submission) return;
+    try {
+      const saved = mapRemoteSubmission(await reviewTeacherSubmission(submissionId, { excellent: !submission.isExcellent }));
+      setSubmissions((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+    } catch (error) {
+      setSystemNotice({ title: "标记失败", message: error instanceof Error ? error.message : "暂时无法更新优秀成果标记。" });
+    }
   }
 
   function handleJumpPending() {

@@ -8,6 +8,12 @@ import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.artifact.domain.ArtifactRecord;
+import com.sufe.ai.artifact.domain.ArtifactSubmission;
+import com.sufe.ai.artifact.repository.ArtifactRecordRepository;
+import com.sufe.ai.artifact.repository.ArtifactSubmissionRepository;
+import com.sufe.ai.workspace.domain.StudentIdea;
+import com.sufe.ai.workspace.repository.StudentIdeaRepository;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
@@ -26,19 +32,28 @@ public class DemoDataInitializer implements ApplicationRunner {
     private final UserAccountRepository userAccountRepository;
     private final ProjectGroupRepository projectGroupRepository;
     private final GroupMembershipRepository groupMembershipRepository;
+    private final StudentIdeaRepository studentIdeaRepository;
+    private final ArtifactRecordRepository artifactRecordRepository;
+    private final ArtifactSubmissionRepository artifactSubmissionRepository;
 
     public DemoDataInitializer(
             BootstrapProperties properties,
             PasswordEncoder passwordEncoder,
             UserAccountRepository userAccountRepository,
             ProjectGroupRepository projectGroupRepository,
-            GroupMembershipRepository groupMembershipRepository
+            GroupMembershipRepository groupMembershipRepository,
+            StudentIdeaRepository studentIdeaRepository,
+            ArtifactRecordRepository artifactRecordRepository,
+            ArtifactSubmissionRepository artifactSubmissionRepository
     ) {
         this.properties = properties;
         this.passwordEncoder = passwordEncoder;
         this.userAccountRepository = userAccountRepository;
         this.projectGroupRepository = projectGroupRepository;
         this.groupMembershipRepository = groupMembershipRepository;
+        this.studentIdeaRepository = studentIdeaRepository;
+        this.artifactRecordRepository = artifactRecordRepository;
+        this.artifactSubmissionRepository = artifactSubmissionRepository;
     }
 
     @Override
@@ -61,6 +76,7 @@ public class DemoDataInitializer implements ApplicationRunner {
         seedUser("A-STU-006", "student6@sufe.demo", passwordHash, UserRole.STUDENT, "黄雨桐", "商学院创业实践课学生", 220, "G-11");
         seedUser("A-TEA-001", "teacher@sufe.demo", passwordHash, UserRole.TEACHER, "周老师", "创业实践课程教师", 520, null);
         seedUser("A-ADM-001", "admin@sufe.demo", passwordHash, UserRole.ADMIN, "平台管理员", "教学平台运营管理员", 1500, null);
+        seedMidtermDemoData();
     }
 
     private void seedGroups() {
@@ -96,5 +112,43 @@ public class DemoDataInitializer implements ApplicationRunner {
         if (groupId != null && !groupMembershipRepository.existsByUserId(user.getId())) {
             groupMembershipRepository.save(GroupMembership.create("M-" + user.getId(), user.getId(), groupId));
         }
+    }
+
+    private void seedMidtermDemoData() {
+        UserAccount student = userAccountRepository.findByAccountIgnoreCase("student@sufe.demo").orElseThrow();
+        StudentIdea idea = studentIdeaRepository.findAllByUserIdOrderByUpdatedAtDesc(student.getId()).stream()
+                .filter(item -> item.getTitle().equals("AI 就业教练"))
+                .findFirst()
+                .orElseGet(() -> studentIdeaRepository.save(StudentIdea.create(
+                        student.getId(),
+                        "AI 就业教练",
+                        "面向商学院学生的求职准备与模拟面试辅助工具，验证课程场景中的真实使用价值。",
+                        "商业计划书 BP"
+                )));
+
+        ArtifactRecord artifact = artifactRecordRepository
+                .findByUserIdAndSourceMessageId(student.getId(), "demo-midterm-bp-v1")
+                .orElseGet(() -> artifactRecordRepository.save(ArtifactRecord.create(
+                        student.getId(),
+                        idea.getId(),
+                        "demo-midterm-bp-v1",
+                        "BP",
+                        "AI 就业教练 - 商业计划书 BP",
+                        "已完成问题定义、目标用户、解决方案、试点指标与阶段风险梳理。",
+                        "[{\"title\":\"中期成果摘要\",\"items\":[\"目标用户：商学院求职学生\",\"核心场景：课程内简历诊断与模拟面试\",\"试点指标：使用率、完成率、教师点评效率\"]}]"
+                )));
+        if (artifactSubmissionRepository.existsByArtifactId(artifact.getId())) {
+            return;
+        }
+
+        GroupMembership membership = groupMembershipRepository.findByUserId(student.getId()).orElseThrow();
+        ProjectGroup group = projectGroupRepository.findById(membership.getGroupId()).orElseThrow();
+        artifactSubmissionRepository.save(ArtifactSubmission.create(
+                artifact.getId(),
+                student.getId(),
+                student.getDisplayName(),
+                group.getGroupLabel(),
+                group.getProjectName()
+        ));
     }
 }
