@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import * as THREE from "three";
+import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
 import "./App.css";
 
 const sufeLogoSrc = "/demo-assets/sufe-logo.png";
@@ -843,11 +844,7 @@ type AuthSession = {
   groupName?: string;
 };
 
-type DemoAccount = AuthSession & {
-  password: string;
-};
-
-type AccountRecord = DemoAccount & {
+type AccountRecord = AuthSession & {
   id: string;
   groupOrScope: string;
   groupId?: string;
@@ -856,7 +853,7 @@ type AccountRecord = DemoAccount & {
   permissions: string[];
   disabledPermissions?: string[];
   quota: number;
-  status: "已开通" | "已停用";
+  status: "已开通" | "已停用" | "待后端开通";
 };
 
 type StudentGroup = {
@@ -1468,11 +1465,11 @@ const rubricDimensions = [
   ["团队协作", "分工、迭代记录和课堂参与度", 10],
 ] as const;
 
-const demoAccounts: DemoAccount[] = [
-  { role: "student", name: "陈思源", account: "student@sufe.demo", password: "123456", title: "商学院创业实践课学生" },
-  { role: "student", name: "李若涵", account: "student2@sufe.demo", password: "123456", title: "商学院创业实践课学生" },
-  { role: "teacher", name: "周老师", account: "teacher@sufe.demo", password: "123456", title: "创业实践课程教师" },
-  { role: "admin", name: "平台管理员", account: "admin@sufe.demo", password: "123456", title: "教学平台运营管理员" },
+const demoAccounts: AuthSession[] = [
+  { role: "student", name: "陈思源", account: "student@sufe.demo", title: "商学院创业实践课学生" },
+  { role: "student", name: "李若涵", account: "student2@sufe.demo", title: "商学院创业实践课学生" },
+  { role: "teacher", name: "周老师", account: "teacher@sufe.demo", title: "创业实践课程教师" },
+  { role: "admin", name: "平台管理员", account: "admin@sufe.demo", title: "教学平台运营管理员" },
 ];
 
 const studentExpertPermissionNames = [
@@ -1510,7 +1507,6 @@ const extraDemoStudentAccounts: AccountRecord[] = [
     role: "student",
     name: "王梓萱",
     account: "student3@sufe.demo",
-    password: "123456",
     title: "商学院创业实践课学生",
     groupOrScope: "第 11 组 / 校园创业资源导航",
     groupId: "G-11",
@@ -1525,7 +1521,6 @@ const extraDemoStudentAccounts: AccountRecord[] = [
     role: "student",
     name: "赵一诺",
     account: "student4@sufe.demo",
-    password: "123456",
     title: "商学院创业实践课学生",
     groupOrScope: "第 11 组 / 校园创业资源导航",
     groupId: "G-11",
@@ -1540,7 +1535,6 @@ const extraDemoStudentAccounts: AccountRecord[] = [
     role: "student",
     name: "林嘉诚",
     account: "student5@sufe.demo",
-    password: "123456",
     title: "商学院创业实践课学生",
     groupOrScope: "第 11 组 / 校园创业资源导航",
     groupId: "G-11",
@@ -1555,7 +1549,6 @@ const extraDemoStudentAccounts: AccountRecord[] = [
     role: "student",
     name: "黄雨桐",
     account: "student6@sufe.demo",
-    password: "123456",
     title: "商学院创业实践课学生",
     groupOrScope: "第 11 组 / 校园创业资源导航",
     groupId: "G-11",
@@ -1573,7 +1566,6 @@ const initialAccountRecords: AccountRecord[] = [
     role: "student",
     name: "陈思源",
     account: "student@sufe.demo",
-    password: "123456",
     title: "商学院创业实践课学生",
     groupOrScope: "第 3 组 / AI 就业教练",
     groupId: "G-03",
@@ -1588,7 +1580,6 @@ const initialAccountRecords: AccountRecord[] = [
     role: "student",
     name: "李若涵",
     account: "student2@sufe.demo",
-    password: "123456",
     title: "商学院创业实践课学生",
     groupOrScope: "第 4 组 / 商科案例共创库",
     groupId: "G-04",
@@ -1604,7 +1595,6 @@ const initialAccountRecords: AccountRecord[] = [
     role: "teacher",
     name: "周老师",
     account: "teacher@sufe.demo",
-    password: "123456",
     title: "创业实践课程教师",
     groupOrScope: "创业实践课 / 10 个项目组",
     permissions: ["提交审核中心", "节点解答与指导", "优秀成果标记", "上传教学资料"],
@@ -1616,7 +1606,6 @@ const initialAccountRecords: AccountRecord[] = [
     role: "admin",
     name: "平台管理员",
     account: "admin@sufe.demo",
-    password: "123456",
     title: "教学平台运营管理员",
     groupOrScope: "全平台运营",
     permissions: ["账号权限管理", "知识库维护", "专家提示词管理", "试点数据看板"],
@@ -1673,7 +1662,9 @@ function resolveAccountGroup(account: Pick<AccountRecord, "groupId" | "groupLabe
 }
 
 function normalizeAccountRecords(records: AccountRecord[], groups: StudentGroup[] = initialStudentGroups) {
-  return records.map((account) => {
+  return records.map((storedAccount) => {
+    const account = { ...storedAccount } as AccountRecord & { password?: unknown };
+    delete account.password;
     const hasExpertPermissions = account.permissions.some((permission) => studentExpertPermissionNames.includes(permission));
     const defaultPermissions = account.role === "student" ? studentExpertPermissionNames : [];
     const basePermissions = account.role === "student" && !hasExpertPermissions ? defaultPermissions : account.permissions;
@@ -1696,23 +1687,12 @@ function normalizeAccountRecords(records: AccountRecord[], groups: StudentGroup[
   });
 }
 
-function buildAuthSession(account: DemoAccount | AccountRecord, groups: StudentGroup[]): AuthSession {
-  const group = "groupOrScope" in account ? resolveAccountGroup(account, groups) : {};
-  return {
-    role: account.role,
-    name: account.name,
-    account: account.account,
-    title: account.title,
-    ...group,
-  };
-}
-
 function getStudentIdentity(auth: AuthSession | null, account?: AccountRecord) {
   const parsed = parseGroupScope(account?.groupOrScope);
-  const groupLabel = account?.groupLabel || auth?.groupLabel || parsed.groupLabel || "";
-  const groupName = account?.groupName || auth?.groupName || parsed.groupName || "";
+  const groupLabel = auth?.groupLabel || account?.groupLabel || parsed.groupLabel || "";
+  const groupName = auth?.groupName || account?.groupName || parsed.groupName || "";
   return {
-    student: account?.name || auth?.name || "演示学生",
+    student: auth?.name || account?.name || "演示学生",
     group: groupLabel,
     groupName,
     hasGroup: Boolean(groupLabel),
@@ -4593,8 +4573,9 @@ function downloadKnowledgeAsset(asset: KnowledgeUpload) {
 }
 
 function App() {
-  const [auth, setAuth] = useState<AuthSession | null>(() => readStored<AuthSession | null>("sufe-auth", null));
-  const [role, setRole] = useState<Role>(() => auth?.role || readStored<Role>("sufe-role", "student"));
+  const [auth, setAuth] = useState<AuthSession | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [role, setRole] = useState<Role>(() => readStored<Role>("sufe-role", "student"));
   const [ideas, setIdeas] = useState<Idea[]>(() => readStored("sufe-ideas", initialIdeas));
   const [messages, setMessages] = useState<ChatMessage[]>(() => readStored("sufe-messages", initialMessages));
   const [submissions, setSubmissions] = useState<Submission[]>(() => readStored("sufe-submissions", []));
@@ -4697,6 +4678,26 @@ function App() {
   const currentAccountDisabled = activeAccountRecord?.status === "已停用";
   const disabledPermissionNames = activeAccountRecord?.disabledPermissions || [];
 
+  useEffect(() => {
+    let active = true;
+    localStorage.removeItem("sufe-auth");
+    loadCurrentAuth()
+      .then((session) => {
+        if (!active || !session) return;
+        setAuth(session);
+        setRole(session.role);
+      })
+      .catch(() => {
+        // 登录页会在用户主动登录时展示明确的连接错误。
+      })
+      .finally(() => {
+        if (active) setAuthReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => localStorage.setItem("sufe-role", role), [role]);
   useEffect(() => localStorage.setItem("sufe-ideas", JSON.stringify(ideas)), [ideas]);
   useEffect(() => localStorage.setItem("sufe-messages", JSON.stringify(messages)), [messages]);
@@ -4745,14 +4746,8 @@ function App() {
       return changed ? next : current;
     });
   }, [knowledgeCatalog]);
-  useEffect(() => {
-    if (auth) localStorage.setItem("sufe-auth", JSON.stringify(auth));
-    else localStorage.removeItem("sufe-auth");
-  }, [auth]);
-
-  function handleLogin(account: AuthSession) {
-    const latestAccount = accountRecords.find((item) => item.account === account.account);
-    const session = latestAccount ? buildAuthSession(latestAccount, studentGroups) : account;
+  async function handleLogin(account: string, password: string) {
+    const session = await loginWithPassword(account, password);
     setAuth(session);
     setRole(session.role);
   }
@@ -4761,14 +4756,31 @@ function App() {
     setIsLogoutConfirmOpen(true);
   }
 
-  function handleConfirmLogout() {
+  async function handleConfirmLogout() {
     setIsLogoutConfirmOpen(false);
-    setAuth(null);
+    try {
+      await logoutRemoteSession();
+      setAuth(null);
+    } catch (error) {
+      setSystemNotice({
+        title: "退出登录失败",
+        message: error instanceof Error ? error.message : "服务器暂时无法结束当前会话，请稍后重试。",
+      });
+    }
   }
 
-  function handleSaveStudentProfile(nextProfile: { name: string; password: string; avatarId: StudentAvatarId }) {
-    if (!auth || auth.role !== "student") return;
-    const nextName = nextProfile.name.trim() || auth.name;
+  async function handleSaveStudentProfile(nextProfile: {
+    name: string;
+    currentPassword?: string;
+    newPassword?: string;
+    avatarId: StudentAvatarId;
+  }) {
+    if (!auth || auth.role !== "student") throw new Error("当前登录状态无效，请重新登录。");
+    const session = await updateAuthProfile({
+      displayName: nextProfile.name,
+      currentPassword: nextProfile.currentPassword,
+      newPassword: nextProfile.newPassword,
+    });
     setStudentProfiles((current) => ({
       ...current,
       [auth.account]: { avatarId: nextProfile.avatarId },
@@ -4778,15 +4790,20 @@ function App() {
         account.account === auth.account
           ? {
               ...account,
-              name: nextName,
-              password: nextProfile.password || account.password,
+              name: session.name,
             }
           : account,
       ),
     );
-    setAuth((current) => (current && current.account === auth.account ? { ...current, name: nextName } : current));
+    setAuth(session);
+    setRole(session.role);
     setIsProfileSettingsOpen(false);
-    setSystemNotice({ title: "个人资料已更新", message: "头像、昵称和密码设置已保存，并已同步到当前学生端展示。" });
+    setSystemNotice({
+      title: "个人资料已更新",
+      message: nextProfile.newPassword
+        ? "头像和昵称已保存，登录密码已由平台安全更新。"
+        : "头像和昵称已保存，并已同步到当前学生端展示。",
+    });
   }
 
   function canUsePermission(permission: string) {
@@ -5340,6 +5357,7 @@ function App() {
     setPrompt(getScenarioPrompt(expert.id, activeIdea));
   }
 
+  if (!authReady) return <AuthLoadingView />;
   if (!auth) return <LoginView accountRecords={accountRecords} studentGroups={studentGroups} onLogin={handleLogin} />;
 
   return (
@@ -5553,7 +5571,7 @@ function App() {
   );
 }
 
-function LogoutConfirmModal(props: { accountName: string; onCancel: () => void; onConfirm: () => void }) {
+function LogoutConfirmModal(props: { accountName: string; onCancel: () => void; onConfirm: () => void | Promise<void> }) {
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
       <section className="media-modal logout-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="logout-confirm-title">
@@ -5595,40 +5613,47 @@ function ProfileSettingsModal(props: {
   activeIdea: Idea;
   avatarId: StudentAvatarId;
   onClose: () => void;
-  onSave: (nextProfile: { name: string; password: string; avatarId: StudentAvatarId }) => void;
+  onSave: (nextProfile: {
+    name: string;
+    currentPassword?: string;
+    newPassword?: string;
+    avatarId: StudentAvatarId;
+  }) => Promise<void>;
 }) {
+  const { onClose } = props;
   const identity = getStudentIdentity(props.auth, props.account);
-  const currentPassword = props.account?.password || "";
   const [nameDraft, setNameDraft] = useState(props.account?.name || props.auth.name);
   const [avatarDraft, setAvatarDraft] = useState<StudentAvatarId>(props.avatarId);
-  const [oldPassword, setOldPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") props.onClose();
+      if (event.key === "Escape" && !isSaving) onClose();
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [props]);
+  }, [isSaving, onClose]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSaving) return;
     const nextName = nameDraft.trim();
-    const isPasswordChange = Boolean(oldPassword || newPassword || confirmPassword);
+    const isPasswordChange = Boolean(currentPassword || newPassword || confirmPassword);
     if (!nextName) {
       setError("姓名或昵称不能为空。");
       return;
     }
     if (isPasswordChange) {
-      if (oldPassword !== currentPassword) {
-        setError("原密码不正确。");
+      if (!currentPassword || !newPassword || !confirmPassword) {
+        setError("修改密码时请完整填写原密码、新密码和确认密码。");
         return;
       }
-      if (newPassword.trim().length < 4) {
-        setError("新密码至少需要 4 位。");
+      if (newPassword.length < 8) {
+        setError("新密码至少需要 8 位。");
         return;
       }
       if (newPassword !== confirmPassword) {
@@ -5636,15 +5661,30 @@ function ProfileSettingsModal(props: {
         return;
       }
     }
-    props.onSave({
-      name: nextName,
-      password: isPasswordChange ? newPassword : currentPassword,
-      avatarId: avatarDraft,
-    });
+    setIsSaving(true);
+    setError("");
+    try {
+      await props.onSave({
+        name: nextName,
+        currentPassword: isPasswordChange ? currentPassword : undefined,
+        newPassword: isPasswordChange ? newPassword : undefined,
+        avatarId: avatarDraft,
+      });
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "个人资料保存失败，请稍后重试。");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return createPortal(
-    <div className="modal-backdrop preview-modal-backdrop" role="presentation" onMouseDown={props.onClose}>
+    <div
+      className="modal-backdrop preview-modal-backdrop"
+      role="presentation"
+      onMouseDown={() => {
+        if (!isSaving) props.onClose();
+      }}
+    >
       <form
         className="media-modal profile-settings-modal"
         role="dialog"
@@ -5659,7 +5699,7 @@ function ProfileSettingsModal(props: {
             <h3 id="profile-settings-title">个人资料设置</h3>
             <p>设置头像、昵称和登录密码；账号作为登录标识，正式版不建议学生自行修改。</p>
           </div>
-          <button className="modal-close-button" type="button" aria-label="关闭个人资料设置" onClick={props.onClose}>
+          <button className="modal-close-button" type="button" aria-label="关闭个人资料设置" onClick={props.onClose} disabled={isSaving}>
             <X size={18} />
           </button>
         </header>
@@ -5711,7 +5751,7 @@ function ProfileSettingsModal(props: {
             <div className="profile-password-grid">
               <label>
                 <span>原密码</span>
-                <input type="password" value={oldPassword} onChange={(event) => setOldPassword(event.target.value)} autoComplete="current-password" />
+                <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" />
               </label>
               <label>
                 <span>新密码</span>
@@ -5735,12 +5775,12 @@ function ProfileSettingsModal(props: {
           </section>
         </div>
         <footer>
-          <button className="ghost-button" type="button" onClick={props.onClose}>
+          <button className="ghost-button" type="button" onClick={props.onClose} disabled={isSaving}>
             取消
           </button>
-          <button className="primary-button" type="submit">
+          <button className="primary-button" type="submit" disabled={isSaving} aria-busy={isSaving}>
             <CheckCircle2 size={16} />
-            保存设置
+            {isSaving ? "正在保存..." : "保存设置"}
           </button>
         </footer>
       </form>
@@ -5788,14 +5828,42 @@ function SystemNoticeModal(props: { notice: { title: string; message: string }; 
   );
 }
 
-function LoginView(props: { accountRecords: AccountRecord[]; studentGroups: StudentGroup[]; onLogin: (account: AuthSession) => void }) {
+function AuthLoadingView() {
+  return (
+    <main className="login-page">
+      <LoginThreeScene />
+      <div className="brand-block login-brand">
+        <SufeSeal />
+        <div>
+          <p>上海财经大学商学院</p>
+          <h1>AI 赋能创业实践教学示范平台</h1>
+        </div>
+      </div>
+      <section className="login-panel auth-loading-panel" aria-live="polite">
+        <ShieldCheck size={24} />
+        <strong>正在验证登录状态</strong>
+        <span>正在连接教学平台服务...</span>
+      </section>
+    </main>
+  );
+}
+
+function LoginView(props: {
+  accountRecords: AccountRecord[];
+  studentGroups: StudentGroup[];
+  onLogin: (account: string, password: string) => Promise<void>;
+}) {
   const visibleLoginRoles: Array<Extract<Role, "student" | "teacher">> = ["student", "teacher"];
   const [selectedRole, setSelectedRole] = useState<Extract<Role, "student" | "teacher">>("student");
-  const loginAccounts = normalizeAccountRecords(props.accountRecords.length ? props.accountRecords : initialAccountRecords, props.studentGroups);
+  const loginAccounts = normalizeAccountRecords(
+    props.accountRecords.length ? props.accountRecords : initialAccountRecords,
+    props.studentGroups,
+  ).filter((account) => account.status !== "待后端开通");
   const roleAccounts = loginAccounts.filter((account) => account.role === selectedRole);
   const [accountInput, setAccountInput] = useState(roleAccounts[0]?.account || "");
-  const [passwordInput, setPasswordInput] = useState("123456");
+  const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const selectedAccount =
     loginAccounts.find((account) => account.account === accountInput.trim()) || roleAccounts[0] || loginAccounts[0] || demoAccounts[0];
 
@@ -5803,20 +5871,26 @@ function LoginView(props: { accountRecords: AccountRecord[]; studentGroups: Stud
     const firstAccount = loginAccounts.find((account) => account.role === role) || loginAccounts[0] || demoAccounts[0];
     setSelectedRole(role);
     setAccountInput(firstAccount.account);
-    setPasswordInput(firstAccount.password);
+    setPasswordInput("");
     setLoginError("");
   }
 
-  function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleLoginSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const matched = loginAccounts.find(
-      (account) => account.account === accountInput.trim() && account.password === passwordInput,
-    );
-    if (!matched) {
-      setLoginError("账号或密码不正确，请检查演示账号。");
+    if (isLoggingIn) return;
+    if (!accountInput.trim() || !passwordInput) {
+      setLoginError("请输入账号和密码。");
       return;
     }
-    props.onLogin(buildAuthSession(matched, props.studentGroups));
+    setIsLoggingIn(true);
+    setLoginError("");
+    try {
+      await props.onLogin(accountInput.trim(), passwordInput);
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "登录失败，请稍后重试。");
+    } finally {
+      setIsLoggingIn(false);
+    }
   }
 
   return (
@@ -5882,12 +5956,12 @@ function LoginView(props: { accountRecords: AccountRecord[]; studentGroups: Stud
           <div className="login-account-card">
             <strong>{selectedAccount.name}</strong>
             <span>{selectedAccount.account}</span>
-            <p>{selectedAccount.title} · 演示密码 123456</p>
+            <p>{selectedAccount.title}</p>
           </div>
           {loginError && <p className="login-error">{loginError}</p>}
-          <button className="primary-button full" type="submit">
+          <button className="primary-button full" type="submit" aria-busy={isLoggingIn}>
             <ShieldCheck size={17} />
-            登录进入系统
+            {isLoggingIn ? "正在登录..." : "登录进入系统"}
           </button>
         </form>
       </section>
@@ -10535,7 +10609,6 @@ function AdminView(props: {
   const [newAccountRole, setNewAccountRole] = useState<Role>("student");
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLogin, setNewAccountLogin] = useState("");
-  const [newAccountPassword, setNewAccountPassword] = useState("123456");
   const [newAccountQuota, setNewAccountQuota] = useState("240");
   const [newAccountGroupId, setNewAccountGroupId] = useState(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
   const [newGroupLabel, setNewGroupLabel] = useState("");
@@ -10545,7 +10618,6 @@ function AdminView(props: {
   const [accountEditDraft, setAccountEditDraft] = useState({
     name: "",
     account: "",
-    password: "",
     quota: "",
     groupId: "",
   });
@@ -10581,7 +10653,6 @@ function AdminView(props: {
     setAccountEditDraft({
       name: account.name,
       account: account.account,
-      password: account.password,
       quota: String(account.quota),
       groupId: account.groupId || "",
     });
@@ -11215,7 +11286,6 @@ ${modeInstructions[promptMode]}
     const name = newAccountName.trim() || (newAccountRole === "student" ? `学生${accountRecords.length + 1}` : newAccountRole === "teacher" ? `教师${accountRecords.length + 1}` : `管理员${accountRecords.length + 1}`);
     const prefix = newAccountRole === "student" ? "student" : newAccountRole === "teacher" ? "teacher" : "admin";
     const loginAccount = newAccountLogin.trim() || `${prefix}${accountRecords.length + 1}@sufe.demo`;
-    const password = newAccountPassword.trim() || "123456";
     const quota = Math.max(0, Number.parseInt(newAccountQuota, 10) || getDefaultQuota(newAccountRole));
     const groupPatch = newAccountRole === "student" ? buildStudentGroupPatch(newAccountGroupId) : {};
     if (newAccountRole === "student" && !("groupId" in groupPatch)) {
@@ -11227,25 +11297,29 @@ ${modeInstructions[promptMode]}
       role: newAccountRole,
       name,
       account: loginAccount,
-      password,
       title: getRoleTitle(newAccountRole),
       groupOrScope: newAccountRole === "student" ? "待分配项目小组" : newAccountRole === "teacher" ? "待分配课程班级" : "平台运营范围",
       ...groupPatch,
       permissions: getDefaultPermissions(newAccountRole),
       quota,
-      status: "已开通",
+      status: "待后端开通",
     };
     setAccountRecords((current) => [next, ...current]);
     setSelectedAccountId(next.id);
     setNewAccountName("");
     setNewAccountLogin("");
-    setNewAccountPassword("123456");
     setNewAccountQuota(String(getDefaultQuota(newAccountRole)));
     setNewAccountGroupId(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
     setIsAccountCreateOpen(false);
+    setAccountSaveMessage("本地账号配置已创建；登录能力需等待后端账号管理接口接入后开通。");
   }
 
   function handleToggleAccountStatus(id: string) {
+    const target = accountRecords.find((account) => account.id === id);
+    if (target?.status === "待后端开通") {
+      setAccountSaveMessage("该账号尚未接入后端账号管理接口，当前不能开通登录。");
+      return;
+    }
     setAccountRecords((current) =>
       current.map((account) =>
         account.id === id ? { ...account, status: account.status === "已开通" ? "已停用" : "已开通" } : account,
@@ -11286,10 +11360,9 @@ ${modeInstructions[promptMode]}
     if (!accountDetail) return;
     const name = accountEditDraft.name.trim();
     const account = accountEditDraft.account.trim();
-    const password = accountEditDraft.password.trim();
     const quota = Math.max(0, Number.parseInt(accountEditDraft.quota, 10) || 0);
-    if (!name || !account || !password) {
-      setAccountSaveMessage("姓名、登录账号和演示密码不能为空。");
+    if (!name || !account) {
+      setAccountSaveMessage("姓名和登录账号不能为空。");
       return;
     }
     setAccountRecords((current) =>
@@ -11299,7 +11372,6 @@ ${modeInstructions[promptMode]}
               ...item,
               name,
               account,
-              password,
               quota,
               ...(item.role === "student" ? buildStudentGroupPatch(accountEditDraft.groupId) : {}),
             }
@@ -11418,7 +11490,7 @@ ${modeInstructions[promptMode]}
               <div className="account-table-toolbar admin-resource-toolbar">
                 <div>
                   <strong>账号权限管理</strong>
-                  <span>查看账号、密码、角色、权限、配额和状态，支持新增、编辑和删除账号</span>
+                  <span>当前停用、权限、编辑和删除仅作用于本地配置预览，不影响后端登录；正式账号接口接入后统一生效</span>
                 </div>
                 <button className="primary-button" type="button" onClick={() => setIsAccountCreateOpen(true)}>
                   <Save size={16} />
@@ -11430,7 +11502,7 @@ ${modeInstructions[promptMode]}
                 <span>姓名</span>
                 <span>角色</span>
                 <span>登录账号</span>
-                <span>演示密码</span>
+                <span>认证方式</span>
                 <span>调用配额</span>
                 <span>状态</span>
                 <span>操作</span>
@@ -11443,13 +11515,15 @@ ${modeInstructions[promptMode]}
                   </span>
                   <span>{account.role === "student" ? "学生端" : account.role === "teacher" ? "教师端" : "管理端"}</span>
                   <span title={account.account}>{account.account}</span>
-                  <span>{account.password}</span>
+                  <span>{account.status === "待后端开通" ? "待接入账号接口" : "本地配置预览"}</span>
                   <span>{account.quota} 次</span>
                   <span>
                     <button
                       className={`account-status-toggle ${account.status === "已开通" ? "enabled" : "disabled"}`}
                       type="button"
                       onClick={() => handleToggleAccountStatus(account.id)}
+                      disabled={account.status === "待后端开通"}
+                      title={account.status === "待后端开通" ? "需等待后端账号管理接口接入" : undefined}
                     >
                       {account.status}
                     </button>
@@ -12431,10 +12505,6 @@ ${modeInstructions[promptMode]}
                 <input value={newAccountLogin} onChange={(event) => setNewAccountLogin(event.target.value)} placeholder="输入登录账号，留空则自动生成" />
               </label>
               <label>
-                <span>演示密码</span>
-                <input value={newAccountPassword} onChange={(event) => setNewAccountPassword(event.target.value)} placeholder="默认 123456" />
-              </label>
-              <label>
                 <span>调用配额</span>
                 <input
                   min="0"
@@ -12459,6 +12529,10 @@ ${modeInstructions[promptMode]}
                 <span>{newAccountRole === "student" ? "默认可用专家" : "默认权限"}</span>
                 <strong>{getDefaultPermissions(newAccountRole).join("、")}</strong>
               </div>
+              <div className="account-create-permissions">
+                <span>登录能力</span>
+                <strong>仅创建本地配置，需等待后端账号管理接口接入后开通。</strong>
+              </div>
             </div>
             <footer className="context-actions">
               <button className="ghost-button" type="button" onClick={() => setIsAccountCreateOpen(false)}>
@@ -12466,7 +12540,7 @@ ${modeInstructions[promptMode]}
               </button>
               <button className="primary-button" type="button" onClick={handleCreateAccount}>
                 <Save size={16} />
-                开通账号
+                创建本地配置
               </button>
             </footer>
           </section>
@@ -12526,13 +12600,6 @@ ${modeInstructions[promptMode]}
                   />
                 </label>
                 <label>
-                  <span>演示密码</span>
-                  <input
-                    value={accountEditDraft.password}
-                    onChange={(event) => setAccountEditDraft((current) => ({ ...current, password: event.target.value }))}
-                  />
-                </label>
-                <label>
                   <span>调用配额</span>
                   <input
                     min="0"
@@ -12584,6 +12651,8 @@ ${modeInstructions[promptMode]}
                 className={`account-status-toggle ${accountDetail.status === "已开通" ? "enabled" : "disabled"}`}
                 type="button"
                 onClick={() => handleToggleAccountStatus(accountDetail.id)}
+                disabled={accountDetail.status === "待后端开通"}
+                title={accountDetail.status === "待后端开通" ? "需等待后端账号管理接口接入" : undefined}
               >
                 {accountDetail.status}
               </button>

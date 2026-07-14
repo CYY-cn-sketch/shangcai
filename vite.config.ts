@@ -47,6 +47,27 @@ function readJsonBody(req: IncomingMessage) {
   })
 }
 
+async function requireBackendSession(req: IncomingMessage, res: ServerResponse, backendTarget: string) {
+  const cookie = req.headers.cookie
+  if (!cookie) {
+    sendJson(res, 401, { code: 'UNAUTHORIZED', message: '请先登录' })
+    return false
+  }
+  try {
+    const response = await fetch(new URL('/api/auth/me', backendTarget), {
+      headers: { Accept: 'application/json', Cookie: cookie },
+    })
+    if (!response.ok) {
+      sendJson(res, 401, { code: 'UNAUTHORIZED', message: '登录状态已失效，请重新登录' })
+      return false
+    }
+    return true
+  } catch {
+    sendJson(res, 503, { code: 'AUTH_SERVICE_UNAVAILABLE', message: '认证服务暂时不可用' })
+    return false
+  }
+}
+
 function parseLexiangTargets(env: LexiangEnv): LexiangTarget[] {
   if (env.LEXIANG_TARGETS) {
     try {
@@ -282,11 +303,11 @@ async function requestLexiangPptContext(env: LexiangEnv, payload: LexiangPptPayl
   return { configured: true, content: result.data.content, references, ...generatedPpt }
 }
 
-function lexiangApiPlugin(env: LexiangEnv): Plugin {
+function lexiangApiPlugin(env: LexiangEnv, backendTarget: string): Plugin {
   return {
     name: 'lexiang-api',
     configureServer(server) {
-      server.middlewares.use((req, res, next) => {
+      server.middlewares.use(async (req, res, next) => {
         const requestPath = new URL(req.url || '/', 'http://localhost').pathname
         if (requestPath !== '/lexiang-api/ppt-context') {
           next()
@@ -296,6 +317,7 @@ function lexiangApiPlugin(env: LexiangEnv): Plugin {
           sendJson(res, 405, { message: 'Method Not Allowed' })
           return
         }
+        if (!(await requireBackendSession(req, res, backendTarget))) return
         readJsonBody(req)
           .then((payload) => requestLexiangPptContext(env, payload))
           .then((data) => sendJson(res, 200, data))
@@ -307,16 +329,37 @@ function lexiangApiPlugin(env: LexiangEnv): Plugin {
   }
 }
 
+function workBuddyAuthPlugin(backendTarget: string): Plugin {
+  return {
+    name: 'workbuddy-auth-gate',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const requestPath = new URL(req.url || '/', 'http://localhost').pathname
+        if (!requestPath.startsWith('/workbuddy-api')) {
+          next()
+          return
+        }
+        if (await requireBackendSession(req, res, backendTarget)) next()
+      })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const workBuddyTarget = env.VITE_WORKBUDDY_PROXY_TARGET || 'http://127.0.0.1:49678'
+  const backendTarget = env.VITE_BACKEND_PROXY_TARGET || 'http://127.0.0.1:8080'
 
   return {
     base: './',
-    plugins: [react(), lexiangApiPlugin(env)],
+    plugins: [react(), lexiangApiPlugin(env, backendTarget), workBuddyAuthPlugin(backendTarget)],
     server: {
       proxy: {
+        '/api': {
+          target: backendTarget,
+          changeOrigin: true,
+        },
         '/workbuddy-api': {
           target: workBuddyTarget,
           changeOrigin: true,

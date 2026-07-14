@@ -2,13 +2,18 @@ spring:
   application:
     name: sufe-ai-backend
   datasource:
-    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/sufe_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
-    username: ${DB_USERNAME:sufe_ai}
-    password: ${DB_PASSWORD:}
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
   flyway:
     enabled: true
     locations: classpath:db/migration
+  session:
+    store-type: jdbc
+    timeout: 8h
+    jdbc:
+      initialize-schema: never
   jpa:
     hibernate:
       ddl-auto: validate
@@ -21,6 +26,13 @@ spring:
 server:
   port: ${SERVER_PORT:8080}
   shutdown: graceful
+  servlet:
+    session:
+      cookie:
+        name: SUFE_SESSION
+        http-only: true
+        secure: ${SESSION_COOKIE_SECURE:true}
+        same-site: lax
 
 management:
   endpoints:
@@ -34,6 +46,9 @@ management:
       show-details: never
 
 sufe:
+  bootstrap:
+    demo-data-enabled: false
+    demo-password: ""
   providers:
     workbuddy:
       enabled: ${WORKBUDDY_ENABLED:false}
