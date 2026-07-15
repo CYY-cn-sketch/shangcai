@@ -65,6 +65,9 @@ public class GenerationJob {
     @Column(name = "idempotency_key", length = 128, nullable = false, updatable = false)
     private String idempotencyKey;
 
+    @Column(name = "queue_sequence", nullable = false, insertable = false, updatable = false)
+    private Long queueSequence;
+
     @Column(name = "error_message", length = 1000)
     private String errorMessage;
 
@@ -247,6 +250,10 @@ public class GenerationJob {
 
     public String getIdempotencyKey() {
         return idempotencyKey;
+    }
+
+    public Long getQueueSequence() {
+        return queueSequence;
     }
 
     public String getErrorMessage() {

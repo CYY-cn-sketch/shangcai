@@ -14,7 +14,7 @@ public interface GenerationJobRepository extends JpaRepository<GenerationJob, St
     Optional<GenerationJob> findByUserIdAndIdempotencyKey(String userId, String idempotencyKey);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    Optional<GenerationJob> findFirstByProviderAndStatusOrderByCreatedAtAscIdAsc(
+    Optional<GenerationJob> findFirstByProviderAndStatusOrderByCreatedAtAscQueueSequenceAsc(
             GenerationProvider provider,
             GenerationJobStatus status
     );

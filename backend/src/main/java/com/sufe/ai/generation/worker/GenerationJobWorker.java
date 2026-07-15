@@ -26,7 +26,7 @@ public class GenerationJobWorker {
     ) {
         Objects.requireNonNull(provider, "provider 不能为空");
         return generationJobRepository
-                .findFirstByProviderAndStatusOrderByCreatedAtAscIdAsc(
+                .findFirstByProviderAndStatusOrderByCreatedAtAscQueueSequenceAsc(
                         provider,
                         GenerationJobStatus.QUEUED
                 )

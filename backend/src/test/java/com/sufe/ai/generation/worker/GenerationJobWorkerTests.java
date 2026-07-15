@@ -62,7 +62,9 @@ class GenerationJobWorkerTests {
                 ArtifactType.PPT,
                 "second"
         ));
-        assertThat(first.getCreatedAt()).isBefore(second.getCreatedAt());
+        GenerationJob persistedFirst = repository.findById(first.getId()).orElseThrow();
+        GenerationJob persistedSecond = repository.findById(second.getId()).orElseThrow();
+        assertThat(persistedFirst.getQueueSequence()).isLessThan(persistedSecond.getQueueSequence());
 
         GenerationJob claimed = worker.claimNext(GenerationProvider.LEXIANG, "lexiang-worker-01")
                 .orElseThrow();
