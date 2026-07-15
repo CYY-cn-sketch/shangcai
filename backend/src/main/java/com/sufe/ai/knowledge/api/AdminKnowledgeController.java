@@ -19,6 +19,8 @@ import jakarta.validation.constraints.Size;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,11 +32,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 
 @RestController
-@RequestMapping("/api/admin")
+@RequestMapping({"/api/admin", "/api/knowledge"})
 public class AdminKnowledgeController {
 
     private final KnowledgeBaseRepository knowledgeBaseRepository;
@@ -66,6 +69,7 @@ public class AdminKnowledgeController {
     }
 
     @PostMapping("/knowledge-bases")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> createKnowledgeBase(@Valid @RequestBody KnowledgeBaseRequest request) {
         if (knowledgeBaseRepository.findByCategory(request.category().trim()).isPresent()) {
@@ -83,6 +87,7 @@ public class AdminKnowledgeController {
     }
 
     @PatchMapping("/knowledge-bases/{baseId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> updateKnowledgeBase(@PathVariable String baseId, @Valid @RequestBody UpdateKnowledgeBaseRequest request) {
         KnowledgeBase base = knowledgeBaseRepository.findById(baseId).orElse(null);
@@ -103,6 +108,7 @@ public class AdminKnowledgeController {
     }
 
     @DeleteMapping("/knowledge-bases/{baseId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> deleteKnowledgeBase(@PathVariable String baseId) {
         KnowledgeBase base = knowledgeBaseRepository.findById(baseId).orElse(null);
@@ -118,14 +124,16 @@ public class AdminKnowledgeController {
     }
 
     @GetMapping("/knowledge-assets")
-    public List<KnowledgeAssetResponse> listKnowledgeAssets() {
+    public List<KnowledgeAssetResponse> listKnowledgeAssets(Authentication authentication) {
+        boolean includeSensitiveContent = canManageKnowledge(authentication);
         return knowledgeAssetRepository.findAll().stream()
                 .sorted(Comparator.comparing(KnowledgeAsset::getName))
-                .map(this::toKnowledgeAssetResponse)
+                .map(asset -> toKnowledgeAssetResponse(asset, includeSensitiveContent))
                 .toList();
     }
 
     @PostMapping("/knowledge-assets")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> createKnowledgeAsset(@Valid @RequestBody KnowledgeAssetRequest request) {
         KnowledgeBase base = knowledgeBaseRepository.findByCategory(request.category().trim()).orElse(null);
@@ -144,10 +152,11 @@ public class AdminKnowledgeController {
         asset.setEnabled(request.enabled());
         asset = knowledgeAssetRepository.saveAndFlush(asset);
         return ResponseEntity.created(URI.create("/api/admin/knowledge-assets/" + asset.getId()))
-                .body(toKnowledgeAssetResponse(asset));
+                .body(toKnowledgeAssetResponse(asset, true));
     }
 
     @PatchMapping("/knowledge-assets/{assetId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> updateKnowledgeAsset(@PathVariable String assetId, @Valid @RequestBody UpdateKnowledgeAssetRequest request) {
         KnowledgeAsset asset = knowledgeAssetRepository.findById(assetId).orElse(null);
@@ -162,10 +171,11 @@ public class AdminKnowledgeController {
                 request.contentText(),
                 request.enabled()
         );
-        return ResponseEntity.ok(toKnowledgeAssetResponse(knowledgeAssetRepository.saveAndFlush(asset)));
+        return ResponseEntity.ok(toKnowledgeAssetResponse(knowledgeAssetRepository.saveAndFlush(asset), true));
     }
 
     @DeleteMapping("/knowledge-assets/{assetId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> deleteKnowledgeAsset(@PathVariable String assetId) {
         KnowledgeAsset asset = knowledgeAssetRepository.findById(assetId).orElse(null);
@@ -177,14 +187,16 @@ public class AdminKnowledgeController {
     }
 
     @GetMapping("/experts")
-    public List<ExpertResponse> listExperts() {
+    public List<ExpertResponse> listExperts(Authentication authentication) {
+        boolean includeSensitiveContent = canManageKnowledge(authentication);
         return expertProfileRepository.findAll().stream()
                 .sorted(Comparator.comparing(ExpertProfile::getName))
-                .map(this::toExpertResponse)
+                .map(expert -> toExpertResponse(expert, includeSensitiveContent))
                 .toList();
     }
 
     @PostMapping("/experts")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> createExpert(@Valid @RequestBody ExpertRequest request) {
         if (expertProfileRepository.existsById(request.id()) || expertProfileRepository.findByName(request.name()).isPresent()) {
@@ -216,10 +228,11 @@ public class AdminKnowledgeController {
         }
         replaceExpertChildren(expert.getId(), request.skills(), request.knowledgeCategories());
         return ResponseEntity.created(URI.create("/api/admin/experts/" + expert.getId()))
-                .body(toExpertResponse(expert));
+                .body(toExpertResponse(expert, true));
     }
 
     @PatchMapping("/experts/{expertId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> updateExpert(@PathVariable String expertId, @Valid @RequestBody UpdateExpertRequest request) {
         ExpertProfile expert = expertProfileRepository.findById(expertId).orElse(null);
@@ -244,10 +257,11 @@ public class AdminKnowledgeController {
             return conflict("EXPERT_EXISTS", "专家已存在");
         }
         replaceExpertChildren(expert.getId(), request.skills(), request.knowledgeCategories());
-        return ResponseEntity.ok(toExpertResponse(expert));
+        return ResponseEntity.ok(toExpertResponse(expert, true));
     }
 
     @DeleteMapping("/experts/{expertId}")
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> deleteExpert(@PathVariable String expertId) {
         ExpertProfile expert = expertProfileRepository.findById(expertId).orElse(null);
@@ -288,7 +302,7 @@ public class AdminKnowledgeController {
         );
     }
 
-    private KnowledgeAssetResponse toKnowledgeAssetResponse(KnowledgeAsset asset) {
+    private KnowledgeAssetResponse toKnowledgeAssetResponse(KnowledgeAsset asset, boolean includeSensitiveContent) {
         String category = knowledgeBaseRepository.findById(asset.getKnowledgeBaseId())
                 .map(KnowledgeBase::getCategory)
                 .orElse("");
@@ -299,13 +313,14 @@ public class AdminKnowledgeController {
                 asset.getSizeLabel(),
                 asset.getFileType(),
                 asset.getPreview(),
-                asset.getContentText(),
+                includeSensitiveContent ? asset.getContentText() : null,
                 asset.getUploadedBy(),
-                asset.isEnabled()
+                asset.isEnabled(),
+                asset.getCreatedAt()
         );
     }
 
-    private ExpertResponse toExpertResponse(ExpertProfile expert) {
+    private ExpertResponse toExpertResponse(ExpertProfile expert, boolean includeSensitiveContent) {
         return new ExpertResponse(
                 expert.getId(),
                 expert.getName(),
@@ -314,10 +329,10 @@ public class AdminKnowledgeController {
                 expert.getAccent(),
                 expert.isActive(),
                 expert.getSourceSkillName(),
-                expert.getSourceSkillContent(),
-                expert.getSourceSkillUploadedBy(),
-                expert.getSystemPrompt(),
-                expert.getUserPrompt(),
+                includeSensitiveContent ? expert.getSourceSkillContent() : null,
+                includeSensitiveContent ? expert.getSourceSkillUploadedBy() : null,
+                includeSensitiveContent ? expert.getSystemPrompt() : null,
+                includeSensitiveContent ? expert.getUserPrompt() : null,
                 expertSkillRepository.findByExpertIdOrderByCreatedAtAsc(expert.getId()).stream()
                         .map(skill -> new SkillResponse(skill.getId(), skill.getName(), skill.getStage(), skill.getDescription()))
                         .toList(),
@@ -326,6 +341,12 @@ public class AdminKnowledgeController {
                         .sorted()
                         .toList()
         );
+    }
+
+    private static boolean canManageKnowledge(Authentication authentication) {
+        return authentication.getAuthorities().stream()
+                .anyMatch(authority -> authority.getAuthority().equals("ROLE_TEACHER")
+                        || authority.getAuthority().equals("ROLE_ADMIN"));
     }
 
     private static ResponseEntity<ErrorResponse> badRequest(String code, String message) {
@@ -445,7 +466,8 @@ public class AdminKnowledgeController {
             String preview,
             String contentText,
             String uploadedBy,
-            boolean enabled
+            boolean enabled,
+            Instant createdAt
     ) {
     }
 

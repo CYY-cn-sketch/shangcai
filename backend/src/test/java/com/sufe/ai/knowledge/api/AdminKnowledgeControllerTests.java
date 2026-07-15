@@ -9,6 +9,9 @@ import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.knowledge.domain.ExpertProfile;
+import com.sufe.ai.knowledge.domain.KnowledgeAsset;
+import com.sufe.ai.knowledge.domain.KnowledgeBase;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeAssetRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeBaseRepository;
@@ -24,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -250,7 +254,43 @@ class AdminKnowledgeControllerTests {
     }
 
     @Test
-    void studentCannotUseKnowledgeAdminEndpoints() throws Exception {
+    void studentReadsRedactedKnowledgeButCannotMutateIt() throws Exception {
+        KnowledgeBase base = knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Student visible base",
+                "Metadata is visible to authenticated users",
+                "Course generation"
+        ));
+        KnowledgeAsset asset = KnowledgeAsset.create(
+                base.getId(),
+                "000-student-visible.md",
+                "1 KB",
+                "Markdown",
+                "Safe preview",
+                "private knowledge content",
+                "Knowledge administrator"
+        );
+        knowledgeAssetRepository.save(asset);
+        ExpertProfile expert = ExpertProfile.create(
+                "student-visible-expert",
+                "Student visible expert",
+                "Safe role description",
+                "Course scenario",
+                "#0f7b73"
+        );
+        expert.update(
+                expert.getName(),
+                expert.getRoleDescription(),
+                expert.getScenario(),
+                expert.getAccent(),
+                "expert/SKILL.md",
+                "private skill content",
+                "Knowledge administrator",
+                "private system prompt",
+                "private user prompt",
+                true
+        );
+        expertProfileRepository.save(expert);
+
         ProjectGroup group = projectGroupRepository.save(ProjectGroup.create("G-KNOWLEDGE-STUDENT", "测试组", "测试项目"));
         UserAccount student = userAccountRepository.save(UserAccount.create(
                 "U-KNOWLEDGE-STUDENT",
@@ -266,6 +306,110 @@ class AdminKnowledgeControllerTests {
 
         mockMvc.perform(get("/api/admin/knowledge-bases").cookie(sessionCookie))
                 .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/knowledge/knowledge-bases").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].category").value("Student visible base"));
+
+        mockMvc.perform(get("/api/knowledge/knowledge-assets").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].preview").value("Safe preview"))
+                .andExpect(jsonPath("$[0].contentText").value(nullValue()));
+
+        mockMvc.perform(get("/api/knowledge/experts").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value("student-visible-expert"))
+                .andExpect(jsonPath("$[0].sourceSkillContent").value(nullValue()))
+                .andExpect(jsonPath("$[0].sourceSkillUploadedBy").value(nullValue()))
+                .andExpect(jsonPath("$[0].systemPrompt").value(nullValue()))
+                .andExpect(jsonPath("$[0].userPrompt").value(nullValue()));
+
+        mockMvc.perform(post("/api/knowledge/knowledge-assets")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("{}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void teacherManagesKnowledgeAssetsExpertsAndCatalog() throws Exception {
+        userAccountRepository.save(UserAccount.create(
+                "U-KNOWLEDGE-TEACHER",
+                "knowledge-teacher@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.TEACHER,
+                "Knowledge teacher",
+                "Course teacher",
+                100
+        ));
+        knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Teacher managed base",
+                "Created by administrator",
+                "Course generation"
+        ));
+        Cookie sessionCookie = login("knowledge-teacher@test.local");
+
+        mockMvc.perform(post("/api/knowledge/knowledge-assets")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "Teacher managed base",
+                                  "name": "teacher-resource.md",
+                                  "sizeLabel": "1 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "Teacher resource preview",
+                                  "contentText": "Teacher resource content",
+                                  "uploadedBy": "Knowledge teacher",
+                                  "enabled": true
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.contentText").value("Teacher resource content"));
+
+        mockMvc.perform(post("/api/knowledge/experts")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "id": "teacher-created-expert",
+                                  "name": "Teacher created expert",
+                                  "role": "Support course work",
+                                  "scenario": "Course scenario",
+                                  "accent": "#0f7b73",
+                                  "systemPrompt": "Teacher system prompt",
+                                  "userPrompt": "Teacher user prompt",
+                                  "active": true,
+                                  "skills": [
+                                    {
+                                      "id": "teacher-created-skill",
+                                      "name": "Teacher skill",
+                                      "stage": "Course stage",
+                                      "description": "Teacher skill description"
+                                    }
+                                  ],
+                                  "knowledgeCategories": ["Teacher managed base"]
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.systemPrompt").value("Teacher system prompt"));
+
+        mockMvc.perform(post("/api/knowledge/knowledge-bases")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "Teacher created base",
+                                  "description": "Teachers can manage course knowledge structure",
+                                  "usedBy": "Course generation"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.category").value("Teacher created base"));
     }
 
     private Cookie login(String account) throws Exception {

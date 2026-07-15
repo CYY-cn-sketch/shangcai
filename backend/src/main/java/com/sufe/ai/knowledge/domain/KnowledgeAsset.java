@@ -138,4 +138,8 @@ public class KnowledgeAsset {
     public boolean isEnabled() {
         return enabled;
     }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
 }

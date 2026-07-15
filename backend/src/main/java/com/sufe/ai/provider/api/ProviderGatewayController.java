@@ -11,12 +11,16 @@ import com.sufe.ai.provider.lexiang.LexiangReferenceDoc;
 import com.sufe.ai.provider.lexiang.LexiangTarget;
 import com.sufe.ai.provider.workbuddy.WorkBuddyApiException;
 import com.sufe.ai.provider.workbuddy.WorkBuddyClient;
+import com.sufe.ai.provider.workbuddy.service.WorkBuddyRunService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,6 +30,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.io.IOException;
 
 @RestController
 @RequestMapping("/api/provider")
@@ -34,6 +41,7 @@ public class ProviderGatewayController {
     private final WorkBuddyProperties workBuddyProperties;
     private final LexiangProperties lexiangProperties;
     private final WorkBuddyClient workBuddyClient;
+    private final WorkBuddyRunService workBuddyRunService;
     private final LexiangAiQaClient lexiangAiQaClient;
     private final UserAccountRepository userAccountRepository;
 
@@ -41,12 +49,14 @@ public class ProviderGatewayController {
             WorkBuddyProperties workBuddyProperties,
             LexiangProperties lexiangProperties,
             WorkBuddyClient workBuddyClient,
+            WorkBuddyRunService workBuddyRunService,
             LexiangAiQaClient lexiangAiQaClient,
             UserAccountRepository userAccountRepository
     ) {
         this.workBuddyProperties = workBuddyProperties;
         this.lexiangProperties = lexiangProperties;
         this.workBuddyClient = workBuddyClient;
+        this.workBuddyRunService = workBuddyRunService;
         this.lexiangAiQaClient = lexiangAiQaClient;
         this.userAccountRepository = userAccountRepository;
     }
@@ -61,10 +71,12 @@ public class ProviderGatewayController {
         }
         String userId = resolveUserId(authentication);
         try {
+            WorkBuddyRunService.PreparedRun preparedRun = workBuddyRunService.prepare(userId, request.text());
             WorkBuddyClient.RunSubmission submission = workBuddyClient.submit(
-                    request.text(),
+                    preparedRun.prompt(),
                     new WorkBuddyClient.Sender(userId, authentication.getName())
             );
+            workBuddyRunService.record(userId, submission.runId(), preparedRun);
             return ResponseEntity.accepted().body(new WorkBuddyRunResponse(submission.runId()));
         } catch (WorkBuddyApiException exception) {
             return ResponseEntity.status(exception.getStatusCode())
@@ -76,9 +88,14 @@ public class ProviderGatewayController {
     }
 
     @GetMapping("/workbuddy/runs/{runId}")
-    public ResponseEntity<?> getWorkBuddyRun(@PathVariable String runId) {
+    public ResponseEntity<?> getWorkBuddyRun(Authentication authentication, @PathVariable String runId) {
         if (!workBuddyProperties.enabled()) {
             return unavailable("WORKBUDDY_DISABLED", "WorkBuddy 网关未启用，未发起供应商调用");
+        }
+        String userId = resolveUserId(authentication);
+        if (!workBuddyRunService.isOwnedBy(runId, userId)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ErrorResponse("WORKBUDDY_RUN_NOT_FOUND", "WorkBuddy 任务不存在"));
         }
         try {
             WorkBuddyClient.RunStatus status = workBuddyClient.getRun(runId);
@@ -89,6 +106,26 @@ public class ProviderGatewayController {
                             exception.getErrorCode() == null ? "WORKBUDDY_ERROR" : exception.getErrorCode(),
                             exception.getMessage()
                     ));
+        }
+    }
+
+    @GetMapping("/workbuddy/runs/{runId}/result")
+    public ResponseEntity<?> getWorkBuddyRunResult(Authentication authentication, @PathVariable String runId) {
+        String userId = resolveUserId(authentication);
+        Path resultPath = workBuddyRunService.findCompletedResult(runId, userId).orElse(null);
+        if (resultPath == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ErrorResponse("WORKBUDDY_RESULT_NOT_FOUND", "WorkBuddy 任务结果尚未生成"));
+        }
+        try {
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("video/mp4"))
+                    .contentLength(Files.size(resultPath))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"result.mp4\"")
+                    .body(new FileSystemResource(resultPath));
+        } catch (IOException exception) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ErrorResponse("WORKBUDDY_RESULT_READ_FAILED", "WorkBuddy 任务结果读取失败"));
         }
     }
 

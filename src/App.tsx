@@ -1,5 +1,6 @@
 ﻿import { type CSSProperties, type FormEvent, type ReactElement, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useCallback } from "react";
 import {
   BarChart3,
   BookOpen,
@@ -60,6 +61,23 @@ import {
   type RemoteArtifact,
   type RemoteSubmission,
 } from "./api/artifacts";
+import {
+  createKnowledgeAsset,
+  createKnowledgeBase,
+  deleteKnowledgeAsset,
+  deleteKnowledgeBase,
+  deleteKnowledgeExpert,
+  listKnowledgeAssets,
+  listKnowledgeBases,
+  listKnowledgeExperts,
+  saveKnowledgeExpert,
+  updateKnowledgeAsset,
+  updateKnowledgeBase,
+  type KnowledgeAssetRecord,
+  type KnowledgeBaseRecord,
+  type KnowledgeExpertRecord,
+  type SaveKnowledgeExpertInput,
+} from "./api/knowledge";
 import { requestLexiangPptContext, submitWorkBuddyRun } from "./api/provider";
 import {
   appendStudentMessage,
@@ -953,6 +971,7 @@ type CustomExpertRecord = {
   sourceSkillUploadedAt?: string;
   systemPrompt?: string;
   userPrompt?: string;
+  active?: boolean;
 };
 
 type DeletedExpertIdState = ExpertId[];
@@ -1344,6 +1363,7 @@ type KnowledgeUpload = {
   uploadedAt: string;
   uploadedBy?: string;
   preview: string;
+  contentText?: string;
   category?: KnowledgeCategory;
   enabled?: boolean;
 };
@@ -1354,7 +1374,13 @@ type StudentKnowledgeSelection = {
   uploadIds: string[];
 };
 type PendingKnowledgeAssetAction = { id: string; action: "toggle" | "delete" };
-type KnowledgeBaseCatalogItem = { category: KnowledgeCategory; description: string; usedBy: string };
+type KnowledgeBaseCatalogItem = {
+  id?: string;
+  category: KnowledgeCategory;
+  description: string;
+  usedBy: string;
+  active?: boolean;
+};
 const knowledgeCategoryOptions: KnowledgeCategory[] = [
   "教学大纲",
   "BP 模板",
@@ -1420,7 +1446,94 @@ function toggleKnowledgeRouteCategory(current: KnowledgeCategory[], category: Kn
 }
 
 function getActiveKnowledgeCatalog(catalog: KnowledgeBaseCatalogItem[]) {
-  return catalog.length ? catalog : defaultKnowledgeBaseCatalog;
+  return (catalog.length ? catalog : defaultKnowledgeBaseCatalog).filter((item) => item.active !== false);
+}
+
+function mergeKnowledgeBaseRecords(current: KnowledgeBaseCatalogItem[], remote: KnowledgeBaseRecord[]) {
+  const merged = new Map(
+    (current.length ? current : defaultKnowledgeBaseCatalog).map((item) => [item.category, item]),
+  );
+  remote.forEach((item) => {
+    merged.set(item.category, {
+      id: item.id,
+      category: item.category,
+      description: item.description,
+      usedBy: item.usedBy,
+      active: item.active,
+    });
+  });
+  return Array.from(merged.values());
+}
+
+function mapKnowledgeAssetRecord(record: KnowledgeAssetRecord): KnowledgeUpload {
+  return {
+    id: record.id,
+    name: record.name,
+    sizeLabel: record.sizeLabel,
+    fileType: record.fileType,
+    uploadedAt: record.createdAt,
+    uploadedBy: record.uploadedBy,
+    preview: record.preview,
+    contentText: record.contentText || undefined,
+    category: record.category,
+    enabled: record.enabled,
+  };
+}
+
+function mapKnowledgeExpertRecord(record: KnowledgeExpertRecord): CustomExpertRecord {
+  return {
+    id: record.id,
+    name: record.name,
+    role: record.role,
+    scenario: record.scenario,
+    accent: record.accent,
+    skills: record.skills,
+    sourceSkillName: record.sourceSkillName || undefined,
+    sourceSkillContent: record.sourceSkillContent || undefined,
+    sourceSkillUploadedBy: record.sourceSkillUploadedBy || undefined,
+    systemPrompt: record.systemPrompt || undefined,
+    userPrompt: record.userPrompt || undefined,
+    active: record.active,
+  };
+}
+
+function toCustomExpertRecord(expert: Expert): CustomExpertRecord {
+  return {
+    id: expert.id,
+    name: expert.name,
+    role: expert.role,
+    scenario: expert.scenario,
+    accent: expert.accent,
+    skills: expert.skills,
+    sourceSkillName: expert.sourceSkillName,
+    sourceSkillContent: expert.sourceSkillContent,
+    sourceSkillUploadedBy: expert.sourceSkillUploadedBy,
+    systemPrompt: expert.systemPrompt,
+    userPrompt: expert.userPrompt,
+    active: true,
+  };
+}
+
+function toKnowledgeExpertInput(
+  expert: CustomExpertRecord,
+  knowledgeCategories: KnowledgeCategory[],
+  active = expert.active !== false,
+): SaveKnowledgeExpertInput {
+  return {
+    id: expert.id,
+    name: expert.name,
+    role: expert.role,
+    scenario: expert.scenario,
+    accent: expert.accent,
+    active,
+    sourceSkillName: expert.sourceSkillName,
+    sourceSkillContent: expert.sourceSkillContent,
+    sourceSkillUploadedBy: expert.sourceSkillUploadedBy,
+    systemPrompt: expert.systemPrompt,
+    userPrompt: expert.userPrompt,
+    skills: expert.skills,
+    knowledgeCategories,
+  };
 }
 
 function syncKnowledgeCatalogAddition(
@@ -2076,7 +2189,7 @@ function mergeExperts(customExperts: CustomExpertRecord[], deletedExpertIds: Exp
   const customIds = new Set(normalized.map((item) => item.id));
   const deletedIds = new Set(deletedExpertIds);
   const base = baseExperts.filter((expert) => !customIds.has(expert.id) && !deletedIds.has(expert.id));
-  return [...base, ...normalized.filter((item) => !deletedIds.has(item.id)).map(buildCustomExpert)];
+  return [...base, ...normalized.filter((item) => item.active !== false && !deletedIds.has(item.id)).map(buildCustomExpert)];
 }
 
 function isStudentExpertId(expertId: ExpertId) {
@@ -2090,7 +2203,9 @@ function getStudentExpertPermissionNames() {
 const studentFeaturePermissionSet = new Set(studentFeaturePermissionNames);
 const demoPptUrl = "/demo-assets/AI_Coach_Roadshow.pptx";
 const demoVideoUrl = "/demo-assets/AI_Coach_30s.mp4";
-const workBuddyGeneratedVideoUrl = "/generated-videos/sufe-workbuddy-video.mp4";
+function getWorkBuddyRunResultUrl(runId: string) {
+  return `/api/provider/workbuddy/runs/${encodeURIComponent(runId)}/result`;
+}
 const pptPreviewImages = Array.from({ length: 10 }, (_, index) => `/demo-assets/ppt-preview/slide-${String(index + 1).padStart(2, "0")}.png`);
 const artifactExpertMap: Record<ArtifactType, ExpertId> = {
   BRAINSTORM: "brainstorm",
@@ -4460,10 +4575,6 @@ function downloadDemoVideo() {
   triggerDownload(demoVideoUrl, "AI就业教练-宣传视频.mp4");
 }
 
-function downloadGeneratedWorkBuddyVideo() {
-  triggerDownload(workBuddyGeneratedVideoUrl, "WorkBuddy生成宣传视频.mp4");
-}
-
 function downloadVideoAsset(asset?: GeneratedAsset) {
   if (asset?.videoUrl) {
     triggerDownload(asset.videoUrl, `${asset.title}.mp4`);
@@ -4520,20 +4631,14 @@ function downloadSubmissionArtifact(submission: Submission, generatedAssets: Gen
 }
 
 function buildWorkBuddyVideoPrompt(asset: GeneratedAsset) {
-  const projectDir = "D:/桌面/上财/workbuddy-video-test";
-  const outputFile = "D:/桌面/上财/public/generated-videos/sufe-workbuddy-video.mp4";
   return [
     "请使用已加载的 remotion-video-generator / Video Generator 技能生成宣传视频。",
     "",
-    "硬性要求：",
-    "1. 不要分析现有项目源码，不要读取 D:/桌面/上财/src/App.tsx。",
-    `2. Remotion 项目文件只在 ${projectDir} 目录内创建/修改。`,
-    "3. 使用 Remotion 生成 16:9、30fps、30 秒 MP4，时长必须是 30 秒。",
-    `4. 必须创建目录 D:/桌面/上财/public/generated-videos，并把最终 MP4 渲染到：${outputFile}`,
-    "5. package.json 里必须有 render 脚本，且 render 脚本输出到上面的 MP4 路径。",
-    "6. 必须实际执行 npm install（如已安装可跳过）和 npm run render，不能只创建源码。",
-    "7. 不读取网络素材，不等待用户确认。",
-    "8. 完成后只回复最终文件路径和是否成功。",
+    "业务要求：",
+    "1. 使用 Remotion 生成 16:9、30fps、30 秒 MP4，时长必须是 30 秒。",
+    "2. 必须实际完成渲染，不能只创建源码。",
+    "3. 不读取网络素材，不等待用户确认。",
+    "4. 完成后只回复最终文件路径和是否成功。",
     "",
     `视频标题：${asset.title}`,
     "",
@@ -4568,9 +4673,10 @@ async function checkWorkBuddyConnection() {
   return;
 }
 
-async function checkGeneratedWorkBuddyVideo() {
-  const response = await fetch(`${workBuddyGeneratedVideoUrl}?t=${Date.now()}`, {
+async function checkGeneratedWorkBuddyVideo(runId: string) {
+  const response = await fetch(`${getWorkBuddyRunResultUrl(runId)}?t=${Date.now()}`, {
     method: "HEAD",
+    credentials: "include",
     cache: "no-store",
   });
   const contentType = response.headers.get("content-type") || "";
@@ -4776,8 +4882,11 @@ function App() {
     ),
   );
 
+  // 这些旧视图仍从单文件共享目录读取数据，拆分组件前集中同步一次，避免各端展示不一致。
+  // eslint-disable-next-line react-hooks/globals
   experts = mergeExperts(customExperts, deletedExpertIds);
-  studentExpertIds = [...baseStudentExpertIds, ...customExperts.map((expert) => expert.id)].filter(
+  // eslint-disable-next-line react-hooks/globals
+  studentExpertIds = [...baseStudentExpertIds, ...customExperts.filter((expert) => expert.active !== false).map((expert) => expert.id)].filter(
     (expertId) => !deletedExpertIds.includes(expertId),
   );
   const activeIdea = ideas.find((idea) => idea.id === activeIdeaId) || ideas[0];
@@ -4839,23 +4948,21 @@ function App() {
   useEffect(() => {
     if (!auth) return;
     window.requestAnimationFrame(() => window.scrollTo(0, 0));
-  }, [auth?.account]);
+  }, [auth]);
 
   useEffect(() => {
-    if (!auth || auth.role !== "student") {
-      setStudentWorkspaceAccount(null);
-      return undefined;
-    }
+    if (!auth || auth.role !== "student") return undefined;
     let active = true;
     const account = auth.account;
 
     async function restoreStudentWorkspace() {
       try {
-        let [workspace, remoteArtifacts, remoteSubmissions] = await Promise.all([
+        const [initialWorkspace, remoteArtifacts, remoteSubmissions] = await Promise.all([
           loadStudentWorkspace(),
           listStudentArtifacts(),
           listStudentSubmissions(),
         ]);
+        let workspace = initialWorkspace;
         if (workspace.ideas.length === 0) {
           const idea = await createStudentIdea({
             title: "新的创业创意",
@@ -4897,7 +5004,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, [auth?.account, auth?.role]);
+  }, [auth]);
 
   useEffect(() => {
     if (!auth || auth.role !== "teacher") return undefined;
@@ -4919,7 +5026,45 @@ function App() {
     return () => {
       active = false;
     };
-  }, [auth?.account, auth?.role]);
+  }, [auth]);
+
+  useEffect(() => {
+    if (!auth) return undefined;
+    let active = true;
+    Promise.all([listKnowledgeBases(), listKnowledgeAssets(), listKnowledgeExperts()])
+      .then(([remoteBases, remoteAssets, remoteExperts]) => {
+        if (!active) return;
+        setKnowledgeCatalog((current) => mergeKnowledgeBaseRecords(current, remoteBases));
+        setKnowledgeBaseStates((current) => ({
+          ...current,
+          ...Object.fromEntries(remoteBases.map((base) => [base.category, base.active])),
+        }));
+        if (remoteAssets.length) {
+          setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
+        }
+        if (remoteExperts.length) {
+          setCustomExperts((current) => {
+            const merged = new Map(current.map((expert) => [expert.id, expert]));
+            remoteExperts.forEach((expert) => merged.set(expert.id, mapKnowledgeExpertRecord(expert)));
+            return Array.from(merged.values());
+          });
+          setPromptKnowledgeRoutes((current) => ({
+            ...current,
+            ...Object.fromEntries(remoteExperts.map((expert) => [expert.id, expert.knowledgeCategories])),
+          }));
+        }
+      })
+      .catch((error) => {
+        if (!active) return;
+        setSystemNotice({
+          title: "知识配置同步失败",
+          message: error instanceof Error ? error.message : "暂时无法读取知识库和专家配置。",
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [auth]);
 
   useEffect(() => {
     if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account || !activeIdeaId) return undefined;
@@ -4949,8 +5094,7 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [
     activeIdeaId,
-    auth?.account,
-    auth?.role,
+    auth,
     model,
     selectedExpertId,
     selectedKnowledgeSelection,
@@ -4960,31 +5104,14 @@ function App() {
 
   useEffect(() => localStorage.setItem("sufe-role", role), [role]);
   useEffect(() => localStorage.setItem("sufe-student-profiles", JSON.stringify(studentProfiles)), [studentProfiles]);
-  useEffect(() => localStorage.setItem("sufe-knowledge-uploads", JSON.stringify(knowledgeUploads)), [knowledgeUploads]);
-  useEffect(() => localStorage.setItem("sufe-knowledge-base-catalog", JSON.stringify(knowledgeCatalog)), [knowledgeCatalog]);
-  useEffect(() => localStorage.setItem("sufe-knowledge-base-states", JSON.stringify(knowledgeBaseStates)), [knowledgeBaseStates]);
-  useEffect(() => localStorage.setItem("sufe-custom-experts", JSON.stringify(customExperts)), [customExperts]);
-  useEffect(() => localStorage.setItem("sufe-deleted-expert-ids", JSON.stringify(deletedExpertIds)), [deletedExpertIds]);
-  useEffect(() => localStorage.setItem("sufe-prompt-knowledge-routes", JSON.stringify(promptKnowledgeRoutes)), [promptKnowledgeRoutes]);
   useEffect(() => localStorage.setItem("sufe-defense-practices", JSON.stringify(defensePractices)), [defensePractices]);
   useEffect(() => localStorage.setItem("sufe-generated-assets", JSON.stringify(generatedAssets)), [generatedAssets]);
   useEffect(() => localStorage.setItem("sufe-student-knowledge-selection", JSON.stringify(selectedKnowledgeSelection)), [selectedKnowledgeSelection]);
+  // eslint-disable-next-line react-hooks/globals
   knowledgeBaseCatalog = knowledgeCatalog.length ? knowledgeCatalog : defaultKnowledgeBaseCatalog;
-  useEffect(() => {
-    setKnowledgeBaseStates((current) => {
-      let changed = false;
-      const next = { ...current };
-      knowledgeCatalog.forEach((item) => {
-        if (next[item.category] === undefined) {
-          next[item.category] = true;
-          changed = true;
-        }
-      });
-      return changed ? next : current;
-    });
-  }, [knowledgeCatalog]);
   async function handleLogin(account: string, password: string) {
     const session = await loginWithPassword(account, password);
+    setStudentWorkspaceAccount(null);
     setAuth(session);
     setRole(session.role);
   }
@@ -5220,6 +5347,166 @@ function App() {
     setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(selection));
   }
 
+  async function persistKnowledgeBase(item: KnowledgeBaseCatalogItem, active: boolean) {
+    let saved: KnowledgeBaseRecord;
+    if (item.id) {
+      saved = await updateKnowledgeBase(item.id, {
+        category: item.category,
+        description: item.description,
+        usedBy: item.usedBy,
+        active,
+      });
+    } else {
+      saved = await createKnowledgeBase({
+        category: item.category,
+        description: item.description,
+        usedBy: item.usedBy,
+      });
+      if (!active) {
+        saved = await updateKnowledgeBase(saved.id, { ...saved, active: false });
+      }
+    }
+    return mergeKnowledgeBaseRecords([], [saved])[0];
+  }
+
+  async function handleKnowledgeCatalogChange(nextCatalog: KnowledgeBaseCatalogItem[]) {
+    const previous = knowledgeCatalog;
+    const additions = nextCatalog.filter((item) => !previous.some((current) => current.category === item.category));
+    setKnowledgeCatalog(nextCatalog);
+    if (!additions.length) return;
+    try {
+      const saved = await Promise.all(additions.map((item) => persistKnowledgeBase(item, item.active !== false)));
+      const byCategory = new Map(saved.map((item) => [item.category, item]));
+      setKnowledgeCatalog((current) => current.map((item) => byCategory.get(item.category) || item));
+    } catch (error) {
+      setKnowledgeCatalog(previous);
+      setSystemNotice({
+        title: "知识库保存失败",
+        message: error instanceof Error ? error.message : "知识库目录未写入后端。",
+      });
+    }
+  }
+
+  async function handleKnowledgeBaseStatesChange(nextStates: KnowledgeBaseStates) {
+    const previous = knowledgeBaseStates;
+    const changed = knowledgeCatalog.filter(
+      (item) => nextStates[item.category] !== undefined && nextStates[item.category] !== previous[item.category],
+    );
+    setKnowledgeBaseStates(nextStates);
+    if (!changed.length) return;
+    try {
+      const saved = await Promise.all(changed.map((item) => persistKnowledgeBase(item, nextStates[item.category])));
+      const byCategory = new Map(saved.map((item) => [item.category, item]));
+      setKnowledgeCatalog((current) => current.map((item) => byCategory.get(item.category) || item));
+    } catch (error) {
+      setKnowledgeBaseStates(previous);
+      setSystemNotice({
+        title: "知识库状态保存失败",
+        message: error instanceof Error ? error.message : "启用状态未写入后端。",
+      });
+    }
+  }
+
+  async function handleUploadKnowledge(assets: KnowledgeUpload[]) {
+    try {
+      const saved = await Promise.all(
+        assets.map(async (asset) => {
+          const record = await createKnowledgeAsset({
+            category: asset.category || inferKnowledgeCategory(asset.name),
+            name: asset.name,
+            sizeLabel: asset.sizeLabel,
+            fileType: asset.fileType,
+            preview: asset.preview,
+            contentText: asset.contentText || asset.preview,
+            uploadedBy: asset.uploadedBy || auth?.name || "教师/管理员",
+            enabled: asset.enabled !== false,
+          });
+          return { ...mapKnowledgeAssetRecord(record), fileDataUrl: asset.fileDataUrl };
+        }),
+      );
+      setKnowledgeUploads((current) => [...saved, ...current.filter((item) => !saved.some((savedItem) => savedItem.id === item.id))]);
+    } catch (error) {
+      setSystemNotice({
+        title: "知识资料上传失败",
+        message: error instanceof Error ? error.message : "资料元数据未写入后端。",
+      });
+    }
+  }
+
+  async function handleCustomExpertsChange(nextExperts: CustomExpertRecord[]) {
+    const previous = customExperts;
+    const changed = nextExperts.filter((expert) => {
+      const current = previous.find((item) => item.id === expert.id);
+      return !current || JSON.stringify(current) !== JSON.stringify(expert);
+    });
+    setCustomExperts(nextExperts);
+    if (!changed.length) return;
+    try {
+      const saved = await Promise.all(
+        changed.map((expert) =>
+          saveKnowledgeExpert(
+            toKnowledgeExpertInput(
+              expert,
+              promptKnowledgeRoutes[expert.id] || getExpertKnowledgeCategories(expert.id),
+            ),
+          ),
+        ),
+      );
+      const byId = new Map(saved.map((expert) => [expert.id, mapKnowledgeExpertRecord(expert)]));
+      setCustomExperts((current) => current.map((expert) => byId.get(expert.id) || expert));
+    } catch (error) {
+      setCustomExperts(previous);
+      setSystemNotice({
+        title: "专家配置保存失败",
+        message: error instanceof Error ? error.message : "专家配置未写入后端。",
+      });
+    }
+  }
+
+  async function handlePromptKnowledgeRoutesChange(nextRoutes: PromptKnowledgeRoutes) {
+    const previous = promptKnowledgeRoutes;
+    const changedExpertIds = Object.keys(nextRoutes).filter(
+      (expertId) => JSON.stringify(nextRoutes[expertId]) !== JSON.stringify(previous[expertId]),
+    );
+    setPromptKnowledgeRoutes(nextRoutes);
+    try {
+      await Promise.all(
+        changedExpertIds.map((expertId) => {
+          const expert = experts.find((item) => item.id === expertId);
+          if (!expert) return Promise.resolve();
+          return saveKnowledgeExpert(
+            toKnowledgeExpertInput(toCustomExpertRecord(expert), nextRoutes[expertId]),
+          );
+        }),
+      );
+    } catch (error) {
+      setPromptKnowledgeRoutes(previous);
+      setSystemNotice({
+        title: "专家知识路由保存失败",
+        message: error instanceof Error ? error.message : "知识库路由未写入后端。",
+      });
+    }
+  }
+
+  async function handleSaveExpertPrompt(
+    expertId: ExpertId,
+    systemPrompt: string,
+    userPrompt: string,
+    categories: KnowledgeCategory[],
+  ) {
+    const expert = experts.find((item) => item.id === expertId);
+    if (!expert) throw new Error("专家不存在");
+    const saved = await saveKnowledgeExpert(
+      toKnowledgeExpertInput(
+        { ...toCustomExpertRecord(expert), systemPrompt, userPrompt },
+        categories,
+      ),
+    );
+    const mapped = mapKnowledgeExpertRecord(saved);
+    setCustomExperts((current) => [...current.filter((item) => item.id !== mapped.id), mapped]);
+    setPromptKnowledgeRoutes((current) => ({ ...current, [mapped.id]: saved.knowledgeCategories }));
+  }
+
   function handleDeleteKnowledgeBase(category: KnowledgeCategory) {
     const activeCatalog = getActiveKnowledgeCatalog(knowledgeCatalog);
     if (activeCatalog.length <= 1) {
@@ -5230,7 +5517,7 @@ function App() {
     return false;
   }
 
-  function handleConfirmDeleteKnowledgeBase() {
+  async function handleConfirmDeleteKnowledgeBase() {
     if (!pendingDeleteKnowledgeBase) return;
     const category = pendingDeleteKnowledgeBase;
     const activeCatalog = getActiveKnowledgeCatalog(knowledgeCatalog);
@@ -5240,10 +5527,31 @@ function App() {
       promptKnowledgeRoutes,
       category,
     );
-    setKnowledgeCatalog(nextCatalog);
-    setKnowledgeBaseStates(nextStates);
-    setPromptKnowledgeRoutes(nextRoutes);
-    setKnowledgeUploads((current) => current.filter((asset) => (asset.category || inferKnowledgeCategory(asset.name)) !== category));
+    const item = activeCatalog.find((current) => current.category === category);
+    if (!item) return;
+    try {
+      let persistedCatalog = nextCatalog;
+      if (defaultKnowledgeBaseCatalog.some((current) => current.category === category)) {
+        const inactive = await persistKnowledgeBase(item, false);
+        persistedCatalog = [...nextCatalog, inactive];
+      } else if (item.id) {
+        const relatedAssets = knowledgeUploads.filter(
+          (asset) => (asset.category || inferKnowledgeCategory(asset.name)) === category,
+        );
+        await Promise.all(relatedAssets.map((asset) => deleteKnowledgeAsset(asset.id)));
+        await deleteKnowledgeBase(item.id);
+      }
+      setKnowledgeCatalog(persistedCatalog);
+      setKnowledgeBaseStates(nextStates);
+      void handlePromptKnowledgeRoutesChange(nextRoutes);
+      setKnowledgeUploads((current) => current.filter((asset) => (asset.category || inferKnowledgeCategory(asset.name)) !== category));
+    } catch (error) {
+      setSystemNotice({
+        title: "删除知识库失败",
+        message: error instanceof Error ? error.message : "知识库仍保留在后端。",
+      });
+      return;
+    }
     setSelectedKnowledgeSelection((current) => {
       const keptCategories = current.categories.filter((item) => item !== category);
       const keptUploadIds = current.uploadIds.filter((id) => {
@@ -5262,15 +5570,32 @@ function App() {
     setPendingKnowledgeAssetAction({ id, action });
   }
 
-  function handleConfirmKnowledgeAssetAction() {
+  async function handleConfirmKnowledgeAssetAction() {
     if (!pendingKnowledgeAssetAction) return;
     const { id, action } = pendingKnowledgeAssetAction;
-    if (action === "toggle") {
-      setKnowledgeUploads((current) =>
-        current.map((asset) => (asset.id === id ? { ...asset, enabled: asset.enabled === false } : asset)),
-      );
-    } else {
-      setKnowledgeUploads((current) => current.filter((asset) => asset.id !== id));
+    const asset = knowledgeUploads.find((item) => item.id === id);
+    if (!asset) return;
+    try {
+      if (action === "toggle") {
+        const saved = await updateKnowledgeAsset(id, {
+          name: asset.name,
+          sizeLabel: asset.sizeLabel,
+          fileType: asset.fileType,
+          preview: asset.preview,
+          contentText: asset.contentText || asset.preview,
+          enabled: asset.enabled === false,
+        });
+        setKnowledgeUploads((current) => current.map((item) => (item.id === id ? mapKnowledgeAssetRecord(saved) : item)));
+      } else {
+        await deleteKnowledgeAsset(id);
+        setKnowledgeUploads((current) => current.filter((item) => item.id !== id));
+      }
+    } catch (error) {
+      setSystemNotice({
+        title: action === "toggle" ? "资料状态保存失败" : "删除资料失败",
+        message: error instanceof Error ? error.message : "知识资料未更新。",
+      });
+      return;
     }
     setPendingKnowledgeAssetAction(null);
   }
@@ -5282,21 +5607,40 @@ function App() {
     const target = experts.find((expert) => expert.id === expertId);
     if (!target) return false;
     const fallbackExpert = experts.find((expert) => expert.id !== expertId) || baseExperts[0];
-    setCustomExperts((current) => current.filter((expert) => expert.id !== expertId));
-    if (baseExperts.some((expert) => expert.id === expertId)) {
-      setDeletedExpertIds((current) => (current.includes(expertId) ? current : [...current, expertId]));
-    }
-    setPromptKnowledgeRoutes((current) => {
-      const { [expertId]: _removed, ...nextRoutes } = current;
-      return nextRoutes;
-    });
-    setAccountRecords((current) =>
-      current.map((account) => ({
-        ...account,
-        permissions: account.permissions.filter((permission) => permission !== target.name),
-        disabledPermissions: (account.disabledPermissions || []).filter((permission) => permission !== target.name),
-      })),
-    );
+    const isBaseExpert = baseExperts.some((expert) => expert.id === expertId);
+    const categories = promptKnowledgeRoutes[expertId] || getExpertKnowledgeCategories(expertId);
+    void (async () => {
+      try {
+        if (isBaseExpert) {
+          const saved = await saveKnowledgeExpert(
+            toKnowledgeExpertInput(toCustomExpertRecord(target), categories, false),
+          );
+          const inactive = mapKnowledgeExpertRecord(saved);
+          setCustomExperts((current) => [...current.filter((expert) => expert.id !== expertId), inactive]);
+        } else {
+          await deleteKnowledgeExpert(expertId);
+          setCustomExperts((current) => current.filter((expert) => expert.id !== expertId));
+        }
+        setDeletedExpertIds((current) => (isBaseExpert && !current.includes(expertId) ? [...current, expertId] : current));
+        setPromptKnowledgeRoutes((current) => {
+          const nextRoutes = { ...current };
+          delete nextRoutes[expertId];
+          return nextRoutes;
+        });
+        setAccountRecords((current) =>
+          current.map((account) => ({
+            ...account,
+            permissions: account.permissions.filter((permission) => permission !== target.name),
+            disabledPermissions: (account.disabledPermissions || []).filter((permission) => permission !== target.name),
+          })),
+        );
+      } catch (error) {
+        setSystemNotice({
+          title: "删除专家失败",
+          message: error instanceof Error ? error.message : "专家仍保留在后端。",
+        });
+      }
+    })();
     if (selectedExpertId === expertId) {
       setSelectedExpertId(fallbackExpert.id);
       setSelectedSkillId(fallbackExpert.skills[0]?.id || "");
@@ -5882,14 +6226,15 @@ function App() {
                 blockPermission("上传教学资料");
                 return;
               }
-              setKnowledgeUploads((current) => [...assets, ...current]);
+              void handleUploadKnowledge(assets);
             }}
             onDeleteKnowledge={(id) => requestKnowledgeAssetAction(id, "delete")}
             onToggleKnowledge={(id) => requestKnowledgeAssetAction(id, "toggle")}
-            onKnowledgeBaseStatesChange={setKnowledgeBaseStates}
-            onKnowledgeCatalogChange={setKnowledgeCatalog}
-            onPromptKnowledgeRoutesChange={setPromptKnowledgeRoutes}
-            onCustomExpertsChange={setCustomExperts}
+            onKnowledgeBaseStatesChange={(states) => void handleKnowledgeBaseStatesChange(states)}
+            onKnowledgeCatalogChange={(catalog) => void handleKnowledgeCatalogChange(catalog)}
+            onPromptKnowledgeRoutesChange={(routes) => void handlePromptKnowledgeRoutesChange(routes)}
+            onCustomExpertsChange={(nextExperts) => void handleCustomExpertsChange(nextExperts)}
+            onSaveExpertPrompt={handleSaveExpertPrompt}
             onDeleteExpert={handleDeleteExpert}
             onDeleteKnowledgeBase={handleDeleteKnowledgeBase}
           />
@@ -5908,13 +6253,14 @@ function App() {
             promptKnowledgeRoutes={promptKnowledgeRoutes}
             customExperts={customExperts}
             adminName={auth.name}
-            onKnowledgeBaseStatesChange={setKnowledgeBaseStates}
-            onKnowledgeCatalogChange={setKnowledgeCatalog}
-            onPromptKnowledgeRoutesChange={setPromptKnowledgeRoutes}
-            onCustomExpertsChange={setCustomExperts}
+            onKnowledgeBaseStatesChange={(states) => void handleKnowledgeBaseStatesChange(states)}
+            onKnowledgeCatalogChange={(catalog) => void handleKnowledgeCatalogChange(catalog)}
+            onPromptKnowledgeRoutesChange={(routes) => void handlePromptKnowledgeRoutesChange(routes)}
+            onCustomExpertsChange={(nextExperts) => void handleCustomExpertsChange(nextExperts)}
+            onSaveExpertPrompt={handleSaveExpertPrompt}
             onDeleteExpert={handleDeleteExpert}
             onDeleteKnowledgeBase={handleDeleteKnowledgeBase}
-            onUploadKnowledge={(assets) => setKnowledgeUploads((current) => [...assets, ...current])}
+            onUploadKnowledge={(assets) => void handleUploadKnowledge(assets)}
             onDeleteKnowledge={(id) => requestKnowledgeAssetAction(id, "delete")}
             onToggleKnowledge={(id) => requestKnowledgeAssetAction(id, "toggle")}
             submissions={submissions}
@@ -7994,7 +8340,7 @@ function GenerationPendingModal(props: { pending: PendingAssetGeneration }) {
 
 function VideoPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }) {
   const hasGeneratedVideo = Boolean(props.asset.videoUrl);
-  const videoUrl = hasGeneratedVideo ? props.asset.videoUrl || workBuddyGeneratedVideoUrl : demoVideoUrl;
+  const videoUrl = props.asset.videoUrl || demoVideoUrl;
 
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
@@ -8024,7 +8370,7 @@ function VideoPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }
             <Download size={15} />
             下载视频物料包
           </button>
-          <button type="button" onClick={hasGeneratedVideo ? downloadGeneratedWorkBuddyVideo : downloadDemoVideo}>
+            <button type="button" onClick={() => downloadVideoAsset(props.asset)}>
             <MonitorPlay size={15} />
             下载 MP4 视频
           </button>
@@ -8065,66 +8411,52 @@ function MediaGenerationModal(props: {
   const isWaitingForGeneratedVideo = Boolean(workBuddyRunId && !showPreview && !hasRenderTimedOut);
   const shouldShowRenderingState = isRendering || Boolean(workBuddyRunId && !showPreview);
   const isVideoWaitingForResult = videoRenderProgress >= 91.5 && !hasRenderTimedOut;
-  const videoPreviewUrl = hasGeneratedWorkBuddyVideo ? `${workBuddyGeneratedVideoUrl}?v=${generatedVideoVersion}` : demoVideoUrl;
+  const videoPreviewUrl = hasGeneratedWorkBuddyVideo && props.asset.videoUrl
+    ? `${props.asset.videoUrl}?v=${generatedVideoVersion}`
+    : demoVideoUrl;
+  const { asset: activeMediaAsset, onAssetChange, onConfirm } = props;
 
-  useEffect(() => {
-    if (props.asset.videoUrl || !props.isCached) return;
-    let isMounted = true;
-    checkGeneratedWorkBuddyVideo().then((isReady) => {
-      if (!isMounted || !isReady) return;
-      setGeneratedVideoVersion(Date.now());
-      setHasGeneratedWorkBuddyVideo(true);
-      setShowPreview(true);
-      setVideoCheckMessage("视频已生成，可以预览。");
-      markWorkBuddyVideoReady();
-    });
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const markWorkBuddyVideoReady = useCallback((runId: string) => {
+    const nextAsset = { ...activeMediaAsset, videoUrl: getWorkBuddyRunResultUrl(runId), videoGeneratedAt: nowTime() };
+    onAssetChange(nextAsset);
+    onConfirm(nextAsset);
+  }, [activeMediaAsset, onAssetChange, onConfirm]);
 
   useEffect(() => {
     if (!workBuddyRunId || showPreview) return;
-    setVideoCheckMessage("已提交生成任务，正在检查本地 MP4 文件是否生成。");
 
     let attempts = 0;
     const timer = window.setInterval(() => {
       attempts += 1;
-      checkGeneratedWorkBuddyVideo()
+      checkGeneratedWorkBuddyVideo(workBuddyRunId)
         .then((isReady) => {
           if (isReady) {
             setGeneratedVideoVersion(Date.now());
             setHasGeneratedWorkBuddyVideo(true);
             setShowPreview(true);
             setVideoCheckMessage("视频已生成，可以预览。");
-            markWorkBuddyVideoReady();
+            markWorkBuddyVideoReady(workBuddyRunId);
             window.clearInterval(timer);
           } else if (attempts >= 60) {
             setVideoCheckMessage("暂未找到 MP4 文件。WorkBuddy 可能仍在处理，或任务没有完成渲染。");
+            setVideoRenderProgress(92);
             window.clearInterval(timer);
           }
         })
         .catch(() => {
           if (attempts >= 60) {
             setVideoCheckMessage("暂未找到 MP4 文件。WorkBuddy 可能仍在处理，或任务没有完成渲染。");
+            setVideoRenderProgress(92);
             window.clearInterval(timer);
           }
         });
     }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [showPreview, workBuddyRunId]);
+  }, [markWorkBuddyVideoReady, showPreview, workBuddyRunId]);
 
   useEffect(() => {
-    if (!shouldShowRenderingState) {
-      setVideoRenderProgress(4);
-      return;
-    }
-    if (hasRenderTimedOut) {
-      setVideoRenderProgress(92);
-      return;
-    }
+    if (!shouldShowRenderingState || hasRenderTimedOut) return;
 
     const startedAt = performance.now();
     const timer = window.setInterval(() => {
@@ -8138,12 +8470,6 @@ function MediaGenerationModal(props: {
 
   function updateField(field: keyof GeneratedAsset, value: string) {
     props.onAssetChange({ ...props.asset, [field]: value });
-  }
-
-  function markWorkBuddyVideoReady() {
-    const nextAsset = { ...props.asset, videoUrl: workBuddyGeneratedVideoUrl, videoGeneratedAt: nowTime() };
-    props.onAssetChange(nextAsset);
-    props.onConfirm(nextAsset);
   }
 
   async function handleConfirmPrompt() {
@@ -8166,6 +8492,8 @@ function MediaGenerationModal(props: {
       setWorkBuddyStatusMessage("已连接平台 Java 网关，正在检查 WorkBuddy 网关是否启用。");
       const runId = await submitWorkBuddyVideoRun(regeneratingAsset);
       setWorkBuddyRunId(runId);
+      setVideoRenderProgress(4);
+      setVideoCheckMessage("已提交生成任务，正在检查独立任务目录中的 MP4 结果。");
     } catch (error) {
       setWorkBuddyStatus("offline");
       setWorkBuddyStatusMessage("WorkBuddy 网关未启用或提交失败，未发起供应商消耗。");
@@ -8176,13 +8504,14 @@ function MediaGenerationModal(props: {
   }
 
   async function handleCheckGeneratedVideo() {
-    const isReady = await checkGeneratedWorkBuddyVideo();
+    if (!workBuddyRunId) return;
+    const isReady = await checkGeneratedWorkBuddyVideo(workBuddyRunId);
     if (isReady) {
       setGeneratedVideoVersion(Date.now());
       setHasGeneratedWorkBuddyVideo(true);
       setShowPreview(true);
       setVideoCheckMessage("视频已生成，可以预览。");
-      markWorkBuddyVideoReady();
+      markWorkBuddyVideoReady(workBuddyRunId);
       return;
     }
     setShowPreview(false);
@@ -8301,7 +8630,7 @@ function MediaGenerationModal(props: {
                 下载视频物料包
               </button>
               {showPreview && (
-                <button type="button" onClick={hasGeneratedWorkBuddyVideo ? downloadGeneratedWorkBuddyVideo : downloadDemoVideo}>
+                <button type="button" onClick={() => downloadVideoAsset(props.asset)}>
                   <MonitorPlay size={15} />
                   下载 MP4 视频
                 </button>
@@ -9163,6 +9492,12 @@ function TeacherView(props: {
   onKnowledgeCatalogChange: (catalog: KnowledgeBaseCatalogItem[]) => void;
   onPromptKnowledgeRoutesChange: (routes: PromptKnowledgeRoutes) => void;
   onCustomExpertsChange: (experts: CustomExpertRecord[]) => void;
+  onSaveExpertPrompt: (
+    expertId: ExpertId,
+    systemPrompt: string,
+    userPrompt: string,
+    categories: KnowledgeCategory[],
+  ) => Promise<void>;
   onDeleteExpert: (expertId: ExpertId) => boolean;
   onDeleteKnowledgeBase: (category: KnowledgeCategory) => boolean;
 }) {
@@ -9756,6 +10091,20 @@ function TeacherView(props: {
     );
     setTeacherSystemPromptDraft(nextParts.system);
     setTeacherUserPromptDraft(nextParts.user);
+  }
+
+  async function handleTeacherSavePrompt() {
+    try {
+      await props.onSaveExpertPrompt(
+        teacherPromptExpert.id,
+        teacherSystemPromptDraft,
+        teacherUserPromptDraft,
+        teacherPromptKnowledgeCategories,
+      );
+      setIsPromptSaveOpen(true);
+    } catch (error) {
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "提示词保存失败");
+    }
   }
 
   function handleTeacherCreateCustomExpert() {
@@ -10385,7 +10734,7 @@ function TeacherView(props: {
                 />
               </label>
               <div className="prompt-action-group">
-                <button className="primary-button prompt-save-button" type="button" onClick={() => setIsPromptSaveOpen(true)}>
+                <button className="primary-button prompt-save-button" type="button" onClick={() => void handleTeacherSavePrompt()}>
                   <Save size={15} />
                   保存提示词
                 </button>
@@ -10950,6 +11299,12 @@ function AdminView(props: {
   onKnowledgeCatalogChange: (catalog: KnowledgeBaseCatalogItem[]) => void;
   onPromptKnowledgeRoutesChange: (routes: PromptKnowledgeRoutes) => void;
   onCustomExpertsChange: (experts: CustomExpertRecord[]) => void;
+  onSaveExpertPrompt: (
+    expertId: ExpertId,
+    systemPrompt: string,
+    userPrompt: string,
+    categories: KnowledgeCategory[],
+  ) => Promise<void>;
   onDeleteExpert: (expertId: ExpertId) => boolean;
   onDeleteKnowledgeBase: (category: KnowledgeCategory) => boolean;
   onUploadKnowledge: (assets: KnowledgeUpload[]) => void;
@@ -11017,7 +11372,6 @@ function AdminView(props: {
 
   useEffect(() => {
     let active = true;
-    setAdminDataLoading(true);
     Promise.all([listAdminGroups(), listAdminAccounts(), listAdminAuditLogs()])
       .then(([remoteGroups, remoteAccounts, remoteAuditLogs]) => {
         if (!active) return;
@@ -11413,6 +11767,20 @@ ${modeInstructions[promptMode]}
     );
     setAdminSystemPromptDraft(nextParts.system);
     setAdminUserPromptDraft(nextParts.user);
+  }
+
+  async function handleAdminSavePrompt() {
+    try {
+      await props.onSaveExpertPrompt(
+        promptExpert.id,
+        adminSystemPromptDraft,
+        adminUserPromptDraft,
+        adminPromptKnowledgeCategories,
+      );
+      setIsPromptSaveOpen(true);
+    } catch (error) {
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "提示词保存失败");
+    }
   }
 
   function handleAdminCreateCustomExpert() {
@@ -12533,7 +12901,7 @@ ${modeInstructions[promptMode]}
                 />
               </div>
               <div className="prompt-action-group">
-                <button className="primary-button prompt-save-button" type="button" onClick={() => setIsPromptSaveOpen(true)}>
+                <button className="primary-button prompt-save-button" type="button" onClick={() => void handleAdminSavePrompt()}>
                   <Save size={15} />
                   保存提示词
                 </button>
