@@ -6,6 +6,8 @@ server:
         secure: false
 
 sufe:
+  storage:
+    files-root: ${SUFE_FILE_STORAGE_ROOT:D:/sufe-ai-data/files}
   bootstrap:
     demo-data-enabled: true
     demo-password: ${SUFE_DEMO_PASSWORD}

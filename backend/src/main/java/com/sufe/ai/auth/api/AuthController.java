@@ -34,10 +34,20 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Locale;
 import java.util.List;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
+
+    private static final Set<String> ALLOWED_AVATAR_IDS = Set.of(
+            "student-boy",
+            "student-girl",
+            "business-student",
+            "founder-student",
+            "defense-student",
+            "creative-girl"
+    );
 
     private final AuthenticationManager authenticationManager;
     private final SecurityContextRepository securityContextRepository;
@@ -128,7 +138,11 @@ public class AuthController {
         if (hasNewPassword && updateRequest.newPassword().length() > 200) {
             return badRequest("NEW_PASSWORD_TOO_LONG", "新密码不能超过 200 个字符");
         }
-        if (displayName == null && !hasNewPassword) {
+        String avatarId = hasText(updateRequest.avatarId()) ? updateRequest.avatarId().trim() : null;
+        if (avatarId != null && !ALLOWED_AVATAR_IDS.contains(avatarId)) {
+            return badRequest("INVALID_AVATAR", "头像选项无效");
+        }
+        if (displayName == null && !hasNewPassword && avatarId == null) {
             return badRequest("INVALID_REQUEST", "至少需要提供一项要更新的个人资料");
         }
 
@@ -146,6 +160,9 @@ public class AuthController {
         }
         if (hasNewPassword) {
             user.updatePasswordHash(passwordEncoder.encode(updateRequest.newPassword()));
+        }
+        if (avatarId != null) {
+            user.updateAvatarId(avatarId);
         }
         userAccountRepository.save(user);
         return ResponseEntity.ok(buildResponse(user.getAccount()));
@@ -177,6 +194,7 @@ public class AuthController {
                 user.getDisplayName(),
                 user.getAccount(),
                 user.getTitle(),
+                user.getAvatarId(),
                 group == null ? null : group.getId(),
                 group == null ? null : group.getGroupLabel(),
                 group == null ? null : group.getProjectName(),
@@ -196,7 +214,8 @@ public class AuthController {
     public record UpdateProfileRequest(
             String displayName,
             String currentPassword,
-            String newPassword
+            String newPassword,
+            String avatarId
     ) {
     }
 
@@ -206,6 +225,7 @@ public class AuthController {
             String name,
             String account,
             String title,
+            String avatarId,
             String groupId,
             String groupLabel,
             String groupName,

@@ -9,3 +9,7 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate
+
+sufe:
+  storage:
+    files-root: ${java.io.tmpdir}/sufe-ai-test-files

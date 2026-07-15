@@ -189,6 +189,30 @@ class AuthControllerTests {
     }
 
     @Test
+    void updatesAndValidatesAvatar() throws Exception {
+        Cookie sessionCookie = login();
+
+        mockMvc.perform(patch("/api/auth/me")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("{\"avatarId\":\"creative-girl\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.avatarId").value("creative-girl"));
+
+        UserAccount updatedUser = userAccountRepository.findByAccountIgnoreCase("student@test.local").orElseThrow();
+        assertEquals("creative-girl", updatedUser.getAvatarId());
+
+        mockMvc.perform(patch("/api/auth/me")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("{\"avatarId\":\"../../invalid\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_AVATAR"));
+    }
+
+    @Test
     void rejectsNewPasswordShorterThanEightCharacters() throws Exception {
         Cookie sessionCookie = login();
 

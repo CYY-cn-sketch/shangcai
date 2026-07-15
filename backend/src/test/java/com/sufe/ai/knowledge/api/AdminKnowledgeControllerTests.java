@@ -23,6 +23,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,9 +32,12 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ActiveProfiles("test")
@@ -410,6 +414,76 @@ class AdminKnowledgeControllerTests {
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.category").value("Teacher created base"));
+    }
+
+    @Test
+    void storesAndDownloadsOriginalKnowledgeFile() throws Exception {
+        KnowledgeBase base = knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Binary resources",
+                "Original files are stored outside the database",
+                "Course generation"
+        ));
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+        byte[] fileBytes = "verified knowledge file".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "course-notes.txt",
+                "text/plain",
+                fileBytes
+        );
+
+        String responseBody = mockMvc.perform(multipart("/api/knowledge/knowledge-assets/files")
+                        .file(file)
+                        .param("category", base.getCategory())
+                        .param("preview", "Course notes preview")
+                        .param("contentText", "Course notes text")
+                        .param("uploadedBy", "Knowledge administrator")
+                        .param("enabled", "true")
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.fileAvailable").value(true))
+                .andExpect(jsonPath("$.originalName").value("course-notes.txt"))
+                .andExpect(jsonPath("$.fileSizeBytes").value(fileBytes.length))
+                .andExpect(jsonPath("$.sha256").isNotEmpty())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String assetId = objectMapper.readTree(responseBody).path("id").asText();
+
+        mockMvc.perform(get("/api/knowledge/knowledge-assets/{assetId}/file", assetId)
+                        .cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("course-notes.txt")))
+                .andExpect(content().bytes(fileBytes));
+
+        mockMvc.perform(delete("/api/knowledge/knowledge-assets/{assetId}", assetId)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isNoContent());
+        assertThat(knowledgeAssetRepository.findById(assetId)).isEmpty();
+    }
+
+    @Test
+    void rejectsExecutableKnowledgeFile() throws Exception {
+        knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Safe resources",
+                "Only allowlisted formats are accepted",
+                "Course generation"
+        ));
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+        MockMultipartFile file = new MockMultipartFile("file", "payload.exe", "application/octet-stream", new byte[]{1, 2, 3});
+
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/files")
+                        .file(file)
+                        .param("category", "Safe resources")
+                        .param("preview", "Unsafe file")
+                        .param("uploadedBy", "Knowledge administrator")
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_KNOWLEDGE_FILE"));
     }
 
     private Cookie login(String account) throws Exception {

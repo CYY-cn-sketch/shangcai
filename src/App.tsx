@@ -62,6 +62,7 @@ import {
   type RemoteSubmission,
 } from "./api/artifacts";
 import {
+  attachKnowledgeAssetFile,
   createKnowledgeAsset,
   createKnowledgeBase,
   deleteKnowledgeAsset,
@@ -70,7 +71,9 @@ import {
   listKnowledgeAssets,
   listKnowledgeBases,
   listKnowledgeExperts,
+  knowledgeAssetDownloadUrl,
   saveKnowledgeExpert,
+  uploadKnowledgeAsset,
   updateKnowledgeAsset,
   updateKnowledgeBase,
   type KnowledgeAssetRecord,
@@ -78,6 +81,7 @@ import {
   type KnowledgeExpertRecord,
   type SaveKnowledgeExpertInput,
 } from "./api/knowledge";
+import { listDefensePractices, saveDefensePractice, type RemoteDefensePractice } from "./api/defense";
 import { requestLexiangPptContext, submitWorkBuddyRun } from "./api/provider";
 import {
   appendStudentMessage,
@@ -817,7 +821,6 @@ type ArtifactType = "BRAINSTORM" | "POSITIONING" | "MARKET" | "BP" | "PPT" | "SC
 type SubmissionStatus = "pending" | "approved" | "revision" | "withdrawn";
 type StudentViewMode = "workspace" | "feedback" | "defense";
 type StudentAvatarId = "student-boy" | "student-girl" | "business-student" | "founder-student" | "defense-student" | "creative-girl";
-type StudentProfileState = Record<string, { avatarId: StudentAvatarId }>;
 type TeacherReviewSearch = {
   keyword: string;
   artifactType: ArtifactType | "ALL";
@@ -898,6 +901,7 @@ type AuthSession = {
   name: string;
   account: string;
   title: string;
+  avatarId?: string;
   groupId?: string;
   groupLabel?: string;
   groupName?: string;
@@ -1203,10 +1207,6 @@ function normalizeStudentAvatarId(avatarId?: string): StudentAvatarId {
   return studentAvatarOptions.some((option) => option.id === avatarId) ? (avatarId as StudentAvatarId) : defaultStudentAvatarId;
 }
 
-function getStudentProfileAvatar(account?: string, profiles?: StudentProfileState) {
-  return normalizeStudentAvatarId(account ? profiles?.[account]?.avatarId : undefined);
-}
-
 function StudentCartoonAvatar(props: { avatarId: StudentAvatarId; size?: number; className?: string }) {
   const size = props.size || 34;
   const config = studentAvatarOptions.find((option) => option.id === props.avatarId) || studentAvatarOptions[0];
@@ -1360,6 +1360,9 @@ type KnowledgeUpload = {
   sizeLabel: string;
   fileType: string;
   fileDataUrl?: string;
+  file?: File;
+  downloadUrl?: string;
+  fileAvailable?: boolean;
   uploadedAt: string;
   uploadedBy?: string;
   preview: string;
@@ -1477,7 +1480,71 @@ function mapKnowledgeAssetRecord(record: KnowledgeAssetRecord): KnowledgeUpload 
     contentText: record.contentText || undefined,
     category: record.category,
     enabled: record.enabled,
+    downloadUrl: record.downloadUrl || (record.fileAvailable ? knowledgeAssetDownloadUrl(record.id) : undefined),
+    fileAvailable: record.fileAvailable,
   };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mapRemoteDefensePractice(record: RemoteDefensePractice): DefensePractice | null {
+  if (!isObjectRecord(record.content)) return null;
+  const content = record.content as Partial<DefensePractice>;
+  if (!content.scripts || !Array.isArray(content.questions) || !Array.isArray(content.transcript)) return null;
+  return {
+    ...(content as DefensePractice),
+    id: record.id,
+    ideaId: record.ideaId,
+    visibility: record.visibility,
+    createdAt: content.createdAt || record.createdAt,
+  };
+}
+
+function mapGeneratedAssetRecord(record: RemoteArtifact): GeneratedAsset | null {
+  if (!isObjectRecord(record.content) || record.content.kind !== "GENERATED_ASSET" || !isObjectRecord(record.content.asset)) return null;
+  const asset = record.content.asset as Partial<GeneratedAsset>;
+  if (!asset.id || !asset.ideaId || !asset.title || (asset.type !== "PPT" && asset.type !== "VIDEO")) return null;
+  return {
+    ...(asset as GeneratedAsset),
+    ideaId: record.ideaId,
+    createdAt: asset.createdAt || record.createdAt,
+  };
+}
+
+function generatedAssetSourceId(assetId: string) {
+  return `generated:${assetId}`.slice(0, 64);
+}
+
+function fileFromDataUrl(dataUrl: string, name: string, fallbackType?: string) {
+  const separator = dataUrl.indexOf(",");
+  if (separator < 0) throw new Error("历史知识文件缓存格式无效");
+  const header = dataUrl.slice(0, separator);
+  const payload = dataUrl.slice(separator + 1);
+  const mimeType = /^data:([^;,]+)/.exec(header)?.[1] || fallbackType || "application/octet-stream";
+  const binary = header.includes(";base64") ? window.atob(payload) : decodeURIComponent(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new File([bytes], name, { type: mimeType });
+}
+
+async function migrateLegacyStudentAvatar(session: AuthSession) {
+  if (session.role !== "student") return session;
+  const legacyProfiles = readStored<Record<string, { avatarId?: string }>>("sufe-student-profiles", {});
+  const legacyAvatarId = legacyProfiles[session.account]?.avatarId;
+  if (!legacyAvatarId) return session;
+  try {
+    const migrated =
+      normalizeStudentAvatarId(session.avatarId) === normalizeStudentAvatarId(legacyAvatarId)
+        ? session
+        : await updateAuthProfile({ avatarId: normalizeStudentAvatarId(legacyAvatarId) });
+    localStorage.removeItem("sufe-student-profiles");
+    return migrated;
+  } catch {
+    // 保留旧缓存，下次登录继续迁移；不阻断正常登录。
+    return session;
+  }
 }
 
 function mapKnowledgeExpertRecord(record: KnowledgeExpertRecord): CustomExpertRecord {
@@ -2818,6 +2885,10 @@ function buildDiagnosisResult(submission: Submission): DiagnosisResult {
 
 function makeId(prefix: string) {
   return `${prefix}-${Math.floor(10000 + Math.random() * 90000)}`;
+}
+
+function makePersistentId(prefix: string) {
+  return `${prefix}-${window.crypto?.randomUUID?.() || `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`}`;
 }
 
 function getSpeechRecognitionConstructor() {
@@ -4250,7 +4321,7 @@ function buildDefensePractice(ideaId: string, visibility: "self" | "teacher"): D
   ];
   const evaluation = buildDefenseEvaluation();
   return {
-    id: makeId("D"),
+    id: makePersistentId("D"),
     ideaId,
     basis: "BP + PPT + 路演稿",
     scripts: {
@@ -4542,7 +4613,7 @@ async function generateLexiangPptContext(message: ChatMessage, idea: Idea) {
 function buildMediaAsset(idea: Idea, sourceMessage?: ChatMessage): GeneratedAsset {
   const title = `${idea.title} - 宣传视频物料`;
   return {
-    id: makeId("A"),
+    id: makePersistentId("A"),
     ideaId: idea.id,
     type: "VIDEO",
     title,
@@ -4806,6 +4877,10 @@ function previewKnowledgeAsset(asset: KnowledgeUpload, onPreviewWord: (preview: 
 }
 
 function downloadKnowledgeAsset(asset: KnowledgeUpload) {
+  if (asset.downloadUrl || asset.fileAvailable) {
+    triggerDownload(asset.downloadUrl || knowledgeAssetDownloadUrl(asset.id), asset.name);
+    return;
+  }
   if (asset.fileDataUrl) {
     triggerDownload(asset.fileDataUrl, asset.name);
     return;
@@ -4826,7 +4901,6 @@ function App() {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [studentGroups, setStudentGroups] = useState<StudentGroup[]>(initialStudentGroups);
   const [accountRecords, setAccountRecords] = useState<AccountRecord[]>(() => normalizeAccountRecords(initialAccountRecords, initialStudentGroups));
-  const [studentProfiles, setStudentProfiles] = useState<StudentProfileState>(() => readStored<StudentProfileState>("sufe-student-profiles", {}));
   const [knowledgeUploads, setKnowledgeUploads] = useState<KnowledgeUpload[]>(() =>
     readStored("sufe-knowledge-uploads", []),
   );
@@ -4847,9 +4921,7 @@ function App() {
     ...createKnowledgeRouteState(),
     ...readStored<Partial<PromptKnowledgeRoutes>>("sufe-prompt-knowledge-routes", {}),
   }));
-  const [defensePractices, setDefensePractices] = useState<DefensePractice[]>(() =>
-    readStored("sufe-defense-practices", []),
-  );
+  const [defensePractices, setDefensePractices] = useState<DefensePractice[]>([]);
   const [activeIdeaId, setActiveIdeaId] = useState(initialIdeas[0].id);
   const [selectedExpertId, setSelectedExpertId] = useState<ExpertId>("pitch");
   const [selectedSkillId, setSelectedSkillId] = useState("deck");
@@ -4861,7 +4933,7 @@ function App() {
   const [activeSubmissionId, setActiveSubmissionId] = useState("");
   const [teacherComment, setTeacherComment] = useState(getDefaultTeacherComment());
   const [teacherStatusFilter, setTeacherStatusFilter] = useState<SubmissionStatus | "ALL">("ALL");
-  const [generatedAssets, setGeneratedAssets] = useState<GeneratedAsset[]>(() => readStored<GeneratedAsset[]>("sufe-generated-assets", []));
+  const [generatedAssets, setGeneratedAssets] = useState<GeneratedAsset[]>([]);
   const [mediaDraft, setMediaDraft] = useState<GeneratedAsset | null>(null);
   const [pptPreview, setPptPreview] = useState<GeneratedAsset | null>(null);
   const [videoPreview, setVideoPreview] = useState<GeneratedAsset | null>(null);
@@ -4874,12 +4946,7 @@ function App() {
   const [pendingDeleteKnowledgeBase, setPendingDeleteKnowledgeBase] = useState<KnowledgeCategory | null>(null);
   const [pendingKnowledgeAssetAction, setPendingKnowledgeAssetAction] = useState<PendingKnowledgeAssetAction | null>(null);
   const [selectedKnowledgeSelection, setSelectedKnowledgeSelection] = useState<StudentKnowledgeSelection>(() =>
-    normalizeStudentKnowledgeSelection(
-      readStored<unknown>("sufe-student-knowledge-selection", {
-        categories: readStored<KnowledgeCategory[]>("sufe-student-knowledge-categories", knowledgeCategoryOptions),
-        uploadIds: [],
-      }),
-    ),
+    normalizeStudentKnowledgeSelection({ categories: knowledgeCategoryOptions, uploadIds: [] }),
   );
 
   // 这些旧视图仍从单文件共享目录读取数据，拆分组件前集中同步一次，避免各端展示不一致。
@@ -4900,7 +4967,7 @@ function App() {
   const activeAccountRecord = auth
     ? accountRecords.find((account) => account.account === auth.account) || buildAuthenticatedAccount(auth, studentGroups)
     : undefined;
-  const activeStudentAvatarId = auth?.role === "student" ? getStudentProfileAvatar(auth.account, studentProfiles) : defaultStudentAvatarId;
+  const activeStudentAvatarId = auth?.role === "student" ? normalizeStudentAvatarId(auth.avatarId) : defaultStudentAvatarId;
   const studentExperts = experts.filter((expert) => isStudentExpertId(expert.id) && isStudentExpertEnabled(expert, activeAccountRecord));
   const fallbackStudentExperts = experts.filter((expert) => isStudentExpertId(expert.id));
   const rawSelectedExpert = experts.find((expert) => expert.id === selectedExpertId) || experts[0];
@@ -4929,10 +4996,12 @@ function App() {
     localStorage.removeItem("sufe-active-idea");
     localStorage.removeItem("sufe-submissions");
     loadCurrentAuth()
-      .then((session) => {
+      .then(async (session) => {
         if (!active || !session) return;
-        setAuth(session);
-        setRole(session.role);
+        const restoredSession = await migrateLegacyStudentAvatar(session);
+        if (!active) return;
+        setAuth(restoredSession);
+        setRole(restoredSession.role);
       })
       .catch(() => {
         // 登录页会在用户主动登录时展示明确的连接错误。
@@ -4957,10 +5026,11 @@ function App() {
 
     async function restoreStudentWorkspace() {
       try {
-        const [initialWorkspace, remoteArtifacts, remoteSubmissions] = await Promise.all([
+        const [initialWorkspace, remoteArtifacts, remoteSubmissions, remoteDefensePractices] = await Promise.all([
           loadStudentWorkspace(),
           listStudentArtifacts(),
           listStudentSubmissions(),
+          listDefensePractices(),
         ]);
         let workspace = initialWorkspace;
         if (workspace.ideas.length === 0) {
@@ -4976,20 +5046,115 @@ function App() {
         const nextIdeas = workspace.ideas.map(mapRemoteIdea);
         const nextActiveIdea = nextIdeas[0];
         const activeConversation = workspace.conversations.find((item) => item.ideaId === nextActiveIdea.id);
+        const ownedIdeaIds = new Set(nextIdeas.map((idea) => idea.id));
+        let resolvedArtifacts = [...remoteArtifacts];
+        let resolvedDefensePractices = remoteDefensePractices
+          .map(mapRemoteDefensePractice)
+          .filter((practice): practice is DefensePractice => Boolean(practice));
+        const migrationErrors: string[] = [];
+
+        const legacyDefensePractices = readStored<DefensePractice[]>("sufe-defense-practices", []);
+        if (legacyDefensePractices.length) {
+          try {
+            const existingIds = new Set(resolvedDefensePractices.map((practice) => practice.id));
+            const migrated = await Promise.all(
+              legacyDefensePractices
+                .filter((practice) => ownedIdeaIds.has(practice.ideaId) && !existingIds.has(practice.id))
+                .map((practice) =>
+                  saveDefensePractice(practice.id, {
+                    ideaId: practice.ideaId,
+                    visibility: practice.visibility,
+                    content: practice,
+                  }),
+                ),
+            );
+            resolvedDefensePractices = [
+              ...migrated.map(mapRemoteDefensePractice).filter((practice): practice is DefensePractice => Boolean(practice)),
+              ...resolvedDefensePractices,
+            ];
+            localStorage.removeItem("sufe-defense-practices");
+          } catch {
+            migrationErrors.push("答辩记录");
+          }
+        }
+
+        const legacyGeneratedAssets = readStored<GeneratedAsset[]>("sufe-generated-assets", []);
+        if (legacyGeneratedAssets.length) {
+          try {
+            const existingIds = new Set(
+              resolvedArtifacts.map(mapGeneratedAssetRecord).filter((asset): asset is GeneratedAsset => Boolean(asset)).map((asset) => asset.id),
+            );
+            const migrated = await Promise.all(
+              legacyGeneratedAssets
+                .filter((asset) => ownedIdeaIds.has(asset.ideaId) && !existingIds.has(asset.id))
+                .map((asset) =>
+                  saveStudentArtifact({
+                    ideaId: asset.ideaId,
+                    sourceMessageId: generatedAssetSourceId(asset.id),
+                    artifactType: asset.type === "PPT" ? "PPT" : "MEDIA",
+                    title: asset.title,
+                    summary: asset.type === "PPT" ? "学生生成的路演 PPT" : "学生生成的多媒体成果",
+                    content: { kind: "GENERATED_ASSET", asset },
+                  }),
+                ),
+            );
+            resolvedArtifacts = [...migrated, ...resolvedArtifacts];
+            localStorage.removeItem("sufe-generated-assets");
+          } catch {
+            migrationErrors.push("生成成果");
+          }
+        }
+
         setIdeas(nextIdeas);
         setMessages(workspace.conversations.flatMap((conversation) => conversation.messages.map(mapRemoteMessage)));
         setStudentConversations(workspace.conversations);
-        setArtifactRecords(remoteArtifacts);
+        setArtifactRecords(resolvedArtifacts);
+        setGeneratedAssets(
+          resolvedArtifacts.map(mapGeneratedAssetRecord).filter((asset): asset is GeneratedAsset => Boolean(asset)),
+        );
+        setDefensePractices(resolvedDefensePractices);
         setSubmissions(remoteSubmissions.map(mapRemoteSubmission));
         setActiveIdeaId(nextActiveIdea.id);
+        let clearLegacyKnowledgeSelection = true;
         if (activeConversation) {
           setSelectedExpertId(activeConversation.selectedExpertId);
           setSelectedSkillId(activeConversation.selectedSkillId);
           setModel(isModelMode(activeConversation.modelMode) ? activeConversation.modelMode : "Auto");
-          setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection));
+          const remoteSelection = normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection);
+          const legacySelection = normalizeStudentKnowledgeSelection(
+            readStored<unknown>("sufe-student-knowledge-selection", { categories: [], uploadIds: [] }),
+          );
+          const useLegacySelection =
+            !remoteSelection.categories.length && !remoteSelection.uploadIds.length &&
+            (legacySelection.categories.length > 0 || legacySelection.uploadIds.length > 0);
+          const selection = useLegacySelection ? legacySelection : remoteSelection;
+          if (useLegacySelection) {
+            try {
+              await saveStudentConversation(nextActiveIdea.id, {
+                selectedExpertId: activeConversation.selectedExpertId,
+                selectedSkillId: activeConversation.selectedSkillId,
+                modelMode: activeConversation.modelMode,
+                knowledgeSelection: selection,
+              });
+            } catch {
+              clearLegacyKnowledgeSelection = false;
+              migrationErrors.push("知识选择");
+            }
+          }
+          setSelectedKnowledgeSelection(selection);
+        }
+        if (clearLegacyKnowledgeSelection) {
+          localStorage.removeItem("sufe-student-knowledge-selection");
+          localStorage.removeItem("sufe-student-knowledge-categories");
         }
         setPrompt(getScenarioPrompt(activeConversation?.selectedExpertId || "pitch", nextActiveIdea));
         setStudentWorkspaceAccount(account);
+        if (migrationErrors.length) {
+          setSystemNotice({
+            title: "旧缓存迁移未完成",
+            message: `${migrationErrors.join("、")}暂未写入服务器，旧缓存已保留，下次登录会继续迁移。`,
+          });
+        }
       } catch (error) {
         if (!active) return;
         setStudentWorkspaceAccount(null);
@@ -5032,16 +5197,15 @@ function App() {
     if (!auth) return undefined;
     let active = true;
     Promise.all([listKnowledgeBases(), listKnowledgeAssets(), listKnowledgeExperts()])
-      .then(([remoteBases, remoteAssets, remoteExperts]) => {
+      .then(async ([remoteBases, remoteAssets, remoteExperts]) => {
         if (!active) return;
         setKnowledgeCatalog((current) => mergeKnowledgeBaseRecords(current, remoteBases));
         setKnowledgeBaseStates((current) => ({
           ...current,
           ...Object.fromEntries(remoteBases.map((base) => [base.category, base.active])),
         }));
-        if (remoteAssets.length) {
-          setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
-        }
+        let resolvedAssets = remoteAssets;
+        setKnowledgeUploads(resolvedAssets.map(mapKnowledgeAssetRecord));
         if (remoteExperts.length) {
           setCustomExperts((current) => {
             const merged = new Map(current.map((expert) => [expert.id, expert]));
@@ -5052,6 +5216,47 @@ function App() {
             ...current,
             ...Object.fromEntries(remoteExperts.map((expert) => [expert.id, expert.knowledgeCategories])),
           }));
+        }
+        if (auth.role === "teacher" || auth.role === "admin") {
+          const legacyAssets = readStored<KnowledgeUpload[]>("sufe-knowledge-uploads", []).filter((asset) => asset.fileDataUrl);
+          if (legacyAssets.length) {
+            try {
+              const migrated = await Promise.all(
+                legacyAssets.map(async (legacy) => {
+                  const file = fileFromDataUrl(legacy.fileDataUrl || "", legacy.name, legacy.fileType);
+                  const existing = resolvedAssets.find(
+                    (asset) => asset.name === legacy.name && asset.category === (legacy.category || inferKnowledgeCategory(legacy.name)),
+                  );
+                  if (existing?.fileAvailable) return existing;
+                  if (existing) return attachKnowledgeAssetFile(existing.id, file);
+                  return uploadKnowledgeAsset({
+                    category: legacy.category || inferKnowledgeCategory(legacy.name),
+                    preview: legacy.preview,
+                    contentText: legacy.contentText || legacy.preview,
+                    uploadedBy: legacy.uploadedBy || auth.name,
+                    enabled: legacy.enabled !== false,
+                    file,
+                  });
+                }),
+              );
+              if (!active) return;
+              const migratedById = new Map(migrated.map((asset) => [asset.id, asset]));
+              resolvedAssets = [
+                ...migrated,
+                ...resolvedAssets.filter((asset) => !migratedById.has(asset.id)),
+              ];
+              setKnowledgeUploads(resolvedAssets.map(mapKnowledgeAssetRecord));
+              localStorage.removeItem("sufe-knowledge-uploads");
+            } catch (error) {
+              if (!active) return;
+              setSystemNotice({
+                title: "历史知识文件迁移未完成",
+                message: error instanceof Error ? error.message : "旧缓存已保留，下次登录会继续迁移。",
+              });
+            }
+          } else {
+            localStorage.removeItem("sufe-knowledge-uploads");
+          }
         }
       })
       .catch((error) => {
@@ -5103,14 +5308,10 @@ function App() {
   ]);
 
   useEffect(() => localStorage.setItem("sufe-role", role), [role]);
-  useEffect(() => localStorage.setItem("sufe-student-profiles", JSON.stringify(studentProfiles)), [studentProfiles]);
-  useEffect(() => localStorage.setItem("sufe-defense-practices", JSON.stringify(defensePractices)), [defensePractices]);
-  useEffect(() => localStorage.setItem("sufe-generated-assets", JSON.stringify(generatedAssets)), [generatedAssets]);
-  useEffect(() => localStorage.setItem("sufe-student-knowledge-selection", JSON.stringify(selectedKnowledgeSelection)), [selectedKnowledgeSelection]);
   // eslint-disable-next-line react-hooks/globals
   knowledgeBaseCatalog = knowledgeCatalog.length ? knowledgeCatalog : defaultKnowledgeBaseCatalog;
   async function handleLogin(account: string, password: string) {
-    const session = await loginWithPassword(account, password);
+    const session = await migrateLegacyStudentAvatar(await loginWithPassword(account, password));
     setStudentWorkspaceAccount(null);
     setAuth(session);
     setRole(session.role);
@@ -5144,11 +5345,8 @@ function App() {
       displayName: nextProfile.name,
       currentPassword: nextProfile.currentPassword,
       newPassword: nextProfile.newPassword,
+      avatarId: nextProfile.avatarId,
     });
-    setStudentProfiles((current) => ({
-      ...current,
-      [auth.account]: { avatarId: nextProfile.avatarId },
-    }));
     setAccountRecords((current) =>
       current.map((account) =>
         account.account === auth.account
@@ -5411,24 +5609,33 @@ function App() {
     try {
       const saved = await Promise.all(
         assets.map(async (asset) => {
-          const record = await createKnowledgeAsset({
-            category: asset.category || inferKnowledgeCategory(asset.name),
-            name: asset.name,
-            sizeLabel: asset.sizeLabel,
-            fileType: asset.fileType,
-            preview: asset.preview,
-            contentText: asset.contentText || asset.preview,
-            uploadedBy: asset.uploadedBy || auth?.name || "教师/管理员",
-            enabled: asset.enabled !== false,
-          });
-          return { ...mapKnowledgeAssetRecord(record), fileDataUrl: asset.fileDataUrl };
+          const record = asset.file
+            ? await uploadKnowledgeAsset({
+                category: asset.category || inferKnowledgeCategory(asset.name),
+                preview: asset.preview,
+                contentText: asset.contentText || asset.preview,
+                uploadedBy: asset.uploadedBy || auth?.name || "教师/管理员",
+                enabled: asset.enabled !== false,
+                file: asset.file,
+              })
+            : await createKnowledgeAsset({
+                category: asset.category || inferKnowledgeCategory(asset.name),
+                name: asset.name,
+                sizeLabel: asset.sizeLabel,
+                fileType: asset.fileType,
+                preview: asset.preview,
+                contentText: asset.contentText || asset.preview,
+                uploadedBy: asset.uploadedBy || auth?.name || "教师/管理员",
+                enabled: asset.enabled !== false,
+              });
+          return mapKnowledgeAssetRecord(record);
         }),
       );
       setKnowledgeUploads((current) => [...saved, ...current.filter((item) => !saved.some((savedItem) => savedItem.id === item.id))]);
     } catch (error) {
       setSystemNotice({
         title: "知识资料上传失败",
-        message: error instanceof Error ? error.message : "资料元数据未写入后端。",
+        message: error instanceof Error ? error.message : "资料文件与元数据未写入后端。",
       });
     }
   }
@@ -5754,7 +5961,7 @@ function App() {
     const existing = generatedAssets.find((asset) => asset.type === "PPT" && asset.sourceMessageId === message.id);
     const baseAsset =
       existing || {
-        id: makeId("A"),
+        id: makePersistentId("A"),
         ideaId: activeIdea.id,
         type: "PPT" as const,
         title: `${activeIdea.title} - 路演 PPT`,
@@ -5777,7 +5984,27 @@ function App() {
       if (existingIndex < 0) return [asset, ...current];
       return current.map((item, index) => (index === existingIndex ? { ...asset, id: item.id, createdAt: item.createdAt } : item));
     });
+    void persistGeneratedAsset(asset);
     return asset;
+  }
+
+  async function persistGeneratedAsset(asset: GeneratedAsset) {
+    try {
+      const saved = await saveStudentArtifact({
+        ideaId: asset.ideaId,
+        sourceMessageId: generatedAssetSourceId(asset.id),
+        artifactType: asset.type === "PPT" ? "PPT" : "MEDIA",
+        title: asset.title,
+        summary: asset.type === "PPT" ? "学生生成的路演 PPT" : "学生生成的多媒体成果",
+        content: { kind: "GENERATED_ASSET", asset },
+      });
+      setArtifactRecords((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+    } catch (error) {
+      setSystemNotice({
+        title: "生成成果保存失败",
+        message: error instanceof Error ? error.message : "成果暂未写入数据库，请稍后重试。",
+      });
+    }
   }
 
   async function handleContextAction(message: ChatMessage, action: ContextAction) {
@@ -5918,13 +6145,19 @@ function App() {
   }
 
   function handleSaveMediaAsset(asset: GeneratedAsset) {
-    const normalized = { ...asset, id: asset.id || makeId("A"), createdAt: asset.createdAt || nowTime() };
+    const existing = generatedAssets.find((item) => item.type === "VIDEO" && item.ideaId === asset.ideaId);
+    const normalized = {
+      ...asset,
+      id: existing?.id || asset.id || makePersistentId("A"),
+      createdAt: existing?.createdAt || asset.createdAt || nowTime(),
+    };
     setGeneratedAssets((current) => {
       const existingIndex = current.findIndex((item) => item.type === "VIDEO" && item.ideaId === normalized.ideaId);
       if (existingIndex < 0) return [normalized, ...current];
       return current.map((item, index) => (index === existingIndex ? { ...normalized, id: item.id, createdAt: item.createdAt } : item));
     });
     setMediaDraft(normalized);
+    void persistGeneratedAsset(normalized);
   }
 
   async function handleSaveDefense(practice: DefensePractice) {
@@ -5936,17 +6169,33 @@ function App() {
       blockPermission("提交老师审核");
       return;
     }
+    let storedPractice = practice;
+    try {
+      const saved = await saveDefensePractice(practice.id, {
+        ideaId: practice.ideaId,
+        visibility: practice.visibility,
+        content: practice,
+      });
+      storedPractice = mapRemoteDefensePractice(saved) || practice;
+      setDefensePractices((current) => [storedPractice, ...current.filter((item) => item.id !== storedPractice.id)]);
+    } catch (error) {
+      setSystemNotice({
+        title: "答辩记录保存失败",
+        message: error instanceof Error ? error.message : "答辩记录未写入数据库。",
+      });
+      return;
+    }
     if (practice.visibility === "teacher") {
       const studentIdentity = getStudentIdentity(auth, activeAccountRecord);
       if (!studentIdentity.hasGroup) {
-        setSystemNotice({ title: "暂时不能保存", message: "当前学生账号尚未分配项目小组，请先联系管理员在管理端完成小组分配。" });
+        setSystemNotice({ title: "记录已保存，暂时不能提交", message: "当前学生账号尚未分配项目小组，请先联系管理员在管理端完成小组分配。" });
         return;
       }
-      const blocks = defenseBlocks(practice);
+      const blocks = defenseBlocks(storedPractice);
       try {
         const artifact = await saveStudentArtifact({
           ideaId: activeIdea.id,
-          sourceMessageId: practice.id,
+          sourceMessageId: storedPractice.id,
           artifactType: "DEFENSE",
           title: `${activeIdea.title} - 答辩模拟记录`,
           summary: "已基于 BP + PPT 生成 1/3/5 分钟演讲稿、评委压力测试问题和回答建议。",
@@ -5955,7 +6204,6 @@ function App() {
         const submission = mapRemoteSubmission(await submitStudentArtifact(artifact.id));
         setArtifactRecords((current) => [artifact, ...current.filter((item) => item.id !== artifact.id)]);
         setSubmissions((current) => [submission, ...current.filter((item) => item.id !== submission.id)]);
-        setDefensePractices((current) => [practice, ...current]);
         setStudentView("feedback");
       } catch (error) {
         setSystemNotice({
@@ -5965,7 +6213,6 @@ function App() {
       }
       return;
     }
-    setDefensePractices((current) => [practice, ...current]);
   }
 
   async function handleReviewSubmission(status: SubmissionStatus) {
@@ -10231,16 +10478,16 @@ function TeacherView(props: {
             text = "";
           }
         }
-        const fileDataUrl = await readFileAsDataUrl(file);
         return {
           id: makeId("K"),
           name: file.name,
           sizeLabel: formatFileSize(file.size),
           fileType: file.type || file.name.split(".").pop()?.toUpperCase() || "本地文件",
-          fileDataUrl,
+          file,
           uploadedAt: nowDateTime(),
           uploadedBy: props.teacherName || "周老师",
           preview: buildUploadPreview(file, text, uploadCategory),
+          contentText: text || undefined,
           category: uploadCategory,
           enabled: true,
         };

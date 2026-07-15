@@ -10,6 +10,7 @@ import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeAssetRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeBaseRepository;
+import com.sufe.ai.storage.FileStorageService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
@@ -17,7 +18,11 @@ import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -29,12 +34,17 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 @RestController
 @RequestMapping({"/api/admin", "/api/knowledge"})
@@ -45,19 +55,22 @@ public class AdminKnowledgeController {
     private final ExpertProfileRepository expertProfileRepository;
     private final ExpertSkillRepository expertSkillRepository;
     private final ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository;
+    private final FileStorageService fileStorageService;
 
     public AdminKnowledgeController(
             KnowledgeBaseRepository knowledgeBaseRepository,
             KnowledgeAssetRepository knowledgeAssetRepository,
             ExpertProfileRepository expertProfileRepository,
             ExpertSkillRepository expertSkillRepository,
-            ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository
+            ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository,
+            FileStorageService fileStorageService
     ) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.knowledgeAssetRepository = knowledgeAssetRepository;
         this.expertProfileRepository = expertProfileRepository;
         this.expertSkillRepository = expertSkillRepository;
         this.expertKnowledgeRouteRepository = expertKnowledgeRouteRepository;
+        this.fileStorageService = fileStorageService;
     }
 
     @GetMapping("/knowledge-bases")
@@ -155,6 +168,131 @@ public class AdminKnowledgeController {
                 .body(toKnowledgeAssetResponse(asset, true));
     }
 
+    @PostMapping(value = "/knowledge-assets/files", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
+    @Transactional
+    public ResponseEntity<?> uploadKnowledgeAsset(
+            @RequestParam String category,
+            @RequestParam String preview,
+            @RequestParam(required = false) String contentText,
+            @RequestParam String uploadedBy,
+            @RequestParam(defaultValue = "true") boolean enabled,
+            @RequestParam MultipartFile file
+    ) {
+        if (!hasLength(category, 100) || !hasLength(preview, 1000) || !hasLength(uploadedBy, 100)) {
+            return badRequest("INVALID_KNOWLEDGE_FILE_METADATA", "知识资料信息不完整或过长");
+        }
+        if (contentText != null && contentText.length() > 50_000) {
+            return badRequest("KNOWLEDGE_CONTENT_TOO_LONG", "知识资料可读文本不能超过 50000 个字符");
+        }
+        KnowledgeBase base = knowledgeBaseRepository.findByCategory(category.trim()).orElse(null);
+        if (base == null) {
+            return badRequest("KNOWLEDGE_BASE_NOT_FOUND", "知识库目录不存在");
+        }
+
+        FileStorageService.StoredFile stored;
+        try {
+            stored = fileStorageService.storeKnowledgeFile(file);
+        } catch (IllegalArgumentException exception) {
+            return badRequest("INVALID_KNOWLEDGE_FILE", exception.getMessage());
+        } catch (IOException exception) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ErrorResponse("KNOWLEDGE_FILE_STORE_FAILED", "知识资料文件保存失败"));
+        }
+
+        try {
+            KnowledgeAsset asset = KnowledgeAsset.create(
+                    base.getId(),
+                    stored.originalName(),
+                    formatFileSize(stored.size()),
+                    displayFileType(stored.originalName()),
+                    preview,
+                    contentText,
+                    uploadedBy
+            );
+            asset.setEnabled(enabled);
+            asset.attachFile(
+                    stored.storageKey(),
+                    stored.originalName(),
+                    stored.mimeType(),
+                    stored.size(),
+                    stored.sha256()
+            );
+            asset = knowledgeAssetRepository.saveAndFlush(asset);
+            return ResponseEntity.created(URI.create("/api/knowledge/knowledge-assets/" + asset.getId()))
+                    .body(toKnowledgeAssetResponse(asset, true));
+        } catch (RuntimeException exception) {
+            fileStorageService.delete(stored.storageKey());
+            throw exception;
+        }
+    }
+
+    @PostMapping(value = "/knowledge-assets/{assetId}/file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
+    @Transactional
+    public ResponseEntity<?> attachKnowledgeAssetFile(
+            @PathVariable String assetId,
+            @RequestParam MultipartFile file
+    ) {
+        KnowledgeAsset asset = knowledgeAssetRepository.findById(assetId).orElse(null);
+        if (asset == null) {
+            return notFound("KNOWLEDGE_ASSET_NOT_FOUND", "知识库资料不存在");
+        }
+        FileStorageService.StoredFile stored;
+        try {
+            stored = fileStorageService.storeKnowledgeFile(file);
+        } catch (IllegalArgumentException exception) {
+            return badRequest("INVALID_KNOWLEDGE_FILE", exception.getMessage());
+        } catch (IOException exception) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ErrorResponse("KNOWLEDGE_FILE_STORE_FAILED", "知识资料文件保存失败"));
+        }
+        String previousStorageKey = asset.getStorageKey();
+        try {
+            asset.attachFile(
+                    stored.storageKey(),
+                    stored.originalName(),
+                    stored.mimeType(),
+                    stored.size(),
+                    stored.sha256()
+            );
+            asset = knowledgeAssetRepository.saveAndFlush(asset);
+            fileStorageService.delete(previousStorageKey);
+            return ResponseEntity.ok(toKnowledgeAssetResponse(asset, true));
+        } catch (RuntimeException exception) {
+            fileStorageService.delete(stored.storageKey());
+            throw exception;
+        }
+    }
+
+    @GetMapping("/knowledge-assets/{assetId}/file")
+    public ResponseEntity<?> downloadKnowledgeAsset(@PathVariable String assetId, Authentication authentication) {
+        KnowledgeAsset asset = knowledgeAssetRepository.findById(assetId).orElse(null);
+        if (asset == null || (!asset.isEnabled() && !canManageKnowledge(authentication))) {
+            return notFound("KNOWLEDGE_ASSET_NOT_FOUND", "知识库资料不存在");
+        }
+        if (!asset.hasFile()) {
+            return conflict("KNOWLEDGE_FILE_NOT_AVAILABLE", "该资料只有历史文本记录，尚未保存原始文件");
+        }
+        Resource resource;
+        try {
+            resource = fileStorageService.load(asset.getStorageKey());
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            return conflict("KNOWLEDGE_FILE_NOT_AVAILABLE", "知识资料文件不存在或已失效");
+        }
+        String fileName = asset.getOriginalName() == null ? asset.getName() : asset.getOriginalName();
+        String contentType = asset.getMimeType() == null ? MediaType.APPLICATION_OCTET_STREAM_VALUE : asset.getMimeType();
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(fileName, StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .contentType(MediaType.parseMediaType(contentType));
+        if (asset.getFileSizeBytes() != null) response.contentLength(asset.getFileSizeBytes());
+        return response.body(resource);
+    }
+
     @PatchMapping("/knowledge-assets/{assetId}")
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
@@ -182,7 +320,10 @@ public class AdminKnowledgeController {
         if (asset == null) {
             return notFound("KNOWLEDGE_ASSET_NOT_FOUND", "知识库资料不存在");
         }
+        String storageKey = asset.getStorageKey();
         knowledgeAssetRepository.delete(asset);
+        knowledgeAssetRepository.flush();
+        fileStorageService.delete(storageKey);
         return ResponseEntity.noContent().build();
     }
 
@@ -316,8 +457,30 @@ public class AdminKnowledgeController {
                 includeSensitiveContent ? asset.getContentText() : null,
                 asset.getUploadedBy(),
                 asset.isEnabled(),
+                asset.hasFile(),
+                asset.getOriginalName(),
+                asset.getMimeType(),
+                asset.getFileSizeBytes(),
+                asset.getSha256(),
+                asset.hasFile() ? "/api/knowledge/knowledge-assets/" + asset.getId() + "/file" : null,
                 asset.getCreatedAt()
         );
+    }
+
+    private static boolean hasLength(String value, int maxLength) {
+        return value != null && !value.isBlank() && value.trim().length() <= maxLength;
+    }
+
+    private static String formatFileSize(long size) {
+        if (size < 1024) return size + " B";
+        if (size < 1024 * 1024) return String.format(Locale.ROOT, "%.1f KB", size / 1024.0);
+        return String.format(Locale.ROOT, "%.1f MB", size / (1024.0 * 1024.0));
+    }
+
+    private static String displayFileType(String name) {
+        int separator = name.lastIndexOf('.');
+        if (separator < 0 || separator == name.length() - 1) return "文件";
+        return name.substring(separator + 1).toUpperCase(Locale.ROOT);
     }
 
     private ExpertResponse toExpertResponse(ExpertProfile expert, boolean includeSensitiveContent) {
@@ -467,6 +630,12 @@ public class AdminKnowledgeController {
             String contentText,
             String uploadedBy,
             boolean enabled,
+            boolean fileAvailable,
+            String originalName,
+            String mimeType,
+            Long fileSizeBytes,
+            String sha256,
+            String downloadUrl,
             Instant createdAt
     ) {
     }

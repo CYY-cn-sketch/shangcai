@@ -37,6 +37,21 @@ public class KnowledgeAsset {
     @Column(name = "uploaded_by", length = 100, nullable = false)
     private String uploadedBy;
 
+    @Column(name = "storage_key", length = 512)
+    private String storageKey;
+
+    @Column(name = "original_name", length = 255)
+    private String originalName;
+
+    @Column(name = "mime_type", length = 150)
+    private String mimeType;
+
+    @Column(name = "file_size_bytes")
+    private Long fileSizeBytes;
+
+    @Column(length = 64)
+    private String sha256;
+
     @Column(nullable = false)
     private boolean enabled;
 
@@ -99,6 +114,22 @@ public class KnowledgeAsset {
         this.updatedAt = Instant.now();
     }
 
+    public void attachFile(
+            String storageKey,
+            String originalName,
+            String mimeType,
+            long fileSizeBytes,
+            String sha256
+    ) {
+        this.storageKey = KnowledgeBase.requireText(storageKey, "storageKey");
+        this.originalName = KnowledgeBase.requireText(originalName, "originalName");
+        this.mimeType = KnowledgeBase.requireText(mimeType, "mimeType");
+        if (fileSizeBytes < 0) throw new IllegalArgumentException("fileSizeBytes 不能小于 0");
+        this.fileSizeBytes = fileSizeBytes;
+        this.sha256 = KnowledgeBase.requireText(sha256, "sha256");
+        this.updatedAt = Instant.now();
+    }
+
     private static String normalizeOptional(String value) {
         return value == null || value.isBlank() ? null : value.trim();
     }
@@ -134,6 +165,13 @@ public class KnowledgeAsset {
     public String getUploadedBy() {
         return uploadedBy;
     }
+
+    public String getStorageKey() { return storageKey; }
+    public String getOriginalName() { return originalName; }
+    public String getMimeType() { return mimeType; }
+    public Long getFileSizeBytes() { return fileSizeBytes; }
+    public String getSha256() { return sha256; }
+    public boolean hasFile() { return storageKey != null; }
 
     public boolean isEnabled() {
         return enabled;

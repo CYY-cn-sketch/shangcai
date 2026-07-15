@@ -17,6 +17,12 @@ export type KnowledgeAssetRecord = {
   contentText?: string | null;
   uploadedBy: string;
   enabled: boolean;
+  fileAvailable: boolean;
+  originalName?: string | null;
+  mimeType?: string | null;
+  fileSizeBytes?: number | null;
+  sha256?: string | null;
+  downloadUrl?: string | null;
   createdAt: string;
 };
 
@@ -47,7 +53,19 @@ export type SaveKnowledgeBaseInput = Pick<KnowledgeBaseRecord, "category" | "des
   active: boolean;
 };
 
-export type SaveKnowledgeAssetInput = Omit<KnowledgeAssetRecord, "id" | "createdAt">;
+export type SaveKnowledgeAssetInput = Omit<
+  KnowledgeAssetRecord,
+  "id" | "createdAt" | "fileAvailable" | "originalName" | "mimeType" | "fileSizeBytes" | "sha256" | "downloadUrl"
+>;
+
+export type UploadKnowledgeAssetInput = {
+  category: string;
+  preview: string;
+  contentText?: string;
+  uploadedBy: string;
+  enabled: boolean;
+  file: File;
+};
 
 export type SaveKnowledgeExpertInput = Omit<KnowledgeExpertRecord, "sourceSkillName" | "sourceSkillContent" | "sourceSkillUploadedBy" | "systemPrompt" | "userPrompt"> & {
   sourceSkillName?: string;
@@ -136,12 +154,55 @@ export function createKnowledgeAsset(input: SaveKnowledgeAssetInput) {
   return mutateJson<KnowledgeAssetRecord>("/api/knowledge/knowledge-assets", "POST", input);
 }
 
+export async function uploadKnowledgeAsset(input: UploadKnowledgeAssetInput) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.set("category", input.category);
+  form.set("preview", input.preview);
+  if (input.contentText) form.set("contentText", input.contentText);
+  form.set("uploadedBy", input.uploadedBy);
+  form.set("enabled", String(input.enabled));
+  form.set("file", input.file, input.file.name);
+  const response = await fetch("/api/knowledge/knowledge-assets/files", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as KnowledgeAssetRecord;
+}
+
+export async function attachKnowledgeAssetFile(id: string, file: File) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.set("file", file, file.name);
+  const response = await fetch(`/api/knowledge/knowledge-assets/${encodeURIComponent(id)}/file`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as KnowledgeAssetRecord;
+}
+
 export function updateKnowledgeAsset(id: string, input: Omit<SaveKnowledgeAssetInput, "category" | "uploadedBy">) {
   return mutateJson<KnowledgeAssetRecord>(`/api/knowledge/knowledge-assets/${encodeURIComponent(id)}`, "PATCH", input);
 }
 
 export function deleteKnowledgeAsset(id: string) {
   return deleteResource(`/api/knowledge/knowledge-assets/${encodeURIComponent(id)}`);
+}
+
+export function knowledgeAssetDownloadUrl(id: string) {
+  return `/api/knowledge/knowledge-assets/${encodeURIComponent(id)}/file`;
 }
 
 export function listKnowledgeExperts() {

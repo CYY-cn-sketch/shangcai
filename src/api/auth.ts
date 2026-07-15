@@ -4,6 +4,7 @@ export type RemoteAuthSession = {
   name: string;
   account: string;
   title: string;
+  avatarId: string;
   groupId?: string;
   groupLabel?: string;
   groupName?: string;
@@ -12,9 +13,10 @@ export type RemoteAuthSession = {
 };
 
 export type AuthProfileUpdate = {
-  displayName: string;
+  displayName?: string;
   currentPassword?: string;
   newPassword?: string;
+  avatarId?: string;
 };
 
 type CsrfResponse = {

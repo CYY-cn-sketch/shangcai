@@ -22,6 +22,10 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 21MB
 
 server:
   port: ${SERVER_PORT:8080}
@@ -46,6 +50,8 @@ management:
       show-details: never
 
 sufe:
+  storage:
+    files-root: ${SUFE_FILE_STORAGE_ROOT:./data/files}
   bootstrap:
     demo-data-enabled: false
     demo-password: ""

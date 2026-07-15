@@ -43,6 +43,9 @@ public class UserAccount {
     @Column(name = "quota_remaining", nullable = false)
     private int quotaRemaining;
 
+    @Column(name = "avatar_id", length = 64, nullable = false)
+    private String avatarId;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -72,6 +75,7 @@ public class UserAccount {
             throw new IllegalArgumentException("quotaRemaining 不能小于 0");
         }
         this.quotaRemaining = quotaRemaining;
+        this.avatarId = "student-boy";
         this.status = UserStatus.ACTIVE;
         this.createdAt = now;
         this.updatedAt = now;
@@ -126,6 +130,11 @@ public class UserAccount {
         this.updatedAt = Instant.now();
     }
 
+    public void updateAvatarId(String avatarId) {
+        this.avatarId = requireText(avatarId, "avatarId");
+        this.updatedAt = Instant.now();
+    }
+
     private static String normalizeAccount(String value) {
         return requireText(value, "account").toLowerCase(Locale.ROOT);
     }
@@ -175,6 +184,10 @@ public class UserAccount {
 
     public int getQuotaRemaining() {
         return quotaRemaining;
+    }
+
+    public String getAvatarId() {
+        return avatarId;
     }
 
     public Instant getCreatedAt() {
