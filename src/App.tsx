@@ -63,6 +63,7 @@ import {
 } from "./api/artifacts";
 import {
   attachKnowledgeAssetFile,
+  confirmExpertSkillUpload,
   createKnowledgeAsset,
   createKnowledgeBase,
   deleteKnowledgeAsset,
@@ -73,12 +74,14 @@ import {
   listKnowledgeExperts,
   knowledgeAssetDownloadUrl,
   saveKnowledgeExpert,
+  uploadExpertSkillFolder,
   uploadKnowledgeAsset,
   updateKnowledgeAsset,
   updateKnowledgeBase,
   type KnowledgeAssetRecord,
   type KnowledgeBaseRecord,
   type KnowledgeExpertRecord,
+  type ExpertSkillUploadRecord,
   type SaveKnowledgeExpertInput,
 } from "./api/knowledge";
 import { listDefensePractices, saveDefensePractice, type RemoteDefensePractice } from "./api/defense";
@@ -2103,129 +2106,6 @@ function normalizeCustomExperts(records: CustomExpertRecord[]) {
     }));
 }
 
-function stripSkillFileExtension(fileName: string) {
-  return fileName.replace(/\.(md|txt|json)$/i, "").trim() || "专家 Skill";
-}
-
-function getSkillFirstHeading(content: string) {
-  return content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => /^#{1,3}\s+\S+/.test(line))
-    ?.replace(/^#{1,3}\s+/, "")
-    .trim();
-}
-
-function getSkillLabeledValue(content: string, labels: string[]) {
-  const lines = content.split(/\r?\n/).map((line) => line.trim().replace(/^[-*]\s*/, "").replace(/^#{1,6}\s*/, ""));
-  for (const label of labels) {
-    const match = lines.find((line) => line.startsWith(`${label}：`) || line.startsWith(`${label}:`));
-    if (match) return match.replace(`${label}：`, "").replace(`${label}:`, "").trim();
-  }
-  return "";
-}
-
-function parseExpertSkillJson(content: string) {
-  try {
-    const parsed = JSON.parse(content) as Partial<CustomExpertRecord> & {
-      expertName?: string;
-      description?: string;
-      prompt?: string;
-    };
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function isExpertSkillFile(file: File) {
-  return /\.(md|txt|json)$/i.test(file.name);
-}
-
-function getExpertSkillRelativePath(file: File) {
-  return file.webkitRelativePath || file.name;
-}
-
-function getExpertSkillFolderName(files: File[]) {
-  const firstPath = files.find((file) => file.webkitRelativePath)?.webkitRelativePath;
-  return firstPath?.split("/")[0] || stripSkillFileExtension(files[0]?.name || "专家 Skill");
-}
-
-async function buildCustomExpertFromSkillFiles(files: FileList | File[], uploadedBy: string) {
-  const skillFiles = Array.from(files)
-    .filter(isExpertSkillFile)
-    .sort((a, b) => {
-      const aPath = getExpertSkillRelativePath(a);
-      const bPath = getExpertSkillRelativePath(b);
-      if (/\/?SKILL\.md$/i.test(aPath) && !/\/?SKILL\.md$/i.test(bPath)) return -1;
-      if (!/\/?SKILL\.md$/i.test(aPath) && /\/?SKILL\.md$/i.test(bPath)) return 1;
-      return aPath.localeCompare(bPath, "zh-CN");
-    });
-  if (!skillFiles.length) return null;
-
-  const mainFile = skillFiles[0];
-  const mainContent = (await mainFile.text()).trim();
-  if (!mainContent) return null;
-
-  const supportFiles = skillFiles.filter((file) => file !== mainFile).slice(0, 10);
-  const supportSections = await Promise.all(
-    supportFiles.map(async (file) => {
-      const content = (await file.text()).trim();
-      return content ? `\n\n---\n补充文件：${getExpertSkillRelativePath(file)}\n${content.slice(0, 6000)}` : "";
-    }),
-  );
-  const folderName = getExpertSkillFolderName(skillFiles);
-  const combinedContent =
-    skillFiles.length === 1
-      ? mainContent
-      : `Skill 文件夹：${folderName}\n主文件：${getExpertSkillRelativePath(mainFile)}\n\n${mainContent}${supportSections.join("")}`;
-  const nextExpert = buildCustomExpertFromSkillFile(getExpertSkillRelativePath(mainFile), mainContent, uploadedBy);
-  return {
-    ...nextExpert,
-    sourceSkillName: skillFiles.length === 1 ? mainFile.name : `${folderName} / ${mainFile.name}`,
-    sourceSkillContent: combinedContent,
-  };
-}
-
-function buildCustomExpertFromSkillFile(fileName: string, content: string, uploadedBy: string): CustomExpertRecord {
-  const json = parseExpertSkillJson(content);
-  const fallbackName = getSkillLabeledValue(content, ["专家名称", "名称", "Name", "name"]) || getSkillFirstHeading(content) || stripSkillFileExtension(fileName);
-  const name = (json?.name || json?.expertName || fallbackName).trim();
-  const role =
-    (json?.role || json?.description || getSkillLabeledValue(content, ["专家定位", "定位", "角色", "Role", "role"])).trim() ||
-    "由教师/管理员上传的已调试专家 Skill，按课程场景生成可提交的阶段成果。";
-  const scenario =
-    (json?.scenario || getSkillLabeledValue(content, ["适用场景", "场景", "Scenario", "scenario"])).trim() ||
-    "已调试专家 Skill、课堂专题指导、阶段成果生成";
-  const skillName = getSkillLabeledValue(content, ["技能名称", "Skill", "skill"]) || "已调试 Skill 调用";
-  const sourceSkillContent = (json?.sourceSkillContent || json?.systemPrompt || json?.prompt || content).trim();
-  const skills =
-    Array.isArray(json?.skills) && json.skills.length
-      ? json.skills
-      : [
-          {
-            id: `custom-skill-${Date.now()}`,
-            name: skillName,
-            stage: "已调试专家 Skill",
-            description: `来自上传文件：${fileName}`,
-          },
-        ];
-
-  return {
-    id: `custom-${Date.now()}`,
-    name,
-    role,
-    scenario,
-    accent: json?.accent || "#0f7b73",
-    skills,
-    sourceSkillName: fileName,
-    sourceSkillContent,
-    sourceSkillUploadedBy: uploadedBy,
-    sourceSkillUploadedAt: nowDateTime(),
-    userPrompt: json?.userPrompt,
-  };
-}
-
 function configureFolderUploadInput(input: HTMLInputElement | null) {
   if (!input) return;
   input.setAttribute("webkitdirectory", "");
@@ -2236,12 +2116,11 @@ function configureFolderUploadInput(input: HTMLInputElement | null) {
   folderInput.directory = true;
 }
 
-function getUniqueExpertName(name: string, existingExperts: Expert[]) {
-  const base = name.trim() || "专家 Skill";
-  if (!existingExperts.some((expert) => expert.name === base)) return base;
-  let index = 2;
-  while (existingExperts.some((expert) => expert.name === `${base} ${index}`)) index += 1;
-  return `${base} ${index}`;
+function getSkillUploadKnowledgeCategories(catalog: KnowledgeBaseCatalogItem[], states: KnowledgeBaseStates) {
+  return getActiveKnowledgeCatalog(catalog)
+    .filter((item) => states[item.category] !== false)
+    .slice(0, 2)
+    .map((item) => item.category);
 }
 
 function buildCustomExpert(record: CustomExpertRecord): Expert {
@@ -5670,6 +5549,12 @@ function App() {
     }
   }
 
+  function handleExpertSkillConfirmed(record: KnowledgeExpertRecord) {
+    const mapped = mapKnowledgeExpertRecord(record);
+    setCustomExperts((current) => [...current.filter((expert) => expert.id !== mapped.id), mapped]);
+    setPromptKnowledgeRoutes((current) => ({ ...current, [mapped.id]: record.knowledgeCategories }));
+  }
+
   async function handlePromptKnowledgeRoutesChange(nextRoutes: PromptKnowledgeRoutes) {
     const previous = promptKnowledgeRoutes;
     const changedExpertIds = Object.keys(nextRoutes).filter(
@@ -6481,6 +6366,7 @@ function App() {
             onKnowledgeCatalogChange={(catalog) => void handleKnowledgeCatalogChange(catalog)}
             onPromptKnowledgeRoutesChange={(routes) => void handlePromptKnowledgeRoutesChange(routes)}
             onCustomExpertsChange={(nextExperts) => void handleCustomExpertsChange(nextExperts)}
+            onExpertSkillConfirmed={handleExpertSkillConfirmed}
             onSaveExpertPrompt={handleSaveExpertPrompt}
             onDeleteExpert={handleDeleteExpert}
             onDeleteKnowledgeBase={handleDeleteKnowledgeBase}
@@ -6504,6 +6390,7 @@ function App() {
             onKnowledgeCatalogChange={(catalog) => void handleKnowledgeCatalogChange(catalog)}
             onPromptKnowledgeRoutesChange={(routes) => void handlePromptKnowledgeRoutesChange(routes)}
             onCustomExpertsChange={(nextExperts) => void handleCustomExpertsChange(nextExperts)}
+            onExpertSkillConfirmed={handleExpertSkillConfirmed}
             onSaveExpertPrompt={handleSaveExpertPrompt}
             onDeleteExpert={handleDeleteExpert}
             onDeleteKnowledgeBase={handleDeleteKnowledgeBase}
@@ -8262,7 +8149,7 @@ function SkillFolderUploadGuideModal(props: { actorLabel: string; onCancel: () =
           <div>
             <span className="eyebrow">{props.actorLabel}</span>
             <h3 id="skill-folder-upload-title">上传专家 Skill 文件夹</h3>
-            <p>请选择已经调试好的专家 Skill 文件夹。系统会优先读取 SKILL.md，并把同目录下的 md、txt、json 文件作为专家上下文。</p>
+            <p>请选择专家 Skill 文件夹。服务端会优先解析 SKILL.md，并把同目录下的 md、txt、json 文件作为只读配置。</p>
           </div>
           <button type="button" aria-label="关闭上传说明" onClick={props.onCancel}>
             <X size={18} />
@@ -8275,7 +8162,7 @@ function SkillFolderUploadGuideModal(props: { actorLabel: string; onCancel: () =
           </article>
           <article>
             <strong>读取范围</strong>
-            <p>当前 Demo 只读取文本配置文件，不上传到真实后端；正式版可在这里接入专家 Skill 入库、版本管理和权限审核。</p>
+            <p>只接收 UTF-8 文本配置，不接收或执行脚本、程序和二进制文件；解析后还需要人工确认才会启用专家。</p>
           </article>
         </div>
         <footer className="skill-folder-upload-actions">
@@ -8285,6 +8172,114 @@ function SkillFolderUploadGuideModal(props: { actorLabel: string; onCancel: () =
           <button className="primary-button prompt-save-button skill-folder-upload-primary" type="button" onClick={props.onConfirm}>
             <Upload size={15} />
             继续选择文件夹
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+function SkillUploadReviewModal(props: {
+  actorLabel: string;
+  upload: ExpertSkillUploadRecord;
+  confirming: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cancelRef = useRef(props.onCancel);
+  const confirmingRef = useRef(props.confirming);
+
+  useEffect(() => {
+    cancelRef.current = props.onCancel;
+  }, [props.onCancel]);
+
+  useEffect(() => {
+    confirmingRef.current = props.confirming;
+  }, [props.confirming]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButtonRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !confirmingRef.current) {
+        event.preventDefault();
+        cancelRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, []);
+
+  const systemPrompt = props.upload.parsedSystemPrompt?.trim() || "未解析到单独的系统提示词，将使用主文件文本。";
+  const userPrompt = props.upload.parsedUserPrompt?.trim() || "未配置用户提示词。";
+  return createPortal(
+    <div className="modal-backdrop preview-modal-backdrop" role="presentation">
+      <section ref={dialogRef} className="media-modal skill-review-modal" role="dialog" aria-modal="true" aria-labelledby="skill-review-title">
+        <header>
+          <div>
+            <span className="eyebrow">{props.actorLabel} · 待人工确认</span>
+            <h3 id="skill-review-title">确认专家 Skill 解析结果</h3>
+            <p>当前记录只完成解析，尚未启用。请确认专家身份、场景和提示词后再入库启用。</p>
+          </div>
+          <button ref={closeButtonRef} type="button" aria-label="关闭 Skill 解析结果" onClick={props.onCancel} disabled={props.confirming}>
+            <X size={18} />
+          </button>
+        </header>
+        <div className="skill-review-body">
+          <div className="skill-review-summary" role="status">
+            <span>解析状态：未启用</span>
+            <strong>{props.upload.parsedName}</strong>
+            <small>{props.upload.folderName} · {props.upload.fileCount} 个文本文件 · 主文件 {props.upload.mainFilePath}</small>
+          </div>
+          <dl className="skill-review-fields">
+            <div>
+              <dt>专家定位</dt>
+              <dd>{props.upload.parsedRole}</dd>
+            </div>
+            <div>
+              <dt>适用场景</dt>
+              <dd>{props.upload.parsedScenario}</dd>
+            </div>
+          </dl>
+          <div className="skill-review-prompts">
+            <article>
+              <strong>系统提示词</strong>
+              <pre>{systemPrompt}</pre>
+            </article>
+            <article>
+              <strong>用户提示词</strong>
+              <pre>{userPrompt}</pre>
+            </article>
+          </div>
+          <p className="skill-review-safety">确认只会把这些文本配置写入专家档案，不会执行文件夹中的任何内容。</p>
+        </div>
+        <footer className="skill-folder-upload-actions">
+          <button className="ghost-button skill-folder-upload-secondary" type="button" onClick={props.onCancel} disabled={props.confirming}>
+            暂不启用
+          </button>
+          <button className="primary-button prompt-save-button skill-folder-upload-primary" type="button" onClick={props.onConfirm} disabled={props.confirming}>
+            {props.confirming ? "正在启用…" : "确认并启用专家"}
           </button>
         </footer>
       </section>
@@ -9739,6 +9734,7 @@ function TeacherView(props: {
   onKnowledgeCatalogChange: (catalog: KnowledgeBaseCatalogItem[]) => void;
   onPromptKnowledgeRoutesChange: (routes: PromptKnowledgeRoutes) => void;
   onCustomExpertsChange: (experts: CustomExpertRecord[]) => void;
+  onExpertSkillConfirmed: (expert: KnowledgeExpertRecord) => void;
   onSaveExpertPrompt: (
     expertId: ExpertId,
     systemPrompt: string,
@@ -9788,6 +9784,8 @@ function TeacherView(props: {
   const [teacherUserPromptDraft, setTeacherUserPromptDraft] = useState(initialTeacherPromptParts.user);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
   const [isSkillFolderGuideOpen, setIsSkillFolderGuideOpen] = useState(false);
+  const [pendingSkillUpload, setPendingSkillUpload] = useState<ExpertSkillUploadRecord | null>(null);
+  const [isSkillUploadConfirming, setIsSkillUploadConfirming] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
   const [selectedIssueMetricLabel, setSelectedIssueMetricLabel] = useState<string | null>(null);
   const [reviewDetailTab, setReviewDetailTab] = useState<TeacherReviewTab>("files");
@@ -10402,30 +10400,38 @@ function TeacherView(props: {
 
   async function handleTeacherUploadExpertSkillFolder(files: FileList | null) {
     if (!files?.length) return;
-    const nextExpert = await buildCustomExpertFromSkillFiles(files, `教师端 · ${props.teacherName || "周老师"}`);
-    if (!nextExpert) {
-      setKnowledgeSaveMessage("这个文件夹里没有可读取的 .md / .txt / .json 专家 Skill 文件。");
+    try {
+      const upload = await uploadExpertSkillFolder(files);
+      setPendingSkillUpload(upload);
+    } catch (error) {
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 文件夹解析失败。");
+    }
+  }
+
+  async function confirmTeacherSkillUpload() {
+    if (!pendingSkillUpload) return;
+    const categories = getSkillUploadKnowledgeCategories(props.knowledgeCatalog, props.knowledgeBaseStates);
+    if (!categories.length) {
+      setKnowledgeSaveMessage("请先启用至少一个知识库目录，再确认专家 Skill。");
       return;
     }
-    nextExpert.name = getUniqueExpertName(nextExpert.name, experts);
-    const defaultCategories = ["教学大纲", "创业案例"] as KnowledgeCategory[];
-    props.onCustomExpertsChange([...props.customExperts, nextExpert]);
-    props.onPromptKnowledgeRoutesChange({ ...props.promptKnowledgeRoutes, [nextExpert.id]: defaultCategories });
-    const nextParts = buildPromptTemplateParts(
-      buildCustomExpert(nextExpert),
-      "Auto",
-      props.knowledgeUploads,
-      props.knowledgeBaseStates,
-      defaultCategories,
-    );
-    setTeacherPromptExpertId(nextExpert.id);
-    setTeacherPromptMode("Auto");
-    setTeacherSystemPromptDraft(nextParts.system);
-    setTeacherUserPromptDraft(nextParts.user);
-    setNewExpertName("");
-    setNewExpertRole("");
-    setNewExpertScenario("");
-    setKnowledgeSaveMessage(`已上传 Skill 文件夹「${nextExpert.sourceSkillName || nextExpert.name}」，并生成专家「${nextExpert.name}」。`);
+    setIsSkillUploadConfirming(true);
+    try {
+      const saved = await confirmExpertSkillUpload(pendingSkillUpload.id, categories);
+      props.onExpertSkillConfirmed(saved);
+      const mapped = mapKnowledgeExpertRecord(saved);
+      const nextParts = buildPromptTemplateParts(buildCustomExpert(mapped), "Auto", props.knowledgeUploads, props.knowledgeBaseStates, saved.knowledgeCategories);
+      setTeacherPromptExpertId(mapped.id);
+      setTeacherPromptMode("Auto");
+      setTeacherSystemPromptDraft(nextParts.system);
+      setTeacherUserPromptDraft(nextParts.user);
+      setPendingSkillUpload(null);
+      setKnowledgeSaveMessage(`专家 Skill「${saved.name}」已确认并启用。`);
+    } catch (error) {
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 确认失败。");
+    } finally {
+      setIsSkillUploadConfirming(false);
+    }
   }
 
   function handleCreateKnowledgeBase() {
@@ -10937,6 +10943,7 @@ function TeacherView(props: {
                 className="visually-hidden-input"
                 type="file"
                 multiple
+                accept=".md,.txt,.json,text/markdown,text/plain,application/json"
                 onChange={(event) => {
                   void handleTeacherUploadExpertSkillFolder(event.target.files);
                   event.currentTarget.value = "";
@@ -11525,6 +11532,15 @@ function TeacherView(props: {
           }}
         />
       )}
+      {pendingSkillUpload && (
+        <SkillUploadReviewModal
+          actorLabel="教师端"
+          upload={pendingSkillUpload}
+          confirming={isSkillUploadConfirming}
+          onCancel={() => setPendingSkillUpload(null)}
+          onConfirm={() => void confirmTeacherSkillUpload()}
+        />
+      )}
       {knowledgeSaveMessage && <PromptSaveSuccessModal message={knowledgeSaveMessage} onClose={() => setKnowledgeSaveMessage(null)} />}
     </>
   );
@@ -11546,6 +11562,7 @@ function AdminView(props: {
   onKnowledgeCatalogChange: (catalog: KnowledgeBaseCatalogItem[]) => void;
   onPromptKnowledgeRoutesChange: (routes: PromptKnowledgeRoutes) => void;
   onCustomExpertsChange: (experts: CustomExpertRecord[]) => void;
+  onExpertSkillConfirmed: (expert: KnowledgeExpertRecord) => void;
   onSaveExpertPrompt: (
     expertId: ExpertId,
     systemPrompt: string,
@@ -11611,6 +11628,8 @@ function AdminView(props: {
   const [adminUserPromptDraft, setAdminUserPromptDraft] = useState(initialAdminPromptParts.user);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
   const [isAdminSkillFolderGuideOpen, setIsAdminSkillFolderGuideOpen] = useState(false);
+  const [pendingAdminSkillUpload, setPendingAdminSkillUpload] = useState<ExpertSkillUploadRecord | null>(null);
+  const [isAdminSkillUploadConfirming, setIsAdminSkillUploadConfirming] = useState(false);
   const [accountSaveMessage, setAccountSaveMessage] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
   const [adminDataLoading, setAdminDataLoading] = useState(true);
@@ -12078,30 +12097,38 @@ ${modeInstructions[promptMode]}
 
   async function handleAdminUploadExpertSkillFolder(files: FileList | null) {
     if (!files?.length) return;
-    const nextExpert = await buildCustomExpertFromSkillFiles(files, `管理端 · ${props.adminName || "平台管理员"}`);
-    if (!nextExpert) {
-      setKnowledgeSaveMessage("这个文件夹里没有可读取的 .md / .txt / .json 专家 Skill 文件。");
+    try {
+      const upload = await uploadExpertSkillFolder(files);
+      setPendingAdminSkillUpload(upload);
+    } catch (error) {
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 文件夹解析失败。");
+    }
+  }
+
+  async function confirmAdminSkillUpload() {
+    if (!pendingAdminSkillUpload) return;
+    const categories = getSkillUploadKnowledgeCategories(props.knowledgeCatalog, props.knowledgeBaseStates);
+    if (!categories.length) {
+      setKnowledgeSaveMessage("请先启用至少一个知识库目录，再确认专家 Skill。");
       return;
     }
-    nextExpert.name = getUniqueExpertName(nextExpert.name, experts);
-    const defaultCategories = ["教学大纲", "创业案例"] as KnowledgeCategory[];
-    props.onCustomExpertsChange([...props.customExperts, nextExpert]);
-    props.onPromptKnowledgeRoutesChange({ ...props.promptKnowledgeRoutes, [nextExpert.id]: defaultCategories });
-    const nextParts = buildPromptTemplateParts(
-      buildCustomExpert(nextExpert),
-      "Auto",
-      props.knowledgeUploads,
-      props.knowledgeBaseStates,
-      defaultCategories,
-    );
-    setPromptExpertId(nextExpert.id);
-    setPromptMode("Auto");
-    setAdminSystemPromptDraft(nextParts.system);
-    setAdminUserPromptDraft(nextParts.user);
-    setAdminNewExpertName("");
-    setAdminNewExpertRole("");
-    setAdminNewExpertScenario("");
-    setKnowledgeSaveMessage(`已上传 Skill 文件夹「${nextExpert.sourceSkillName || nextExpert.name}」，并生成专家「${nextExpert.name}」。`);
+    setIsAdminSkillUploadConfirming(true);
+    try {
+      const saved = await confirmExpertSkillUpload(pendingAdminSkillUpload.id, categories);
+      props.onExpertSkillConfirmed(saved);
+      const mapped = mapKnowledgeExpertRecord(saved);
+      const nextParts = buildPromptTemplateParts(buildCustomExpert(mapped), "Auto", props.knowledgeUploads, props.knowledgeBaseStates, saved.knowledgeCategories);
+      setPromptExpertId(mapped.id);
+      setPromptMode("Auto");
+      setAdminSystemPromptDraft(nextParts.system);
+      setAdminUserPromptDraft(nextParts.user);
+      setPendingAdminSkillUpload(null);
+      setKnowledgeSaveMessage(`专家 Skill「${saved.name}」已确认并启用。`);
+    } catch (error) {
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 确认失败。");
+    } finally {
+      setIsAdminSkillUploadConfirming(false);
+    }
   }
 
   function handleAdminCreateKnowledgeBase() {
@@ -13100,6 +13127,7 @@ ${modeInstructions[promptMode]}
                 className="visually-hidden-input"
                 type="file"
                 multiple
+                accept=".md,.txt,.json,text/markdown,text/plain,application/json"
                 onChange={(event) => {
                   void handleAdminUploadExpertSkillFolder(event.target.files);
                   event.currentTarget.value = "";
@@ -13358,6 +13386,15 @@ ${modeInstructions[promptMode]}
             setIsAdminSkillFolderGuideOpen(false);
             adminExpertSkillFolderUploadInputRef.current?.click();
           }}
+        />
+      )}
+      {pendingAdminSkillUpload && (
+        <SkillUploadReviewModal
+          actorLabel="管理端"
+          upload={pendingAdminSkillUpload}
+          confirming={isAdminSkillUploadConfirming}
+          onCancel={() => setPendingAdminSkillUpload(null)}
+          onConfirm={() => void confirmAdminSkillUpload()}
         />
       )}
       {accountSaveMessage && <PromptSaveSuccessModal message={accountSaveMessage} onClose={() => setAccountSaveMessage(null)} />}

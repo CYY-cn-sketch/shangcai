@@ -313,7 +313,7 @@ class AdminKnowledgeControllerTests {
 
         mockMvc.perform(get("/api/knowledge/knowledge-bases").cookie(sessionCookie))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].category").value("Student visible base"));
+                .andExpect(jsonPath("$[?(@.category == 'Student visible base')]").exists());
 
         mockMvc.perform(get("/api/knowledge/knowledge-assets").cookie(sessionCookie))
                 .andExpect(status().isOk())

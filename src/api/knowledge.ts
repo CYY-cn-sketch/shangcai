@@ -49,6 +49,25 @@ export type KnowledgeExpertRecord = {
   knowledgeCategories: string[];
 };
 
+export type ExpertSkillUploadRecord = {
+  id: string;
+  folderName: string;
+  mainFilePath: string;
+  fileCount: number;
+  parsedName: string;
+  parsedRole: string;
+  parsedScenario: string;
+  parsedAccent: string;
+  parsedSystemPrompt?: string | null;
+  parsedUserPrompt?: string | null;
+  status: "PARSED" | "ENABLED";
+  expertId?: string | null;
+  uploadedBy: string;
+  confirmedBy?: string | null;
+  createdAt: string;
+  confirmedAt?: string | null;
+};
+
 export type SaveKnowledgeBaseInput = Pick<KnowledgeBaseRecord, "category" | "description" | "usedBy"> & {
   active: boolean;
 };
@@ -223,4 +242,42 @@ export async function saveKnowledgeExpert(input: SaveKnowledgeExpertInput) {
 
 export function deleteKnowledgeExpert(id: string) {
   return deleteResource(`/api/knowledge/experts/${encodeURIComponent(id)}`);
+}
+
+export async function uploadExpertSkillFolder(input: FileList | File[]) {
+  const files = Array.from(input)
+    .filter((file) => /\.(md|txt|json)$/i.test(file.name))
+    .slice(0, 21);
+  if (!files.length) throw new KnowledgeApiError("文件夹中没有可解析的 .md、.txt 或 .json 文件", 400);
+  if (files.length > 20) throw new KnowledgeApiError("Skill 文件夹最多读取 20 个文本配置文件", 400);
+
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  files.forEach((file) => {
+    form.append("files", file, file.name);
+    form.append("paths", file.webkitRelativePath || file.name);
+  });
+  const response = await fetch("/api/knowledge/expert-skill-uploads", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as ExpertSkillUploadRecord;
+}
+
+export function listExpertSkillUploads() {
+  return readJson<ExpertSkillUploadRecord[]>("/api/knowledge/expert-skill-uploads");
+}
+
+export function confirmExpertSkillUpload(id: string, knowledgeCategories: string[]) {
+  return mutateJson<KnowledgeExpertRecord>(
+    `/api/knowledge/expert-skill-uploads/${encodeURIComponent(id)}/confirm`,
+    "POST",
+    { knowledgeCategories },
+  );
 }
