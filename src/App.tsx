@@ -62,7 +62,6 @@ import {
   type RemoteSubmission,
 } from "./api/artifacts";
 import {
-  attachKnowledgeAssetFile,
   confirmExpertSkillUpload,
   createKnowledgeAsset,
   createKnowledgeBase,
@@ -1520,36 +1519,6 @@ function generatedAssetSourceId(assetId: string) {
   return `generated:${assetId}`.slice(0, 64);
 }
 
-function fileFromDataUrl(dataUrl: string, name: string, fallbackType?: string) {
-  const separator = dataUrl.indexOf(",");
-  if (separator < 0) throw new Error("历史知识文件缓存格式无效");
-  const header = dataUrl.slice(0, separator);
-  const payload = dataUrl.slice(separator + 1);
-  const mimeType = /^data:([^;,]+)/.exec(header)?.[1] || fallbackType || "application/octet-stream";
-  const binary = header.includes(";base64") ? window.atob(payload) : decodeURIComponent(payload);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return new File([bytes], name, { type: mimeType });
-}
-
-async function migrateLegacyStudentAvatar(session: AuthSession) {
-  if (session.role !== "student") return session;
-  const legacyProfiles = readStored<Record<string, { avatarId?: string }>>("sufe-student-profiles", {});
-  const legacyAvatarId = legacyProfiles[session.account]?.avatarId;
-  if (!legacyAvatarId) return session;
-  try {
-    const migrated =
-      normalizeStudentAvatarId(session.avatarId) === normalizeStudentAvatarId(legacyAvatarId)
-        ? session
-        : await updateAuthProfile({ avatarId: normalizeStudentAvatarId(legacyAvatarId) });
-    localStorage.removeItem("sufe-student-profiles");
-    return migrated;
-  } catch {
-    // 保留旧缓存，下次登录继续迁移；不阻断正常登录。
-    return session;
-  }
-}
-
 function mapKnowledgeExpertRecord(record: KnowledgeExpertRecord): CustomExpertRecord {
   return {
     id: record.id,
@@ -2881,16 +2850,6 @@ function useSpeechInput(options: { value: string; onChange: (value: string) => v
   }
 
   return { hasVoiceInput, isListening, notice, resetVoiceInput, toggle };
-}
-
-function readStored<T>(key: string, fallback: T): T {
-  const raw = localStorage.getItem(key);
-  if (!raw) return fallback;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
 }
 
 function getArtifactType(expertId: ExpertId): ArtifactType {
@@ -4771,7 +4730,7 @@ function downloadKnowledgeAsset(asset: KnowledgeUpload) {
 function App() {
   const [auth, setAuth] = useState<AuthSession | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [role, setRole] = useState<Role>(() => readStored<Role>("sufe-role", "student"));
+  const [role, setRole] = useState<Role>("student");
   const [ideas, setIdeas] = useState<Idea[]>(initialIdeas);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [studentConversations, setStudentConversations] = useState<RemoteStudentConversation[]>([]);
@@ -4780,26 +4739,12 @@ function App() {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [studentGroups, setStudentGroups] = useState<StudentGroup[]>(initialStudentGroups);
   const [accountRecords, setAccountRecords] = useState<AccountRecord[]>(() => normalizeAccountRecords(initialAccountRecords, initialStudentGroups));
-  const [knowledgeUploads, setKnowledgeUploads] = useState<KnowledgeUpload[]>(() =>
-    readStored("sufe-knowledge-uploads", []),
-  );
-  const [knowledgeCatalog, setKnowledgeCatalog] = useState<KnowledgeBaseCatalogItem[]>(() =>
-    readStored<KnowledgeBaseCatalogItem[]>("sufe-knowledge-base-catalog", defaultKnowledgeBaseCatalog),
-  );
-  const [knowledgeBaseStates, setKnowledgeBaseStates] = useState<KnowledgeBaseStates>(() => ({
-    ...initialKnowledgeBaseStates,
-    ...readStored<Partial<KnowledgeBaseStates>>("sufe-knowledge-base-states", {}),
-  }));
-  const [customExperts, setCustomExperts] = useState<CustomExpertRecord[]>(() =>
-    normalizeCustomExperts(readStored<CustomExpertRecord[]>("sufe-custom-experts", [])),
-  );
-  const [deletedExpertIds, setDeletedExpertIds] = useState<DeletedExpertIdState>(() =>
-    readStored<DeletedExpertIdState>("sufe-deleted-expert-ids", []),
-  );
-  const [promptKnowledgeRoutes, setPromptKnowledgeRoutes] = useState<PromptKnowledgeRoutes>(() => ({
-    ...createKnowledgeRouteState(),
-    ...readStored<Partial<PromptKnowledgeRoutes>>("sufe-prompt-knowledge-routes", {}),
-  }));
+  const [knowledgeUploads, setKnowledgeUploads] = useState<KnowledgeUpload[]>([]);
+  const [knowledgeCatalog, setKnowledgeCatalog] = useState<KnowledgeBaseCatalogItem[]>(defaultKnowledgeBaseCatalog);
+  const [knowledgeBaseStates, setKnowledgeBaseStates] = useState<KnowledgeBaseStates>(initialKnowledgeBaseStates);
+  const [customExperts, setCustomExperts] = useState<CustomExpertRecord[]>([]);
+  const [deletedExpertIds, setDeletedExpertIds] = useState<DeletedExpertIdState>([]);
+  const [promptKnowledgeRoutes, setPromptKnowledgeRoutes] = useState<PromptKnowledgeRoutes>(createKnowledgeRouteState);
   const [defensePractices, setDefensePractices] = useState<DefensePractice[]>([]);
   const [activeIdeaId, setActiveIdeaId] = useState(initialIdeas[0].id);
   const [selectedExpertId, setSelectedExpertId] = useState<ExpertId>("pitch");
@@ -4869,18 +4814,11 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    localStorage.removeItem("sufe-auth");
-    localStorage.removeItem("sufe-ideas");
-    localStorage.removeItem("sufe-messages");
-    localStorage.removeItem("sufe-active-idea");
-    localStorage.removeItem("sufe-submissions");
     loadCurrentAuth()
-      .then(async (session) => {
+      .then((session) => {
         if (!active || !session) return;
-        const restoredSession = await migrateLegacyStudentAvatar(session);
-        if (!active) return;
-        setAuth(restoredSession);
-        setRole(restoredSession.role);
+        setAuth(session);
+        setRole(session.role);
       })
       .catch(() => {
         // 登录页会在用户主动登录时展示明确的连接错误。
@@ -4925,115 +4863,28 @@ function App() {
         const nextIdeas = workspace.ideas.map(mapRemoteIdea);
         const nextActiveIdea = nextIdeas[0];
         const activeConversation = workspace.conversations.find((item) => item.ideaId === nextActiveIdea.id);
-        const ownedIdeaIds = new Set(nextIdeas.map((idea) => idea.id));
-        let resolvedArtifacts = [...remoteArtifacts];
-        let resolvedDefensePractices = remoteDefensePractices
+        const resolvedDefensePractices = remoteDefensePractices
           .map(mapRemoteDefensePractice)
           .filter((practice): practice is DefensePractice => Boolean(practice));
-        const migrationErrors: string[] = [];
-
-        const legacyDefensePractices = readStored<DefensePractice[]>("sufe-defense-practices", []);
-        if (legacyDefensePractices.length) {
-          try {
-            const existingIds = new Set(resolvedDefensePractices.map((practice) => practice.id));
-            const migrated = await Promise.all(
-              legacyDefensePractices
-                .filter((practice) => ownedIdeaIds.has(practice.ideaId) && !existingIds.has(practice.id))
-                .map((practice) =>
-                  saveDefensePractice(practice.id, {
-                    ideaId: practice.ideaId,
-                    visibility: practice.visibility,
-                    content: practice,
-                  }),
-                ),
-            );
-            resolvedDefensePractices = [
-              ...migrated.map(mapRemoteDefensePractice).filter((practice): practice is DefensePractice => Boolean(practice)),
-              ...resolvedDefensePractices,
-            ];
-            localStorage.removeItem("sufe-defense-practices");
-          } catch {
-            migrationErrors.push("答辩记录");
-          }
-        }
-
-        const legacyGeneratedAssets = readStored<GeneratedAsset[]>("sufe-generated-assets", []);
-        if (legacyGeneratedAssets.length) {
-          try {
-            const existingIds = new Set(
-              resolvedArtifacts.map(mapGeneratedAssetRecord).filter((asset): asset is GeneratedAsset => Boolean(asset)).map((asset) => asset.id),
-            );
-            const migrated = await Promise.all(
-              legacyGeneratedAssets
-                .filter((asset) => ownedIdeaIds.has(asset.ideaId) && !existingIds.has(asset.id))
-                .map((asset) =>
-                  saveStudentArtifact({
-                    ideaId: asset.ideaId,
-                    sourceMessageId: generatedAssetSourceId(asset.id),
-                    artifactType: asset.type === "PPT" ? "PPT" : "MEDIA",
-                    title: asset.title,
-                    summary: asset.type === "PPT" ? "学生生成的路演 PPT" : "学生生成的多媒体成果",
-                    content: { kind: "GENERATED_ASSET", asset },
-                  }),
-                ),
-            );
-            resolvedArtifacts = [...migrated, ...resolvedArtifacts];
-            localStorage.removeItem("sufe-generated-assets");
-          } catch {
-            migrationErrors.push("生成成果");
-          }
-        }
 
         setIdeas(nextIdeas);
         setMessages(workspace.conversations.flatMap((conversation) => conversation.messages.map(mapRemoteMessage)));
         setStudentConversations(workspace.conversations);
-        setArtifactRecords(resolvedArtifacts);
+        setArtifactRecords(remoteArtifacts);
         setGeneratedAssets(
-          resolvedArtifacts.map(mapGeneratedAssetRecord).filter((asset): asset is GeneratedAsset => Boolean(asset)),
+          remoteArtifacts.map(mapGeneratedAssetRecord).filter((asset): asset is GeneratedAsset => Boolean(asset)),
         );
         setDefensePractices(resolvedDefensePractices);
         setSubmissions(remoteSubmissions.map(mapRemoteSubmission));
         setActiveIdeaId(nextActiveIdea.id);
-        let clearLegacyKnowledgeSelection = true;
         if (activeConversation) {
           setSelectedExpertId(activeConversation.selectedExpertId);
           setSelectedSkillId(activeConversation.selectedSkillId);
           setModel(isModelMode(activeConversation.modelMode) ? activeConversation.modelMode : "Auto");
-          const remoteSelection = normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection);
-          const legacySelection = normalizeStudentKnowledgeSelection(
-            readStored<unknown>("sufe-student-knowledge-selection", { categories: [], uploadIds: [] }),
-          );
-          const useLegacySelection =
-            !remoteSelection.categories.length && !remoteSelection.uploadIds.length &&
-            (legacySelection.categories.length > 0 || legacySelection.uploadIds.length > 0);
-          const selection = useLegacySelection ? legacySelection : remoteSelection;
-          if (useLegacySelection) {
-            try {
-              await saveStudentConversation(nextActiveIdea.id, {
-                selectedExpertId: activeConversation.selectedExpertId,
-                selectedSkillId: activeConversation.selectedSkillId,
-                modelMode: activeConversation.modelMode,
-                knowledgeSelection: selection,
-              });
-            } catch {
-              clearLegacyKnowledgeSelection = false;
-              migrationErrors.push("知识选择");
-            }
-          }
-          setSelectedKnowledgeSelection(selection);
-        }
-        if (clearLegacyKnowledgeSelection) {
-          localStorage.removeItem("sufe-student-knowledge-selection");
-          localStorage.removeItem("sufe-student-knowledge-categories");
+          setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection));
         }
         setPrompt(getScenarioPrompt(activeConversation?.selectedExpertId || "pitch", nextActiveIdea));
         setStudentWorkspaceAccount(account);
-        if (migrationErrors.length) {
-          setSystemNotice({
-            title: "旧缓存迁移未完成",
-            message: `${migrationErrors.join("、")}暂未写入服务器，旧缓存已保留，下次登录会继续迁移。`,
-          });
-        }
       } catch (error) {
         if (!active) return;
         setStudentWorkspaceAccount(null);
@@ -5076,67 +4927,19 @@ function App() {
     if (!auth) return undefined;
     let active = true;
     Promise.all([listKnowledgeBases(), listKnowledgeAssets(), listKnowledgeExperts()])
-      .then(async ([remoteBases, remoteAssets, remoteExperts]) => {
+      .then(([remoteBases, remoteAssets, remoteExperts]) => {
         if (!active) return;
         setKnowledgeCatalog((current) => mergeKnowledgeBaseRecords(current, remoteBases));
         setKnowledgeBaseStates((current) => ({
           ...current,
           ...Object.fromEntries(remoteBases.map((base) => [base.category, base.active])),
         }));
-        let resolvedAssets = remoteAssets;
-        setKnowledgeUploads(resolvedAssets.map(mapKnowledgeAssetRecord));
-        if (remoteExperts.length) {
-          setCustomExperts((current) => {
-            const merged = new Map(current.map((expert) => [expert.id, expert]));
-            remoteExperts.forEach((expert) => merged.set(expert.id, mapKnowledgeExpertRecord(expert)));
-            return Array.from(merged.values());
-          });
-          setPromptKnowledgeRoutes((current) => ({
-            ...current,
-            ...Object.fromEntries(remoteExperts.map((expert) => [expert.id, expert.knowledgeCategories])),
-          }));
-        }
-        if (auth.role === "teacher" || auth.role === "admin") {
-          const legacyAssets = readStored<KnowledgeUpload[]>("sufe-knowledge-uploads", []).filter((asset) => asset.fileDataUrl);
-          if (legacyAssets.length) {
-            try {
-              const migrated = await Promise.all(
-                legacyAssets.map(async (legacy) => {
-                  const file = fileFromDataUrl(legacy.fileDataUrl || "", legacy.name, legacy.fileType);
-                  const existing = resolvedAssets.find(
-                    (asset) => asset.name === legacy.name && asset.category === (legacy.category || inferKnowledgeCategory(legacy.name)),
-                  );
-                  if (existing?.fileAvailable) return existing;
-                  if (existing) return attachKnowledgeAssetFile(existing.id, file);
-                  return uploadKnowledgeAsset({
-                    category: legacy.category || inferKnowledgeCategory(legacy.name),
-                    preview: legacy.preview,
-                    contentText: legacy.contentText || legacy.preview,
-                    uploadedBy: legacy.uploadedBy || auth.name,
-                    enabled: legacy.enabled !== false,
-                    file,
-                  });
-                }),
-              );
-              if (!active) return;
-              const migratedById = new Map(migrated.map((asset) => [asset.id, asset]));
-              resolvedAssets = [
-                ...migrated,
-                ...resolvedAssets.filter((asset) => !migratedById.has(asset.id)),
-              ];
-              setKnowledgeUploads(resolvedAssets.map(mapKnowledgeAssetRecord));
-              localStorage.removeItem("sufe-knowledge-uploads");
-            } catch (error) {
-              if (!active) return;
-              setSystemNotice({
-                title: "历史知识文件迁移未完成",
-                message: error instanceof Error ? error.message : "旧缓存已保留，下次登录会继续迁移。",
-              });
-            }
-          } else {
-            localStorage.removeItem("sufe-knowledge-uploads");
-          }
-        }
+        setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
+        setCustomExperts(remoteExperts.map(mapKnowledgeExpertRecord));
+        setPromptKnowledgeRoutes({
+          ...createKnowledgeRouteState(),
+          ...Object.fromEntries(remoteExperts.map((expert) => [expert.id, expert.knowledgeCategories])),
+        });
       })
       .catch((error) => {
         if (!active) return;
@@ -5186,11 +4989,10 @@ function App() {
     studentWorkspaceAccount,
   ]);
 
-  useEffect(() => localStorage.setItem("sufe-role", role), [role]);
   // eslint-disable-next-line react-hooks/globals
   knowledgeBaseCatalog = knowledgeCatalog.length ? knowledgeCatalog : defaultKnowledgeBaseCatalog;
   async function handleLogin(account: string, password: string) {
-    const session = await migrateLegacyStudentAvatar(await loginWithPassword(account, password));
+    const session = await loginWithPassword(account, password);
     setStudentWorkspaceAccount(null);
     setAuth(session);
     setRole(session.role);
@@ -6431,7 +6233,7 @@ function LogoutConfirmModal(props: { accountName: string; onCancel: () => void; 
           <div>
             <span className="eyebrow">退出登录</span>
             <h3 id="logout-confirm-title">确认退出当前账号吗？</h3>
-            <p>退出后将返回登录页，当前本地 Demo 数据会继续保留。</p>
+            <p>退出后将返回登录页，已经保存到服务器的数据会继续保留。</p>
           </div>
           <button type="button" aria-label="关闭退出确认" onClick={props.onCancel}>
             <X size={18} />

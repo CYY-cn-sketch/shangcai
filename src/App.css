@@ -384,6 +384,10 @@ input:disabled {
   min-width: 0;
 }
 
+.brand-block > div {
+  min-width: 0;
+}
+
 .seal {
   display: grid;
   width: 46px;
@@ -12067,7 +12071,14 @@ button.status-pill {
   .topbar .account-chip {
     max-width: min(34vw, 150px);
     min-height: 36px;
+    overflow: hidden;
     padding: 0 8px;
+  }
+
+  .topbar .account-chip span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .topbar .account-chip em,
