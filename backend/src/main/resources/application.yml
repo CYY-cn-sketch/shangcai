@@ -52,6 +52,7 @@ management:
 sufe:
   storage:
     files-root: ${SUFE_FILE_STORAGE_ROOT:./data/files}
+    artifacts-root: ${SUFE_ARTIFACT_STORAGE_ROOT:./data/artifacts}
   bootstrap:
     demo-data-enabled: false
     demo-password: ""

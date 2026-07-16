@@ -1,0 +1,63 @@
+# 启用前把域名和证书路径替换为项目方正式值，然后执行 nginx -t。
+limit_req_zone $binary_remote_addr zone=sufe_ai_api:10m rate=30r/s;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name sufe-ai.example.edu.cn;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name sufe-ai.example.edu.cn;
+
+    ssl_certificate /etc/letsencrypt/live/sufe-ai.example.edu.cn/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/sufe-ai.example.edu.cn/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    root /var/www/sufe-ai;
+    index index.html;
+    client_max_body_size 21m;
+    server_tokens off;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Permissions-Policy "camera=(), geolocation=(), payment=()" always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Content-Security-Policy-Report-Only "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; worker-src 'self' blob:" always;
+
+    location = /healthz {
+        access_log off;
+        proxy_pass http://127.0.0.1:8080/actuator/health/readiness;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /api/ {
+        limit_req zone=sufe_ai_api burst=60 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+        expires 30d;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+        expires -1;
+    }
+}

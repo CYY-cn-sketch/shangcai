@@ -48,7 +48,7 @@ public class ArtifactService {
             ArtifactRecordRepository artifactRepository,
             ArtifactSubmissionRepository submissionRepository,
             ArtifactDownloadLogRepository downloadLogRepository,
-            @Value("${app.storage.artifacts-root:./data/artifacts}") String artifactRoot
+            @Value("${sufe.storage.artifacts-root:./data/artifacts}") String artifactRoot
     ) {
         this.userAccountRepository = userAccountRepository;
         this.membershipRepository = membershipRepository;

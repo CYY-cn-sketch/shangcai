@@ -1,0 +1,63 @@
+server:
+  address: 127.0.0.1
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        secure: true
+        same-site: strict
+  tomcat:
+    threads:
+      max: ${SERVER_MAX_THREADS:100}
+      min-spare: ${SERVER_MIN_SPARE_THREADS:10}
+    accept-count: ${SERVER_ACCEPT_COUNT:100}
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  datasource:
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      connection-timeout: 10000
+      validation-timeout: 3000
+  jpa:
+    properties:
+      hibernate:
+        format_sql: false
+
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState,db,diskSpace
+        liveness:
+          include: livenessState
+
+logging:
+  file:
+    name: ${LOG_FILE:/var/log/sufe-ai/backend.log}
+  level:
+    root: INFO
+    com.sufe.ai: ${SUFE_LOG_LEVEL:INFO}
+  logback:
+    rollingpolicy:
+      file-name-pattern: ${LOG_FILE_PATTERN:/var/log/sufe-ai/backend.%d{yyyy-MM-dd}.%i.log.gz}
+      max-file-size: ${LOG_MAX_FILE_SIZE:20MB}
+      max-history: ${LOG_MAX_HISTORY:30}
+      total-size-cap: ${LOG_TOTAL_SIZE_CAP:2GB}
+
+sufe:
+  storage:
+    files-root: ${SUFE_FILE_STORAGE_ROOT:/srv/sufe-ai/data/files}
+    artifacts-root: ${SUFE_ARTIFACT_STORAGE_ROOT:/srv/sufe-ai/data/artifacts}
+  bootstrap:
+    demo-data-enabled: false
+    demo-password: ""
+  providers:
+    workbuddy:
+      enabled: ${WORKBUDDY_ENABLED:false}
+      jobs-root: ${WORKBUDDY_JOBS_ROOT:/srv/sufe-ai/data/workbuddy/jobs}
+    lexiang:
+      enabled: ${LEXIANG_ENABLED:false}

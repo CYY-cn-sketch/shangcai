@@ -8,6 +8,7 @@ server:
 sufe:
   storage:
     files-root: ${SUFE_FILE_STORAGE_ROOT:D:/sufe-ai-data/files}
+    artifacts-root: ${SUFE_ARTIFACT_STORAGE_ROOT:D:/sufe-ai-data/artifacts}
   bootstrap:
     demo-data-enabled: true
     demo-password: ${SUFE_DEMO_PASSWORD}

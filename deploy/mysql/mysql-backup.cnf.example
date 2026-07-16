@@ -1,0 +1,7 @@
+# 复制到 /etc/sufe-ai/mysql-backup.cnf，填写真实密码并执行 chmod 600。
+[client]
+host=127.0.0.1
+port=3306
+user=sufe_backup
+password=CHANGE_ME
+default-character-set=utf8mb4
