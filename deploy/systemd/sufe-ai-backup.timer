@@ -1,5 +1,5 @@
 [Unit]
-Description=Run SUFE AI MySQL backup every day
+Description=Run SUFE AI database and file backup every day
 
 [Timer]
 OnCalendar=*-*-* 02:30:00
