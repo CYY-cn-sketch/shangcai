@@ -4701,7 +4701,7 @@ function buildKnowledgeAssetPreviewBlocks(asset: KnowledgeUpload): ResultBlock[]
       title: "课堂调用说明",
       items: [
         "学生端专家会根据当前选择的知识库和资料摘要生成阶段成果。",
-        "正式版建议保存原始文件地址、解析文本和向量索引，预览时直接打开原文件或渲染后的页面。",
+        "平台已保存原始文件、解析文本和校验信息；下载原文件会经过后端登录与权限校验。",
       ],
     },
   ];
@@ -6632,7 +6632,7 @@ function PermissionBanner(props: { accountDisabled: boolean; disabledPermissions
         <strong>{props.accountDisabled ? "当前账号已被管理员停用" : "部分功能权限已被管理员停用"}</strong>
         <p>
           {props.accountDisabled
-            ? "该账号仍可进入演示系统查看界面，但学生端/教师端的业务操作已被锁定。"
+            ? "系统会结束当前登录会话；请联系管理员确认账号状态后重新登录。"
             : `已停用权限：${props.disabledPermissions.join("、")}。对应入口会置灰，点击操作时会提示联系管理员。`}
         </p>
       </div>
@@ -12024,13 +12024,13 @@ ${modeInstructions[promptMode]}
       节点解答与指导: "允许教师围绕定位、BP、PPT、答辩等关键节点给出点评意见、退回修改建议和指导话术。",
       优秀成果标记: "允许教师将通过审核的高质量 BP、PPT、答辩记录或多媒体物料标记为优秀成果，进入成果沉淀。",
       上传教学资料: "允许教师从本地上传教学大纲、BP 模板、评分标准、案例库、答辩题库和多媒体模板等资料。",
-      账号权限管理: "允许管理员开通、停用、删除学生/教师/管理员账号，查看密码、角色端口、调用配额和权限范围。",
+      账号权限管理: "允许管理员开通、停用、删除学生/教师/管理员账号，并维护角色、项目小组、调用配额和权限范围。",
       知识库维护: "允许管理员维护知识库分类、查看教师上传资料、启用/停用资料，并管理资料详情。",
       专家提示词管理: "允许管理员查看各专家、技能、模式对应的提示词组装规则，以及模块引用的知识库范围。",
       试点数据看板: "允许管理员查看提交、审核、调用、优秀成果沉淀等运营指标，并查看 AI 建设成效评估。",
     };
     if (descriptions[permission]) return descriptions[permission];
-    if (role === "student") return "学生端演示权限，用于完成个人项目生成、提交、反馈和下载闭环。";
+    if (role === "student") return "学生端业务权限，用于完成个人项目生成、提交、反馈和下载闭环。";
     if (role === "teacher") return "教师端教学管理权限，用于完成成果审核、节点指导和资料上传。";
     return "管理端运营权限，用于完成账号、知识库、提示词和试点数据管理。";
   }
@@ -13410,7 +13410,7 @@ ${modeInstructions[promptMode]}
             <header>
               <div>
                 <span className="eyebrow">账号权限管理</span>
-                <h3>新建演示账号</h3>
+                <h3>新建平台账号</h3>
                 <p>选择角色后会自动带出默认权限，也可以手动调整账号、密码和配额。</p>
               </div>
               <button className="modal-close-button" type="button" onClick={() => setIsAccountCreateOpen(false)} aria-label="关闭">
@@ -13603,7 +13603,7 @@ ${modeInstructions[promptMode]}
                 type="button"
                 onClick={() => handleToggleAccountStatus(accountDetail.id)}
                 disabled={accountDetail.status === "待后端开通"}
-                title={accountDetail.status === "待后端开通" ? "需等待后端账号管理接口接入" : undefined}
+                title={accountDetail.status === "待后端开通" ? "该账号尚未开通，暂不能修改状态" : undefined}
               >
                 {accountDetail.status}
               </button>
@@ -13629,7 +13629,7 @@ ${modeInstructions[promptMode]}
         <AdminDeleteConfirmModal
           eyebrow="删除账号"
           title={`确认删除账号“${pendingDeleteAccount.account}”？`}
-          description="删除后，该账号会从账号权限管理列表中移除，当前 Demo 不再显示该账号。"
+          description="删除后，该账号会从平台数据库移除，已有登录会话也会立即失效。"
           primary={pendingDeleteAccount.name}
           detail={`${pendingDeleteAccount.role === "student" ? "学生端" : pendingDeleteAccount.role === "teacher" ? "教师端" : "管理端"} · ${pendingDeleteAccount.groupOrScope}`}
           onCancel={() => setPendingDeleteAccountId(null)}
@@ -13649,14 +13649,68 @@ function AdminDeleteConfirmModal(props: {
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const onCancel = props.onCancel;
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    const getFocusableElements = () =>
+      dialog
+        ? Array.from(
+            dialog.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+            ),
+          )
+        : [];
+
+    getFocusableElements()[0]?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusableElements = getFocusableElements();
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusableElements[0];
+      const last = focusableElements[focusableElements.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, [onCancel]);
+
   return createPortal(
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
-      <section className="media-modal delete-confirm-modal admin-delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="admin-delete-title">
+      <section
+        ref={dialogRef}
+        className="media-modal delete-confirm-modal admin-delete-confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="admin-delete-title"
+        aria-describedby="admin-delete-description"
+      >
         <header>
           <div>
             <span className="eyebrow">{props.eyebrow}</span>
             <h3 id="admin-delete-title">{props.title}</h3>
-            <p>{props.description}</p>
+            <p id="admin-delete-description">{props.description}</p>
           </div>
           <button type="button" aria-label="关闭删除确认" onClick={props.onCancel}>
             <X size={18} />
@@ -13664,7 +13718,7 @@ function AdminDeleteConfirmModal(props: {
         </header>
         <div className="delete-confirm-body">
           <strong>{props.primary}</strong>
-          <p>该操作只影响当前演示数据，正式版会同步写入账号与项目组管理后台。</p>
+          <p>该操作会立即写入平台数据库，删除后无法通过界面撤销。</p>
           <span>{props.detail}</span>
         </div>
         <footer>

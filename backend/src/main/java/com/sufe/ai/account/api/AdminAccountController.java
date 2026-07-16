@@ -21,6 +21,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.session.FindByIndexNameSessionRepository;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -47,6 +48,7 @@ public class AdminAccountController {
     private final AccountPermissionDenialRepository accountPermissionDenialRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuditLogService auditLogService;
+    private final FindByIndexNameSessionRepository<?> sessionRepository;
 
     public AdminAccountController(
             UserAccountRepository userAccountRepository,
@@ -54,7 +56,8 @@ public class AdminAccountController {
             GroupMembershipRepository groupMembershipRepository,
             AccountPermissionDenialRepository accountPermissionDenialRepository,
             PasswordEncoder passwordEncoder,
-            AuditLogService auditLogService
+            AuditLogService auditLogService,
+            FindByIndexNameSessionRepository<?> sessionRepository
     ) {
         this.userAccountRepository = userAccountRepository;
         this.projectGroupRepository = projectGroupRepository;
@@ -62,6 +65,7 @@ public class AdminAccountController {
         this.accountPermissionDenialRepository = accountPermissionDenialRepository;
         this.passwordEncoder = passwordEncoder;
         this.auditLogService = auditLogService;
+        this.sessionRepository = sessionRepository;
     }
 
     @GetMapping("/accounts")
@@ -144,6 +148,9 @@ public class AdminAccountController {
         user = userAccountRepository.saveAndFlush(user);
         replaceMembership(user.getId(), request.role(), request.groupId());
         replacePermissionDenials(user.getId(), request.disabledPermissions());
+        if (user.getStatus() == UserStatus.DISABLED) {
+            invalidateSessions(user.getAccount());
+        }
         auditLogService.record(
                 authentication.getName(),
                 "ACCOUNT_UPDATE",
@@ -166,6 +173,7 @@ public class AdminAccountController {
         }
         groupMembershipRepository.deleteByUserId(user.getId());
         accountPermissionDenialRepository.deleteByUserId(user.getId());
+        invalidateSessions(user.getAccount());
         userAccountRepository.delete(user);
         auditLogService.record(
                 authentication.getName(),
@@ -249,6 +257,7 @@ public class AdminAccountController {
 
     private void replaceMembership(String userId, UserRole role, String groupId) {
         groupMembershipRepository.deleteByUserId(userId);
+        groupMembershipRepository.flush();
         if (role == UserRole.STUDENT && hasText(groupId)) {
             groupMembershipRepository.save(GroupMembership.create(userId, groupId.trim()));
         }
@@ -256,9 +265,14 @@ public class AdminAccountController {
 
     private void replacePermissionDenials(String userId, List<String> disabledPermissions) {
         accountPermissionDenialRepository.deleteByUserId(userId);
+        accountPermissionDenialRepository.flush();
         normalizePermissionKeys(disabledPermissions).forEach(permission ->
                 accountPermissionDenialRepository.save(AccountPermissionDenial.create(userId, permission))
         );
+    }
+
+    private void invalidateSessions(String account) {
+        sessionRepository.findByPrincipalName(account).keySet().forEach(sessionRepository::deleteById);
     }
 
     private static List<String> normalizePermissionKeys(List<String> permissions) {

@@ -162,6 +162,66 @@ class AdminAccountControllerTests {
     }
 
     @Test
+    void disablingAccountInvalidatesExistingSessions() throws Exception {
+        UserAccount student = userAccountRepository.save(UserAccount.create(
+                "U-DISABLE-SESSION-TEST",
+                "disable-session@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.STUDENT,
+                "待停用学生",
+                "创业实践课学生",
+                50
+        ));
+        groupMembershipRepository.save(GroupMembership.create("M-DISABLE-SESSION-TEST", student.getId(), group.getId()));
+        Cookie studentSession = login(student.getAccount());
+        Cookie adminSession = loginAsAdmin();
+
+        mockMvc.perform(patch("/api/admin/accounts/{accountId}", student.getId())
+                        .with(csrf())
+                        .cookie(adminSession)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "role": "STUDENT",
+                                  "displayName": "待停用学生",
+                                  "title": "创业实践课学生",
+                                  "status": "DISABLED",
+                                  "quotaRemaining": 50,
+                                  "disabledPermissions": [],
+                                  "groupId": "G-ADMIN-TEST"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DISABLED"));
+
+        mockMvc.perform(get("/api/auth/me").cookie(studentSession))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void deletingAccountInvalidatesExistingSessions() throws Exception {
+        UserAccount teacher = userAccountRepository.save(UserAccount.create(
+                "U-DELETE-SESSION-TEST",
+                "delete-session@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.TEACHER,
+                "待删除教师",
+                "课程教师",
+                50
+        ));
+        Cookie teacherSession = login(teacher.getAccount());
+        Cookie adminSession = loginAsAdmin();
+
+        mockMvc.perform(delete("/api/admin/accounts/{accountId}", teacher.getId())
+                        .with(csrf())
+                        .cookie(adminSession))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/auth/me").cookie(teacherSession))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void adminCreatesAndDeletesEmptyGroupButCannotDeleteGroupWithMembers() throws Exception {
         Cookie sessionCookie = loginAsAdmin();
 
