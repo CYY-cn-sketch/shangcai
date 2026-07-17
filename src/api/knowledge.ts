@@ -58,14 +58,75 @@ export type ExpertSkillUploadRecord = {
   parsedRole: string;
   parsedScenario: string;
   parsedAccent: string;
+  parsedSkillName?: string | null;
+  parsedSkillDescription?: string | null;
   parsedSystemPrompt?: string | null;
   parsedUserPrompt?: string | null;
+  parsedKnowledgeRule?: string | null;
+  parsedOutputFormat?: string | null;
+  parsedBoundaries?: string | null;
   status: "PARSED" | "ENABLED";
   expertId?: string | null;
   uploadedBy: string;
   confirmedBy?: string | null;
   createdAt: string;
   confirmedAt?: string | null;
+  files: ExpertSkillUploadFileRecord[];
+};
+
+export type ExpertSkillUploadFileRecord = {
+  id: string;
+  relativePath: string;
+  fileRole: "CONFIG" | "PROMPT" | "KNOWLEDGE_CANDIDATE" | "REFERENCE";
+  contentPreview?: string | null;
+  mimeType: string;
+  fileSizeBytes: number;
+  sha256: string;
+  importedAssetId?: string | null;
+  downloadUrl: string;
+};
+
+export type ExpertSkillKnowledgeSelection =
+  | { mode: "EXISTING"; knowledgeBaseId: string }
+  | {
+      mode: "CREATE";
+      newKnowledgeBase: {
+        category: string;
+        description: string;
+        usedBy: string;
+        active: boolean;
+      };
+    }
+  | { mode: "NONE" };
+
+export type ConfirmExpertSkillUploadInput = {
+  name: string;
+  role: string;
+  scenario: string;
+  accent: string;
+  skillName: string;
+  skillDescription: string;
+  systemPrompt: string;
+  userPrompt: string;
+  knowledgeRule?: string;
+  outputFormat?: string;
+  boundaries?: string;
+  knowledge: ExpertSkillKnowledgeSelection;
+  importFileIds: string[];
+  active: boolean;
+};
+
+export type ExpertSkillConfirmationRecord = {
+  expert: KnowledgeExpertRecord;
+  upload: ExpertSkillUploadRecord;
+  knowledgeBase?: Omit<KnowledgeBaseRecord, "assetCount"> | null;
+  importedAssets: Array<{
+    id: string;
+    sourceFileId?: string | null;
+    name: string;
+    originalName?: string | null;
+    sha256: string;
+  }>;
 };
 
 export type SaveKnowledgeBaseInput = Pick<KnowledgeBaseRecord, "category" | "description" | "usedBy"> & {
@@ -246,7 +307,7 @@ export function deleteKnowledgeExpert(id: string) {
 
 export async function uploadExpertSkillArchive(archive: File) {
   if (!/\.zip$/i.test(archive.name)) throw new KnowledgeApiError("请选择 .zip 格式的 Skill 压缩包", 400);
-  if (archive.size > 2 * 1024 * 1024) throw new KnowledgeApiError("Skill ZIP 压缩包不能超过 2 MB", 400);
+  if (archive.size > 20 * 1024 * 1024) throw new KnowledgeApiError("Skill ZIP 压缩包不能超过 20 MB", 400);
 
   const csrf = await getCsrfToken();
   const form = new FormData();
@@ -268,10 +329,10 @@ export function listExpertSkillUploads() {
   return readJson<ExpertSkillUploadRecord[]>("/api/knowledge/expert-skill-uploads");
 }
 
-export function confirmExpertSkillUpload(id: string, knowledgeCategories: string[]) {
-  return mutateJson<KnowledgeExpertRecord>(
+export function confirmExpertSkillUpload(id: string, input: ConfirmExpertSkillUploadInput) {
+  return mutateJson<ExpertSkillConfirmationRecord>(
     `/api/knowledge/expert-skill-uploads/${encodeURIComponent(id)}/confirm`,
     "POST",
-    { knowledgeCategories },
+    input,
   );
 }

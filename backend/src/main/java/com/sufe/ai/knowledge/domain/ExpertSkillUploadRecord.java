@@ -51,6 +51,21 @@ public class ExpertSkillUploadRecord {
     @Column(name = "parsed_user_prompt", columnDefinition = "MEDIUMTEXT", updatable = false)
     private String parsedUserPrompt;
 
+    @Column(name = "parsed_skill_name", length = 100, updatable = false)
+    private String parsedSkillName;
+
+    @Column(name = "parsed_skill_description", length = 500, updatable = false)
+    private String parsedSkillDescription;
+
+    @Column(name = "parsed_knowledge_rule", columnDefinition = "MEDIUMTEXT", updatable = false)
+    private String parsedKnowledgeRule;
+
+    @Column(name = "parsed_output_format", columnDefinition = "MEDIUMTEXT", updatable = false)
+    private String parsedOutputFormat;
+
+    @Column(name = "parsed_boundaries", columnDefinition = "MEDIUMTEXT", updatable = false)
+    private String parsedBoundaries;
+
     @Enumerated(EnumType.STRING)
     @Column(length = 16, nullable = false)
     private ExpertSkillUploadStatus status;
@@ -84,6 +99,11 @@ public class ExpertSkillUploadRecord {
         record.parsedAccent = requireText(parsed.accent(), "accent");
         record.parsedSystemPrompt = normalizeOptional(parsed.systemPrompt());
         record.parsedUserPrompt = normalizeOptional(parsed.userPrompt());
+        record.parsedSkillName = normalizeOptional(parsed.skillName());
+        record.parsedSkillDescription = normalizeOptional(parsed.skillDescription());
+        record.parsedKnowledgeRule = normalizeOptional(parsed.knowledgeRule());
+        record.parsedOutputFormat = normalizeOptional(parsed.outputFormat());
+        record.parsedBoundaries = normalizeOptional(parsed.boundaries());
         record.status = ExpertSkillUploadStatus.PARSED;
         record.createdAt = Instant.now();
         return record;
@@ -120,6 +140,11 @@ public class ExpertSkillUploadRecord {
     public String getParsedAccent() { return parsedAccent; }
     public String getParsedSystemPrompt() { return parsedSystemPrompt; }
     public String getParsedUserPrompt() { return parsedUserPrompt; }
+    public String getParsedSkillName() { return parsedSkillName; }
+    public String getParsedSkillDescription() { return parsedSkillDescription; }
+    public String getParsedKnowledgeRule() { return parsedKnowledgeRule; }
+    public String getParsedOutputFormat() { return parsedOutputFormat; }
+    public String getParsedBoundaries() { return parsedBoundaries; }
     public ExpertSkillUploadStatus getStatus() { return status; }
     public String getExpertId() { return expertId; }
     public String getConfirmedBy() { return confirmedBy; }
@@ -136,7 +161,12 @@ public class ExpertSkillUploadRecord {
             String scenario,
             String accent,
             String systemPrompt,
-            String userPrompt
+            String userPrompt,
+            String skillName,
+            String skillDescription,
+            String knowledgeRule,
+            String outputFormat,
+            String boundaries
     ) {
     }
 }

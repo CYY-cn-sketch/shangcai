@@ -42,6 +42,7 @@ import {
   type AdminGroup,
 } from "./api/admin";
 import { AdminAiUsagePanel } from "./AdminAiUsagePanel";
+import { ExpertSkillManager } from "./ExpertSkillManager";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
 import {
   artifactDownloadUrl,
@@ -61,7 +62,6 @@ import {
 import { buildPptxFile, parsePptSlideOutline } from "./pptxBuilder";
 import { PptPreviewModal } from "./PptPreviewModal";
 import {
-  confirmExpertSkillUpload,
   createKnowledgeAsset,
   createKnowledgeBase,
   deleteKnowledgeAsset,
@@ -72,14 +72,13 @@ import {
   listKnowledgeExperts,
   knowledgeAssetDownloadUrl,
   saveKnowledgeExpert,
-  uploadExpertSkillArchive,
   uploadKnowledgeAsset,
   updateKnowledgeAsset,
   updateKnowledgeBase,
   type KnowledgeAssetRecord,
   type KnowledgeBaseRecord,
   type KnowledgeExpertRecord,
-  type ExpertSkillUploadRecord,
+  type ExpertSkillConfirmationRecord,
   type SaveKnowledgeExpertInput,
 } from "./api/knowledge";
 import { listDefensePractices, saveDefensePractice, type RemoteDefensePractice } from "./api/defense";
@@ -847,7 +846,7 @@ const initialAccountRecords: AccountRecord[] = [
     account: "admin@sufe.demo",
     title: "教学平台运营管理员",
     groupOrScope: "全平台运营",
-    permissions: ["账号权限管理", "知识库维护", "专家提示词管理", "试点数据看板"],
+    permissions: ["账号权限管理", "知识库维护", "专家配置与 Skill 管理", "试点数据看板"],
     quota: 1500,
     status: "已开通",
   },
@@ -917,7 +916,7 @@ function mapAdminGroup(group: AdminGroup): StudentGroup {
 function getBaseRolePermissions(role: Role) {
   if (role === "student") return studentExpertPermissionNames;
   if (role === "teacher") return ["提交审核中心", "节点解答与指导", "优秀成果标记", "上传教学资料"];
-  return ["账号权限管理", "知识库维护", "专家提示词管理", "试点数据看板"];
+  return ["账号权限管理", "知识库维护", "专家配置与 Skill 管理", "试点数据看板"];
 }
 
 function mapAdminAccount(account: AdminAccount, groups: StudentGroup[]): AccountRecord {
@@ -1114,13 +1113,6 @@ function normalizeCustomExperts(records: CustomExpertRecord[]) {
         ? item.skills
         : [{ id: "custom-output", name: "阶段成果生成", stage: "自定义专家", description: "根据教师配置的提示词生成阶段成果" }],
     }));
-}
-
-function getSkillUploadKnowledgeCategories(catalog: KnowledgeBaseCatalogItem[], states: KnowledgeBaseStates) {
-  return getActiveKnowledgeCatalog(catalog)
-    .filter((item) => states[item.category] !== false)
-    .slice(0, 2)
-    .map((item) => item.category);
 }
 
 function buildCustomExpert(record: CustomExpertRecord): Expert {
@@ -2872,10 +2864,26 @@ function App() {
     }
   }
 
-  function handleExpertSkillConfirmed(record: KnowledgeExpertRecord) {
-    const mapped = mapKnowledgeExpertRecord(record);
+  function handleExpertSkillConfirmed(result: ExpertSkillConfirmationRecord) {
+    const mapped = mapKnowledgeExpertRecord(result.expert);
     setCustomExperts((current) => [...current.filter((expert) => expert.id !== mapped.id), mapped]);
-    setPromptKnowledgeRoutes((current) => ({ ...current, [mapped.id]: record.knowledgeCategories }));
+    setPromptKnowledgeRoutes((current) => ({ ...current, [mapped.id]: result.expert.knowledgeCategories }));
+    if (result.knowledgeBase) {
+      const confirmedBase = result.knowledgeBase;
+      setKnowledgeCatalog((current) => [
+        ...current.filter((base) => base.id !== confirmedBase.id && base.category !== confirmedBase.category),
+        confirmedBase,
+      ]);
+      setKnowledgeBaseStates((current) => ({ ...current, [confirmedBase.category]: confirmedBase.active }));
+    }
+    if (result.importedAssets.length) {
+      listKnowledgeAssets()
+        .then((records) => setKnowledgeUploads(records.map(mapKnowledgeAssetRecord)))
+        .catch((error) => setSystemNotice({
+          title: "知识资料刷新失败",
+          message: error instanceof Error ? error.message : "资料已导入，但当前页面暂时无法刷新列表。",
+        }));
+    }
   }
 
   async function handlePromptKnowledgeRoutesChange(nextRoutes: PromptKnowledgeRoutes) {
@@ -5082,153 +5090,6 @@ function ExpertDeleteConfirmModal(props: { expert: Expert; onCancel: () => void;
   );
 }
 
-function SkillArchiveUploadGuideModal(props: { actorLabel: string; onCancel: () => void; onConfirm: () => void }) {
-  return createPortal(
-    <div className="modal-backdrop preview-modal-backdrop" role="presentation">
-      <section className="media-modal skill-folder-upload-modal" role="dialog" aria-modal="true" aria-labelledby="skill-folder-upload-title">
-        <header>
-          <div>
-            <span className="eyebrow">{props.actorLabel}</span>
-            <h3 id="skill-folder-upload-title">上传专家 Skill 压缩包</h3>
-            <p>请先把完整 Skill 文件夹压缩为 ZIP。服务端会优先解析 SKILL.md，并把包内的 md、txt、json 文件作为只读配置。</p>
-          </div>
-          <button type="button" aria-label="关闭上传说明" onClick={props.onCancel}>
-            <X size={18} />
-          </button>
-        </header>
-        <div className="skill-folder-upload-body">
-          <article>
-            <strong>不再出现浏览器二次确认</strong>
-            <p>ZIP 作为单个文件上传，不再触发 Edge / Chrome 的“是否将多个文件上传到此站点”提示。</p>
-          </article>
-          <article>
-            <strong>读取范围</strong>
-            <p>压缩包不超过 2 MB；只读取最多 20 个 UTF-8 文本配置，不执行脚本、程序或其他二进制文件。解析后还需人工确认才会启用专家。</p>
-          </article>
-        </div>
-        <footer className="skill-folder-upload-actions">
-          <button className="ghost-button skill-folder-upload-secondary" type="button" onClick={props.onCancel}>
-            取消
-          </button>
-          <button className="primary-button prompt-save-button skill-folder-upload-primary" type="button" onClick={props.onConfirm}>
-            <Upload size={15} />
-            选择 ZIP 压缩包
-          </button>
-        </footer>
-      </section>
-    </div>,
-    document.body,
-  );
-}
-
-function SkillUploadReviewModal(props: {
-  actorLabel: string;
-  upload: ExpertSkillUploadRecord;
-  confirming: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const dialogRef = useRef<HTMLElement | null>(null);
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const cancelRef = useRef(props.onCancel);
-  const confirmingRef = useRef(props.confirming);
-
-  useEffect(() => {
-    cancelRef.current = props.onCancel;
-  }, [props.onCancel]);
-
-  useEffect(() => {
-    confirmingRef.current = props.confirming;
-  }, [props.confirming]);
-
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeButtonRef.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !confirmingRef.current) {
-        event.preventDefault();
-        cancelRef.current();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = Array.from(
-        dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'),
-      );
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      previousFocus?.focus();
-    };
-  }, []);
-
-  const systemPrompt = props.upload.parsedSystemPrompt?.trim() || "未解析到单独的系统提示词，将使用主文件文本。";
-  const userPrompt = props.upload.parsedUserPrompt?.trim() || "未配置用户提示词。";
-  return createPortal(
-    <div className="modal-backdrop preview-modal-backdrop" role="presentation">
-      <section ref={dialogRef} className="media-modal skill-review-modal" role="dialog" aria-modal="true" aria-labelledby="skill-review-title">
-        <header>
-          <div>
-            <span className="eyebrow">{props.actorLabel} · 待人工确认</span>
-            <h3 id="skill-review-title">确认专家 Skill 解析结果</h3>
-            <p>当前记录只完成解析，尚未启用。请确认专家身份、场景和提示词后再入库启用。</p>
-          </div>
-          <button ref={closeButtonRef} type="button" aria-label="关闭 Skill 解析结果" onClick={props.onCancel} disabled={props.confirming}>
-            <X size={18} />
-          </button>
-        </header>
-        <div className="skill-review-body">
-          <div className="skill-review-summary" role="status">
-            <span>解析状态：未启用</span>
-            <strong>{props.upload.parsedName}</strong>
-            <small>{props.upload.folderName} · {props.upload.fileCount} 个文本文件 · 主文件 {props.upload.mainFilePath}</small>
-          </div>
-          <dl className="skill-review-fields">
-            <div>
-              <dt>专家定位</dt>
-              <dd>{props.upload.parsedRole}</dd>
-            </div>
-            <div>
-              <dt>适用场景</dt>
-              <dd>{props.upload.parsedScenario}</dd>
-            </div>
-          </dl>
-          <div className="skill-review-prompts">
-            <article>
-              <strong>系统提示词</strong>
-              <pre>{systemPrompt}</pre>
-            </article>
-            <article>
-              <strong>用户提示词</strong>
-              <pre>{userPrompt}</pre>
-            </article>
-          </div>
-          <p className="skill-review-safety">确认只会把这些文本配置写入专家档案，不会执行文件夹中的任何内容。</p>
-        </div>
-        <footer className="skill-folder-upload-actions">
-          <button className="ghost-button skill-folder-upload-secondary" type="button" onClick={props.onCancel} disabled={props.confirming}>
-            暂不启用
-          </button>
-          <button className="primary-button prompt-save-button skill-folder-upload-primary" type="button" onClick={props.onConfirm} disabled={props.confirming}>
-            {props.confirming ? "正在启用…" : "确认并启用专家"}
-          </button>
-        </footer>
-      </section>
-    </div>,
-    document.body,
-  );
-}
-
 function KnowledgeBaseDetailModal(props: {
   item: KnowledgeBaseCatalogItem;
   uploads: KnowledgeUpload[];
@@ -6599,7 +6460,7 @@ function TeacherView(props: {
   onKnowledgeCatalogChange: (catalog: KnowledgeBaseCatalogItem[]) => void;
   onPromptKnowledgeRoutesChange: (routes: PromptKnowledgeRoutes) => void;
   onCustomExpertsChange: (experts: CustomExpertRecord[]) => void;
-  onExpertSkillConfirmed: (expert: KnowledgeExpertRecord) => void;
+  onExpertSkillConfirmed: (result: ExpertSkillConfirmationRecord) => void;
   onSaveExpertPrompt: (
     expertId: ExpertId,
     systemPrompt: string,
@@ -6635,9 +6496,6 @@ function TeacherView(props: {
   const [pendingDeleteExpertId, setPendingDeleteExpertId] = useState<ExpertId | null>(null);
   const [teacherPromptExpertId, setTeacherPromptExpertId] = useState<ExpertId>("brainstorm");
   const [teacherPromptMode, setTeacherPromptMode] = useState<ModelMode>("Auto");
-  const [newExpertName, setNewExpertName] = useState("");
-  const [newExpertRole, setNewExpertRole] = useState("");
-  const [newExpertScenario, setNewExpertScenario] = useState("");
   const initialTeacherPromptParts = buildPromptTemplateParts(
     experts[0],
     "Auto",
@@ -6648,9 +6506,6 @@ function TeacherView(props: {
   const [teacherSystemPromptDraft, setTeacherSystemPromptDraft] = useState(initialTeacherPromptParts.system);
   const [teacherUserPromptDraft, setTeacherUserPromptDraft] = useState(initialTeacherPromptParts.user);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
-  const [isSkillArchiveGuideOpen, setIsSkillArchiveGuideOpen] = useState(false);
-  const [pendingSkillUpload, setPendingSkillUpload] = useState<ExpertSkillUploadRecord | null>(null);
-  const [isSkillUploadConfirming, setIsSkillUploadConfirming] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
   const [selectedIssueMetricLabel, setSelectedIssueMetricLabel] = useState<string | null>(null);
   const [reviewDetailTab, setReviewDetailTab] = useState<TeacherReviewTab>("files");
@@ -6660,7 +6515,6 @@ function TeacherView(props: {
   const [reviewActionMessage, setReviewActionMessage] = useState<string | null>(null);
   const [rubricDrafts, setRubricDrafts] = useState<Record<string, RubricScore[]>>({});
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
-  const expertSkillArchiveUploadInputRef = useRef<HTMLInputElement | null>(null);
   const selectedUpload = props.knowledgeUploads.find((asset) => asset.id === selectedUploadId) || null;
   const knowledgePreviewAsset = knowledgePreviewId ? props.knowledgeUploads.find((asset) => asset.id === knowledgePreviewId) || null : null;
   const activeKnowledgeCatalog = getActiveKnowledgeCatalog(props.knowledgeCatalog);
@@ -6955,7 +6809,7 @@ function TeacherView(props: {
   const teacherModuleTabs = [
     { id: "review", label: "审核", icon: ClipboardCheck },
     { id: "knowledge", label: "教学资源库", icon: Upload },
-    { id: "prompts", label: "专家提示词管理", icon: Sparkles },
+          { id: "prompts", label: "专家配置与 Skill 管理", icon: Sparkles },
     { id: "issues", label: "课堂问题监测", icon: BarChart3 },
   ] as const;
 
@@ -7220,87 +7074,25 @@ function TeacherView(props: {
     }
   }
 
-  function handleTeacherCreateCustomExpert() {
-    const name = newExpertName.trim();
-    if (!name) {
-      setKnowledgeSaveMessage("请先填写专家名称。");
-      return;
+  function handleTeacherExpertSkillConfirmed(result: ExpertSkillConfirmationRecord) {
+    props.onExpertSkillConfirmed(result);
+    let nextStates = props.knowledgeBaseStates;
+    if (result.knowledgeBase) {
+      nextStates = { ...nextStates, [result.knowledgeBase.category]: result.knowledgeBase.active };
     }
-    if (experts.some((expert) => expert.name === name)) {
-      setKnowledgeSaveMessage("这个专家名称已经存在。");
-      return;
-    }
-    const skillName = "阶段成果生成";
-    const nextExpert: CustomExpertRecord = {
-      id: `custom-${Date.now()}`,
-      name,
-      role: newExpertRole.trim() || "根据教师配置的提示词，围绕课程节点生成可提交的阶段成果。",
-      scenario: newExpertScenario.trim() || "自定义课程场景、专题指导、阶段成果生成",
-      accent: "#0f7b73",
-      skills: [
-        {
-          id: `custom-skill-${Date.now()}`,
-          name: skillName,
-          stage: "自定义专家",
-          description: "根据教师配置的提示词和知识库生成阶段成果。",
-        },
-      ],
-    };
-    const defaultCategories = ["教学大纲", "创业案例"] as KnowledgeCategory[];
-    props.onCustomExpertsChange([...props.customExperts, nextExpert]);
-    props.onPromptKnowledgeRoutesChange({ ...props.promptKnowledgeRoutes, [nextExpert.id]: defaultCategories });
+    const mapped = mapKnowledgeExpertRecord(result.expert);
     const nextParts = buildPromptTemplateParts(
-      buildCustomExpert(nextExpert),
+      buildCustomExpert(mapped),
       "Auto",
       props.knowledgeUploads,
-      props.knowledgeBaseStates,
-      defaultCategories,
+      nextStates,
+      result.expert.knowledgeCategories,
     );
-    setTeacherPromptExpertId(nextExpert.id);
+    setTeacherPromptExpertId(mapped.id);
     setTeacherPromptMode("Auto");
     setTeacherSystemPromptDraft(nextParts.system);
     setTeacherUserPromptDraft(nextParts.user);
-    setNewExpertName("");
-    setNewExpertRole("");
-    setNewExpertScenario("");
-    setKnowledgeSaveMessage("新增专家已同步到学生端专家列表。");
-  }
-
-  async function handleTeacherUploadExpertSkillArchive(files: FileList | null) {
-    const archive = files?.item(0);
-    if (!archive) return;
-    try {
-      const upload = await uploadExpertSkillArchive(archive);
-      setPendingSkillUpload(upload);
-    } catch (error) {
-      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 压缩包解析失败。");
-    }
-  }
-
-  async function confirmTeacherSkillUpload() {
-    if (!pendingSkillUpload) return;
-    const categories = getSkillUploadKnowledgeCategories(props.knowledgeCatalog, props.knowledgeBaseStates);
-    if (!categories.length) {
-      setKnowledgeSaveMessage("请先启用至少一个知识库目录，再确认专家 Skill。");
-      return;
-    }
-    setIsSkillUploadConfirming(true);
-    try {
-      const saved = await confirmExpertSkillUpload(pendingSkillUpload.id, categories);
-      props.onExpertSkillConfirmed(saved);
-      const mapped = mapKnowledgeExpertRecord(saved);
-      const nextParts = buildPromptTemplateParts(buildCustomExpert(mapped), "Auto", props.knowledgeUploads, props.knowledgeBaseStates, saved.knowledgeCategories);
-      setTeacherPromptExpertId(mapped.id);
-      setTeacherPromptMode("Auto");
-      setTeacherSystemPromptDraft(nextParts.system);
-      setTeacherUserPromptDraft(nextParts.user);
-      setPendingSkillUpload(null);
-      setKnowledgeSaveMessage(`专家 Skill「${saved.name}」已确认并启用。`);
-    } catch (error) {
-      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 确认失败。");
-    } finally {
-      setIsSkillUploadConfirming(false);
-    }
+    setKnowledgeSaveMessage(`专家 Skill「${result.expert.name}」已保存${result.expert.active ? "并启用" : "，当前未启用"}。`);
   }
 
   function handleCreateKnowledgeBase() {
@@ -7773,50 +7565,15 @@ function TeacherView(props: {
             <div className="panel-title">
               <div>
                 <span className="eyebrow">专家配置</span>
-                <h3>专家提示词管理</h3>
+                <h3>专家配置与 Skill 管理</h3>
               </div>
             </div>
-            <section className="custom-expert-create-panel">
-              <div className="custom-expert-create-copy">
-                <span className="eyebrow">新增专家</span>
-                <h4>自定义课堂专家</h4>
-                <p>新增后会进入学生端专家选择，同时可继续配置知识库目录、系统提示词和用户输入组装规则。</p>
-              </div>
-              <label>
-                <span>专家名称</span>
-                <input value={newExpertName} onChange={(event) => setNewExpertName(event.target.value)} placeholder="如：财务测算专家" />
-              </label>
-              <label>
-                <span>专家定位</span>
-                <input value={newExpertRole} onChange={(event) => setNewExpertRole(event.target.value)} placeholder="说明这个专家主要解决什么问题" />
-              </label>
-              <label>
-                <span>适用场景</span>
-                <input value={newExpertScenario} onChange={(event) => setNewExpertScenario(event.target.value)} placeholder="如：成本测算、收入模型、单元经济性" />
-              </label>
-              <div className="custom-expert-create-actions">
-                <button className="primary-button" type="button" onClick={handleTeacherCreateCustomExpert}>
-                  <Sparkles size={16} />
-                  新增专家
-                </button>
-                <button className="ghost-button expert-skill-upload-button" type="button" onClick={() => setIsSkillArchiveGuideOpen(true)}>
-                  <Upload size={16} />
-                  上传 Skill 压缩包
-                </button>
-              </div>
-              <input
-                ref={(node) => {
-                  expertSkillArchiveUploadInputRef.current = node;
-                }}
-                className="visually-hidden-input"
-                type="file"
-                accept=".zip,application/zip"
-                onChange={(event) => {
-                  void handleTeacherUploadExpertSkillArchive(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </section>
+            <ExpertSkillManager
+              actorLabel="教师端"
+              knowledgeBases={props.knowledgeCatalog}
+              onMessage={setKnowledgeSaveMessage}
+              onConfirmed={handleTeacherExpertSkillConfirmed}
+            />
             <div className="prompt-control-panel teacher-prompt-controls">
               <label>
                 <span>专家</span>
@@ -8389,25 +8146,6 @@ function TeacherView(props: {
         />
       )}
       {isPromptSaveOpen && <PromptSaveSuccessModal onClose={() => setIsPromptSaveOpen(false)} />}
-      {isSkillArchiveGuideOpen && (
-        <SkillArchiveUploadGuideModal
-          actorLabel="教师端"
-          onCancel={() => setIsSkillArchiveGuideOpen(false)}
-          onConfirm={() => {
-            setIsSkillArchiveGuideOpen(false);
-            expertSkillArchiveUploadInputRef.current?.click();
-          }}
-        />
-      )}
-      {pendingSkillUpload && (
-        <SkillUploadReviewModal
-          actorLabel="教师端"
-          upload={pendingSkillUpload}
-          confirming={isSkillUploadConfirming}
-          onCancel={() => setPendingSkillUpload(null)}
-          onConfirm={() => void confirmTeacherSkillUpload()}
-        />
-      )}
       {knowledgeSaveMessage && <PromptSaveSuccessModal message={knowledgeSaveMessage} onClose={() => setKnowledgeSaveMessage(null)} />}
     </>
   );
@@ -8429,7 +8167,7 @@ function AdminView(props: {
   onKnowledgeCatalogChange: (catalog: KnowledgeBaseCatalogItem[]) => void;
   onPromptKnowledgeRoutesChange: (routes: PromptKnowledgeRoutes) => void;
   onCustomExpertsChange: (experts: CustomExpertRecord[]) => void;
-  onExpertSkillConfirmed: (expert: KnowledgeExpertRecord) => void;
+  onExpertSkillConfirmed: (result: ExpertSkillConfirmationRecord) => void;
   onSaveExpertPrompt: (
     expertId: ExpertId,
     systemPrompt: string,
@@ -8450,9 +8188,6 @@ function AdminView(props: {
   const [promptExpertId, setPromptExpertId] = useState<ExpertId>("brainstorm");
   const [promptMode, setPromptMode] = useState<ModelMode>("Auto");
   const [pendingDeleteExpertId, setPendingDeleteExpertId] = useState<ExpertId | null>(null);
-  const [adminNewExpertName, setAdminNewExpertName] = useState("");
-  const [adminNewExpertRole, setAdminNewExpertRole] = useState("");
-  const [adminNewExpertScenario, setAdminNewExpertScenario] = useState("");
   const accountRecords = props.accountRecords;
   const [selectedAccountId, setSelectedAccountId] = useState(() => accountRecords[0]?.id || "");
   const [accountDetailId, setAccountDetailId] = useState<string | null>(null);
@@ -8494,13 +8229,9 @@ function AdminView(props: {
   const [adminSystemPromptDraft, setAdminSystemPromptDraft] = useState(initialAdminPromptParts.system);
   const [adminUserPromptDraft, setAdminUserPromptDraft] = useState(initialAdminPromptParts.user);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
-  const [isAdminSkillArchiveGuideOpen, setIsAdminSkillArchiveGuideOpen] = useState(false);
-  const [pendingAdminSkillUpload, setPendingAdminSkillUpload] = useState<ExpertSkillUploadRecord | null>(null);
-  const [isAdminSkillUploadConfirming, setIsAdminSkillUploadConfirming] = useState(false);
   const [accountSaveMessage, setAccountSaveMessage] = useState<string | null>(null);
   const [adminDataLoading, setAdminDataLoading] = useState(true);
   const adminUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const adminExpertSkillArchiveUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -8551,7 +8282,7 @@ function AdminView(props: {
     ["audit", "AI 用量统计", BarChart3],
     ["monitor", "运行监控中心", BarChart3],
     ["knowledge", "知识库管理", BookOpen],
-    ["prompts", "专家提示词管理", Sparkles],
+              ["prompts", "专家配置与 Skill 管理", Sparkles],
     ["evaluation", "试点运营评估", LineChart],
   ] as const;
   const kanbanProjects = props.studentGroups.map((group, index) => {
@@ -8902,87 +8633,25 @@ ${modeInstructions[promptMode]}
     }
   }
 
-  function handleAdminCreateCustomExpert() {
-    const name = adminNewExpertName.trim();
-    if (!name) {
-      setKnowledgeSaveMessage("请先填写专家名称。");
-      return;
+  function handleAdminExpertSkillConfirmed(result: ExpertSkillConfirmationRecord) {
+    props.onExpertSkillConfirmed(result);
+    let nextStates = props.knowledgeBaseStates;
+    if (result.knowledgeBase) {
+      nextStates = { ...nextStates, [result.knowledgeBase.category]: result.knowledgeBase.active };
     }
-    if (experts.some((expert) => expert.name === name)) {
-      setKnowledgeSaveMessage("这个专家名称已经存在。");
-      return;
-    }
-    const skillName = "阶段成果生成";
-    const nextExpert: CustomExpertRecord = {
-      id: `custom-${Date.now()}`,
-      name,
-      role: adminNewExpertRole.trim() || "根据管理端配置的提示词，生成课堂阶段成果和审核辅助内容。",
-      scenario: adminNewExpertScenario.trim() || "自定义专家场景、阶段成果生成、课堂专题指导",
-      accent: "#0f7b73",
-      skills: [
-        {
-          id: `custom-skill-${Date.now()}`,
-          name: skillName,
-          stage: "自定义专家",
-          description: "根据管理端配置的提示词和知识库生成阶段成果。",
-        },
-      ],
-    };
-    const defaultCategories = ["教学大纲", "创业案例"] as KnowledgeCategory[];
-    props.onCustomExpertsChange([...props.customExperts, nextExpert]);
-    props.onPromptKnowledgeRoutesChange({ ...props.promptKnowledgeRoutes, [nextExpert.id]: defaultCategories });
+    const mapped = mapKnowledgeExpertRecord(result.expert);
     const nextParts = buildPromptTemplateParts(
-      buildCustomExpert(nextExpert),
+      buildCustomExpert(mapped),
       "Auto",
       props.knowledgeUploads,
-      props.knowledgeBaseStates,
-      defaultCategories,
+      nextStates,
+      result.expert.knowledgeCategories,
     );
-    setPromptExpertId(nextExpert.id);
+    setPromptExpertId(mapped.id);
     setPromptMode("Auto");
     setAdminSystemPromptDraft(nextParts.system);
     setAdminUserPromptDraft(nextParts.user);
-    setAdminNewExpertName("");
-    setAdminNewExpertRole("");
-    setAdminNewExpertScenario("");
-    setKnowledgeSaveMessage("新增专家已同步到学生端专家列表。");
-  }
-
-  async function handleAdminUploadExpertSkillArchive(files: FileList | null) {
-    const archive = files?.item(0);
-    if (!archive) return;
-    try {
-      const upload = await uploadExpertSkillArchive(archive);
-      setPendingAdminSkillUpload(upload);
-    } catch (error) {
-      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 压缩包解析失败。");
-    }
-  }
-
-  async function confirmAdminSkillUpload() {
-    if (!pendingAdminSkillUpload) return;
-    const categories = getSkillUploadKnowledgeCategories(props.knowledgeCatalog, props.knowledgeBaseStates);
-    if (!categories.length) {
-      setKnowledgeSaveMessage("请先启用至少一个知识库目录，再确认专家 Skill。");
-      return;
-    }
-    setIsAdminSkillUploadConfirming(true);
-    try {
-      const saved = await confirmExpertSkillUpload(pendingAdminSkillUpload.id, categories);
-      props.onExpertSkillConfirmed(saved);
-      const mapped = mapKnowledgeExpertRecord(saved);
-      const nextParts = buildPromptTemplateParts(buildCustomExpert(mapped), "Auto", props.knowledgeUploads, props.knowledgeBaseStates, saved.knowledgeCategories);
-      setPromptExpertId(mapped.id);
-      setPromptMode("Auto");
-      setAdminSystemPromptDraft(nextParts.system);
-      setAdminUserPromptDraft(nextParts.user);
-      setPendingAdminSkillUpload(null);
-      setKnowledgeSaveMessage(`专家 Skill「${saved.name}」已确认并启用。`);
-    } catch (error) {
-      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 确认失败。");
-    } finally {
-      setIsAdminSkillUploadConfirming(false);
-    }
+    setKnowledgeSaveMessage(`专家 Skill「${result.expert.name}」已保存${result.expert.active ? "并启用" : "，当前未启用"}。`);
   }
 
   function handleAdminCreateKnowledgeBase() {
@@ -9052,7 +8721,7 @@ ${modeInstructions[promptMode]}
   function getDefaultPermissions(role: Role) {
     if (role === "student") return getStudentExpertPermissionNames();
     if (role === "teacher") return ["提交审核中心", "节点解答与指导", "优秀成果标记", "上传教学资料"];
-    return ["账号权限管理", "知识库维护", "专家提示词管理", "试点数据看板"];
+    return ["账号权限管理", "知识库维护", "专家配置与 Skill 管理", "试点数据看板"];
   }
 
   function getDefaultQuota(role: Role) {
@@ -9078,7 +8747,7 @@ ${modeInstructions[promptMode]}
       上传教学资料: "允许教师从本地上传教学大纲、BP 模板、评分标准、案例库、答辩题库和多媒体模板等资料。",
       账号权限管理: "允许管理员开通、停用、删除学生/教师/管理员账号，并维护角色、项目小组、调用配额和权限范围。",
       知识库维护: "允许管理员维护知识库分类、查看教师上传资料、启用/停用资料，并管理资料详情。",
-      专家提示词管理: "允许管理员查看各专家、技能、模式对应的提示词组装规则，以及模块引用的知识库范围。",
+        "专家配置与 Skill 管理": "允许管理员上传来源档案、确认专家配置、绑定知识库，并查看提示词组装规则。",
       试点数据看板: "允许管理员查看提交、审核、调用、优秀成果沉淀等运营指标，并查看 AI 建设成效评估。",
     };
     if (descriptions[permission]) return descriptions[permission];
@@ -9896,50 +9565,15 @@ ${modeInstructions[promptMode]}
             <div className="panel-title">
               <div>
                 <span className="eyebrow">管理端</span>
-                <h3>专家提示词管理</h3>
+                <h3>专家配置与 Skill 管理</h3>
               </div>
             </div>
-            <section className="custom-expert-create-panel">
-              <div className="custom-expert-create-copy">
-                <span className="eyebrow">新增专家</span>
-                <h4>自定义专家配置</h4>
-                <p>新增后同步到学生端专家选择；管理端负责配置知识库调用范围、系统提示词和组装规则。</p>
-              </div>
-              <label>
-                <span>专家名称</span>
-                <input value={adminNewExpertName} onChange={(event) => setAdminNewExpertName(event.target.value)} placeholder="如：财务测算专家" />
-              </label>
-              <label>
-                <span>专家定位</span>
-                <input value={adminNewExpertRole} onChange={(event) => setAdminNewExpertRole(event.target.value)} placeholder="说明这个专家主要解决什么问题" />
-              </label>
-              <label>
-                <span>适用场景</span>
-                <input value={adminNewExpertScenario} onChange={(event) => setAdminNewExpertScenario(event.target.value)} placeholder="如：成本测算、收入模型、单元经济性" />
-              </label>
-              <div className="custom-expert-create-actions">
-                <button className="primary-button" type="button" onClick={handleAdminCreateCustomExpert}>
-                  <Sparkles size={16} />
-                  新增专家
-                </button>
-                <button className="ghost-button expert-skill-upload-button" type="button" onClick={() => setIsAdminSkillArchiveGuideOpen(true)}>
-                  <Upload size={16} />
-                  上传 Skill 压缩包
-                </button>
-              </div>
-              <input
-                ref={(node) => {
-                  adminExpertSkillArchiveUploadInputRef.current = node;
-                }}
-                className="visually-hidden-input"
-                type="file"
-                accept=".zip,application/zip"
-                onChange={(event) => {
-                  void handleAdminUploadExpertSkillArchive(event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </section>
+            <ExpertSkillManager
+              actorLabel="管理端"
+              knowledgeBases={props.knowledgeCatalog}
+              onMessage={setKnowledgeSaveMessage}
+              onConfirmed={handleAdminExpertSkillConfirmed}
+            />
             <div className="prompt-control-panel teacher-prompt-controls">
               <div>
                 <label className="field-label" htmlFor="admin-prompt-expert">
@@ -10184,25 +9818,6 @@ ${modeInstructions[promptMode]}
         />
       )}
       {isPromptSaveOpen && <PromptSaveSuccessModal onClose={() => setIsPromptSaveOpen(false)} />}
-      {isAdminSkillArchiveGuideOpen && (
-        <SkillArchiveUploadGuideModal
-          actorLabel="管理端"
-          onCancel={() => setIsAdminSkillArchiveGuideOpen(false)}
-          onConfirm={() => {
-            setIsAdminSkillArchiveGuideOpen(false);
-            adminExpertSkillArchiveUploadInputRef.current?.click();
-          }}
-        />
-      )}
-      {pendingAdminSkillUpload && (
-        <SkillUploadReviewModal
-          actorLabel="管理端"
-          upload={pendingAdminSkillUpload}
-          confirming={isAdminSkillUploadConfirming}
-          onCancel={() => setPendingAdminSkillUpload(null)}
-          onConfirm={() => void confirmAdminSkillUpload()}
-        />
-      )}
       {accountSaveMessage && <PromptSaveSuccessModal message={accountSaveMessage} onClose={() => setAccountSaveMessage(null)} />}
       {selectedKanbanProject && (
         <div className="modal-backdrop" role="presentation">

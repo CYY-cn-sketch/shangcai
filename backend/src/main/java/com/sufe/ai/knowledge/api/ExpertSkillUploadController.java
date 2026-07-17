@@ -3,19 +3,27 @@ package com.sufe.ai.knowledge.api;
 import com.sufe.ai.audit.service.AuditLogService;
 import com.sufe.ai.knowledge.domain.ExpertKnowledgeRoute;
 import com.sufe.ai.knowledge.domain.ExpertProfile;
-import com.sufe.ai.knowledge.domain.ExpertSkill;
+import com.sufe.ai.knowledge.domain.ExpertSkillUploadFile;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadRecord;
-import com.sufe.ai.knowledge.domain.ExpertSkillUploadStatus;
+import com.sufe.ai.knowledge.domain.KnowledgeAsset;
+import com.sufe.ai.knowledge.domain.KnowledgeBase;
 import com.sufe.ai.knowledge.repository.ExpertKnowledgeRouteRepository;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
+import com.sufe.ai.knowledge.repository.ExpertSkillUploadFileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillUploadRepository;
-import com.sufe.ai.knowledge.repository.KnowledgeBaseRepository;
+import com.sufe.ai.knowledge.service.ExpertSkillConfirmationException;
+import com.sufe.ai.knowledge.service.ExpertSkillConfirmationService;
 import com.sufe.ai.knowledge.service.ExpertSkillUploadParser;
+import com.sufe.ai.storage.FileStorageService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,11 +39,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/knowledge/expert-skill-uploads")
@@ -44,27 +54,33 @@ public class ExpertSkillUploadController {
 
     private final ExpertSkillUploadParser parser;
     private final ExpertSkillUploadRepository uploadRepository;
+    private final ExpertSkillUploadFileRepository uploadFileRepository;
     private final ExpertProfileRepository expertProfileRepository;
     private final ExpertSkillRepository expertSkillRepository;
     private final ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository;
-    private final KnowledgeBaseRepository knowledgeBaseRepository;
+    private final FileStorageService fileStorageService;
+    private final ExpertSkillConfirmationService confirmationService;
     private final AuditLogService auditLogService;
 
     public ExpertSkillUploadController(
             ExpertSkillUploadParser parser,
             ExpertSkillUploadRepository uploadRepository,
+            ExpertSkillUploadFileRepository uploadFileRepository,
             ExpertProfileRepository expertProfileRepository,
             ExpertSkillRepository expertSkillRepository,
             ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository,
-            KnowledgeBaseRepository knowledgeBaseRepository,
+            FileStorageService fileStorageService,
+            ExpertSkillConfirmationService confirmationService,
             AuditLogService auditLogService
     ) {
         this.parser = parser;
         this.uploadRepository = uploadRepository;
+        this.uploadFileRepository = uploadFileRepository;
         this.expertProfileRepository = expertProfileRepository;
         this.expertSkillRepository = expertSkillRepository;
         this.expertKnowledgeRouteRepository = expertKnowledgeRouteRepository;
-        this.knowledgeBaseRepository = knowledgeBaseRepository;
+        this.fileStorageService = fileStorageService;
+        this.confirmationService = confirmationService;
         this.auditLogService = auditLogService;
     }
 
@@ -80,7 +96,7 @@ public class ExpertSkillUploadController {
             @RequestParam("paths") List<String> paths,
             Authentication authentication
     ) {
-        ExpertSkillUploadRecord.ParsedSkill parsed;
+        ExpertSkillUploadParser.ParsedUpload parsed;
         try {
             parsed = parser.parse(files, paths);
         } catch (IllegalArgumentException exception) {
@@ -95,7 +111,7 @@ public class ExpertSkillUploadController {
             @RequestParam("archive") MultipartFile archive,
             Authentication authentication
     ) {
-        ExpertSkillUploadRecord.ParsedSkill parsed;
+        ExpertSkillUploadParser.ParsedUpload parsed;
         try {
             parsed = parser.parseArchive(archive);
         } catch (IllegalArgumentException exception) {
@@ -104,103 +120,143 @@ public class ExpertSkillUploadController {
         return saveParsedUpload(parsed, authentication, "ZIP 压缩包");
     }
 
-    private ResponseEntity<UploadResponse> saveParsedUpload(
-            ExpertSkillUploadRecord.ParsedSkill parsed,
+    private ResponseEntity<?> saveParsedUpload(
+            ExpertSkillUploadParser.ParsedUpload parsed,
             Authentication authentication,
             String sourceLabel
     ) {
-        ExpertSkillUploadRecord record = uploadRepository.saveAndFlush(
-                ExpertSkillUploadRecord.parsed(authentication.getName(), parsed)
-        );
-        auditLogService.record(
-                authentication.getName(),
-                "EXPERT_SKILL_PARSED",
-                "EXPERT_SKILL_UPLOAD",
-                record.getId(),
-                "解析专家 Skill " + sourceLabel + "：" + record.getFolderName() + "（未启用）"
-        );
+        ExpertSkillUploadRecord record = ExpertSkillUploadRecord.parsed(authentication.getName(), parsed.skill());
+        List<String> storageKeys = new ArrayList<>();
+        List<ExpertSkillUploadFile> fileRecords = new ArrayList<>();
+        try {
+            for (ExpertSkillUploadParser.ParsedFile file : parsed.files()) {
+                FileStorageService.StoredFile stored = fileStorageService.storeSkillFile(
+                        record.getId(), file.relativePath(), file.content()
+                );
+                storageKeys.add(stored.storageKey());
+                fileRecords.add(ExpertSkillUploadFile.create(
+                        record.getId(),
+                        file.relativePath(),
+                        file.fileRole(),
+                        file.contentText(),
+                        stored.storageKey(),
+                        stored.mimeType(),
+                        stored.size(),
+                        stored.sha256()
+                ));
+            }
+        } catch (IllegalArgumentException exception) {
+            storageKeys.forEach(fileStorageService::delete);
+            return badRequest("INVALID_EXPERT_SKILL_UPLOAD", exception.getMessage());
+        } catch (IOException exception) {
+            storageKeys.forEach(fileStorageService::delete);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ErrorResponse("EXPERT_SKILL_FILE_STORE_FAILED", "Skill 来源文件保存失败"));
+        }
+
+        try {
+            uploadRepository.saveAndFlush(record);
+            uploadFileRepository.saveAllAndFlush(fileRecords);
+            auditLogService.record(
+                    authentication.getName(),
+                    "EXPERT_SKILL_PARSED",
+                    "EXPERT_SKILL_UPLOAD",
+                    record.getId(),
+                    "保存并解析专家 Skill " + sourceLabel + "：" + record.getFolderName() + "（待确认）"
+            );
+        } catch (RuntimeException exception) {
+            storageKeys.forEach(fileStorageService::delete);
+            throw exception;
+        }
         return ResponseEntity.created(URI.create("/api/knowledge/expert-skill-uploads/" + record.getId()))
-                .body(toUploadResponse(record));
+                .body(toUploadResponse(record, fileRecords));
+    }
+
+    @GetMapping("/{uploadId}/files/{fileId}/content")
+    public ResponseEntity<?> downloadSourceFile(@PathVariable String uploadId, @PathVariable String fileId) {
+        ExpertSkillUploadFile file = uploadFileRepository.findById(fileId).orElse(null);
+        if (file == null || !file.getUploadId().equals(uploadId)) {
+            return notFound("EXPERT_SKILL_FILE_NOT_FOUND", "Skill 来源文件不存在");
+        }
+        Resource resource;
+        try {
+            resource = fileStorageService.load(file.getStorageKey());
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            return notFound("EXPERT_SKILL_FILE_NOT_FOUND", "Skill 来源文件不存在或已失效");
+        }
+        String fileName = file.getRelativePath().substring(file.getRelativePath().lastIndexOf('/') + 1);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(fileName, StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .contentType(MediaType.parseMediaType(file.getMimeType()))
+                .contentLength(file.getFileSizeBytes())
+                .body(resource);
     }
 
     @PostMapping("/{uploadId}/confirm")
-    @Transactional
     public ResponseEntity<?> confirm(
             @PathVariable String uploadId,
             @Valid @RequestBody ConfirmRequest request,
             Authentication authentication
     ) {
-        ExpertSkillUploadRecord upload = uploadRepository.findById(uploadId).orElse(null);
-        if (upload == null) return notFound("EXPERT_SKILL_UPLOAD_NOT_FOUND", "Skill 上传记录不存在");
-        if (upload.getStatus() == ExpertSkillUploadStatus.ENABLED) {
-            ExpertProfile existing = expertProfileRepository.findById(upload.getExpertId()).orElse(null);
-            return existing == null
-                    ? conflict("EXPERT_SKILL_UPLOAD_INCONSISTENT", "已确认的专家记录不存在")
-                    : ResponseEntity.ok(toExpertResponse(existing));
-        }
-        if (expertProfileRepository.findByName(upload.getParsedName()).isPresent()) {
-            return conflict("EXPERT_EXISTS", "解析出的专家名称已存在，请先调整现有专家配置");
-        }
-
-        List<String> categories = request.knowledgeCategories().stream()
-                .map(String::trim)
-                .distinct()
-                .toList();
-        for (String category : categories) {
-            if (knowledgeBaseRepository.findByCategory(category).isEmpty()) {
-                return badRequest("KNOWLEDGE_BASE_NOT_FOUND", "知识库目录不存在：" + category);
-            }
-        }
-
-        String expertId = "skill-" + UUID.randomUUID();
-        ExpertProfile expert = ExpertProfile.create(
-                expertId,
-                upload.getParsedName(),
-                upload.getParsedRole(),
-                upload.getParsedScenario(),
-                upload.getParsedAccent()
-        );
-        expert.update(
-                upload.getParsedName(),
-                upload.getParsedRole(),
-                upload.getParsedScenario(),
-                upload.getParsedAccent(),
-                upload.getMainFilePath(),
-                upload.getSourceContent(),
-                upload.getUploadedBy(),
-                upload.getParsedSystemPrompt(),
-                upload.getParsedUserPrompt(),
-                true
+        ExpertSkillConfirmationService.ConfirmationCommand command = new ExpertSkillConfirmationService.ConfirmationCommand(
+                request.name(),
+                request.role(),
+                request.scenario(),
+                request.accent(),
+                request.skillName(),
+                request.skillDescription(),
+                request.systemPrompt(),
+                request.userPrompt(),
+                request.knowledgeRule(),
+                request.outputFormat(),
+                request.boundaries(),
+                new ExpertSkillConfirmationService.KnowledgeSelection(
+                        request.knowledge().mode(),
+                        request.knowledge().knowledgeBaseId(),
+                        request.knowledge().newKnowledgeBase() == null ? null : new ExpertSkillConfirmationService.NewKnowledgeBase(
+                                request.knowledge().newKnowledgeBase().category(),
+                                request.knowledge().newKnowledgeBase().description(),
+                                request.knowledge().newKnowledgeBase().usedBy(),
+                                request.knowledge().newKnowledgeBase().active()
+                        )
+                ),
+                request.importFileIds(),
+                request.active()
         );
         try {
-            expert = expertProfileRepository.saveAndFlush(expert);
-        } catch (DataIntegrityViolationException exception) {
-            return conflict("EXPERT_EXISTS", "解析出的专家名称已存在，请先调整现有专家配置");
+            ExpertSkillConfirmationService.ConfirmationResult result = confirmationService.confirm(
+                    uploadId, command, authentication.getName()
+            );
+            return ResponseEntity.status(HttpStatus.CREATED).body(toConfirmationResponse(result));
+        } catch (ExpertSkillConfirmationException exception) {
+            HttpStatus status = switch (exception.getKind()) {
+                case INVALID -> HttpStatus.BAD_REQUEST;
+                case NOT_FOUND -> HttpStatus.NOT_FOUND;
+                case CONFLICT -> HttpStatus.CONFLICT;
+                case STORAGE -> HttpStatus.INTERNAL_SERVER_ERROR;
+            };
+            return ResponseEntity.status(status).body(new ErrorResponse(exception.getCode(), exception.getMessage()));
         }
-        expertSkillRepository.save(ExpertSkill.create(
-                upload.getId() + "-skill",
-                expert.getId(),
-                upload.getParsedName() + " Skill",
-                "已确认上传",
-                "来自 " + upload.getMainFilePath() + "；仅按文本配置使用，不执行上传文件。"
-        ));
-        String confirmedExpertId = expert.getId();
-        categories.forEach(category -> expertKnowledgeRouteRepository.save(
-                ExpertKnowledgeRoute.create(confirmedExpertId, category)
-        ));
-        upload.enable(expert.getId(), authentication.getName());
-        uploadRepository.save(upload);
-        auditLogService.record(
-                authentication.getName(),
-                "EXPERT_SKILL_ENABLED",
-                "EXPERT_PROFILE",
-                expert.getId(),
-                "确认并启用专家 Skill：" + expert.getName()
+    }
+
+    private ConfirmationResponse toConfirmationResponse(ExpertSkillConfirmationService.ConfirmationResult result) {
+        return new ConfirmationResponse(
+                toExpertResponse(result.expert()),
+                toUploadResponse(result.upload(), result.uploadFiles()),
+                result.knowledgeBase() == null ? null : toKnowledgeBaseResponse(result.knowledgeBase()),
+                result.importedAssets().stream().map(this::toImportedAssetResponse).toList()
         );
-        return ResponseEntity.status(HttpStatus.CREATED).body(toExpertResponse(expert));
     }
 
     private UploadResponse toUploadResponse(ExpertSkillUploadRecord record) {
+        return toUploadResponse(record, uploadFileRepository.findByUploadIdOrderByRelativePathAsc(record.getId()));
+    }
+
+    private UploadResponse toUploadResponse(ExpertSkillUploadRecord record, List<ExpertSkillUploadFile> files) {
         return new UploadResponse(
                 record.getId(),
                 record.getFolderName(),
@@ -210,14 +266,36 @@ public class ExpertSkillUploadController {
                 record.getParsedRole(),
                 record.getParsedScenario(),
                 record.getParsedAccent(),
+                record.getParsedSkillName(),
+                record.getParsedSkillDescription(),
                 record.getParsedSystemPrompt(),
                 record.getParsedUserPrompt(),
+                record.getParsedKnowledgeRule(),
+                record.getParsedOutputFormat(),
+                record.getParsedBoundaries(),
                 record.getStatus().name(),
                 record.getExpertId(),
                 record.getUploadedBy(),
                 record.getConfirmedBy(),
                 record.getCreatedAt(),
-                record.getConfirmedAt()
+                record.getConfirmedAt(),
+                files.stream().map(this::toFileResponse).toList()
+        );
+    }
+
+    private FileResponse toFileResponse(ExpertSkillUploadFile file) {
+        String preview = file.getContentText();
+        if (preview != null && preview.length() > 300) preview = preview.substring(0, 300) + "…";
+        return new FileResponse(
+                file.getId(),
+                file.getRelativePath(),
+                file.getFileRole().name(),
+                preview,
+                file.getMimeType(),
+                file.getFileSizeBytes(),
+                file.getSha256(),
+                file.getImportedAssetId(),
+                "/api/knowledge/expert-skill-uploads/" + file.getUploadId() + "/files/" + file.getId() + "/content"
         );
     }
 
@@ -246,6 +324,17 @@ public class ExpertSkillUploadController {
         );
     }
 
+    private static KnowledgeBaseResponse toKnowledgeBaseResponse(KnowledgeBase base) {
+        return new KnowledgeBaseResponse(base.getId(), base.getCategory(), base.getDescription(), base.getUsedBy(), base.isActive());
+    }
+
+    private ImportedAssetResponse toImportedAssetResponse(KnowledgeAsset asset) {
+        String sourceFileId = uploadFileRepository.findByImportedAssetId(asset.getId())
+                .map(ExpertSkillUploadFile::getId)
+                .orElse(null);
+        return new ImportedAssetResponse(asset.getId(), sourceFileId, asset.getName(), asset.getOriginalName(), asset.getSha256());
+    }
+
     private static ResponseEntity<ErrorResponse> badRequest(String code, String message) {
         return ResponseEntity.badRequest().body(new ErrorResponse(code, message));
     }
@@ -254,12 +343,36 @@ public class ExpertSkillUploadController {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse(code, message));
     }
 
-    private static ResponseEntity<ErrorResponse> conflict(String code, String message) {
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorResponse(code, message));
+    public record ConfirmRequest(
+            @NotBlank @Size(max = 100) String name,
+            @NotBlank @Size(max = 500) String role,
+            @NotBlank @Size(max = 300) String scenario,
+            @NotBlank @Pattern(regexp = "^#[0-9a-fA-F]{6}$") String accent,
+            @NotBlank @Size(max = 100) String skillName,
+            @NotBlank @Size(max = 500) String skillDescription,
+            @NotBlank @Size(max = 20_000) String systemPrompt,
+            @NotBlank @Size(max = 20_000) String userPrompt,
+            @Size(max = 10_000) String knowledgeRule,
+            @Size(max = 10_000) String outputFormat,
+            @Size(max = 10_000) String boundaries,
+            @NotNull @Valid KnowledgeSelectionRequest knowledge,
+            @Size(max = 50) List<@NotBlank String> importFileIds,
+            boolean active
+    ) {
     }
 
-    public record ConfirmRequest(
-            @NotEmpty @Size(max = 20) List<@Size(min = 1, max = 100) String> knowledgeCategories
+    public record KnowledgeSelectionRequest(
+            @NotNull ExpertSkillConfirmationService.KnowledgeMode mode,
+            @Size(max = 36) String knowledgeBaseId,
+            @Valid NewKnowledgeBaseRequest newKnowledgeBase
+    ) {
+    }
+
+    public record NewKnowledgeBaseRequest(
+            @Size(max = 100) String category,
+            @Size(max = 500) String description,
+            @Size(max = 300) String usedBy,
+            boolean active
     ) {
     }
 
@@ -272,15 +385,48 @@ public class ExpertSkillUploadController {
             String parsedRole,
             String parsedScenario,
             String parsedAccent,
+            String parsedSkillName,
+            String parsedSkillDescription,
             String parsedSystemPrompt,
             String parsedUserPrompt,
+            String parsedKnowledgeRule,
+            String parsedOutputFormat,
+            String parsedBoundaries,
             String status,
             String expertId,
             String uploadedBy,
             String confirmedBy,
             Instant createdAt,
-            Instant confirmedAt
+            Instant confirmedAt,
+            List<FileResponse> files
     ) {
+    }
+
+    public record FileResponse(
+            String id,
+            String relativePath,
+            String fileRole,
+            String contentPreview,
+            String mimeType,
+            long fileSizeBytes,
+            String sha256,
+            String importedAssetId,
+            String downloadUrl
+    ) {
+    }
+
+    public record ConfirmationResponse(
+            ExpertResponse expert,
+            UploadResponse upload,
+            KnowledgeBaseResponse knowledgeBase,
+            List<ImportedAssetResponse> importedAssets
+    ) {
+    }
+
+    public record KnowledgeBaseResponse(String id, String category, String description, String usedBy, boolean active) {
+    }
+
+    public record ImportedAssetResponse(String id, String sourceFileId, String name, String originalName, String sha256) {
     }
 
     public record SkillResponse(String id, String name, String stage, String description) {

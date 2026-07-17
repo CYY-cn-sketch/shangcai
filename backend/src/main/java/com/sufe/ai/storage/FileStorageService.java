@@ -26,8 +26,13 @@ public class FileStorageService {
 
     public static final long MAX_FILE_SIZE = 20L * 1024 * 1024;
 
-    private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
+    private static final Set<String> KNOWLEDGE_EXTENSIONS = Set.of(
             "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg"
+    );
+
+    private static final Set<String> SKILL_EXTENSIONS = Set.of(
+            "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "json", "yaml", "yml",
+            "png", "jpg", "jpeg"
     );
 
     private static final Map<String, String> MIME_TYPES = Map.ofEntries(
@@ -41,6 +46,9 @@ public class FileStorageService {
             Map.entry("csv", "text/csv"),
             Map.entry("txt", "text/plain"),
             Map.entry("md", "text/markdown"),
+            Map.entry("json", "application/json"),
+            Map.entry("yaml", "application/yaml"),
+            Map.entry("yml", "application/yaml"),
             Map.entry("png", "image/png"),
             Map.entry("jpg", "image/jpeg"),
             Map.entry("jpeg", "image/jpeg")
@@ -71,6 +79,34 @@ public class FileStorageService {
     }
 
     private StoredFile storeKnowledgeFile(String originalName, InputStream input, long declaredSize) throws IOException {
+        return storeFile("knowledge", UUID.randomUUID().toString(), originalName, input, declaredSize, KNOWLEDGE_EXTENSIONS);
+    }
+
+    public StoredFile storeSkillFile(String uploadId, String relativePath, byte[] content) throws IOException {
+        if (uploadId == null || !uploadId.matches("[A-Za-z0-9-]{1,64}")) {
+            throw new IllegalArgumentException("Skill 上传标识无效");
+        }
+        if (content == null || content.length == 0) {
+            throw new IllegalArgumentException("Skill 文件不能为空");
+        }
+        return storeFile("skill", uploadId, relativePath, new ByteArrayInputStream(content), content.length, SKILL_EXTENSIONS);
+    }
+
+    public StoredFile copySkillFileToKnowledge(String storageKey, String originalName) throws IOException {
+        Path source = resolveStorageKey(storageKey);
+        if (!Files.isRegularFile(source)) throw new IllegalStateException("Skill 来源文件不存在或已失效");
+        long size = Files.size(source);
+        return storeKnowledgeFile(originalName, Files.newInputStream(source), size);
+    }
+
+    private StoredFile storeFile(
+            String bucket,
+            String directoryId,
+            String originalName,
+            InputStream input,
+            long declaredSize,
+            Set<String> allowedExtensions
+    ) throws IOException {
         if (declaredSize <= 0) {
             throw new IllegalArgumentException("上传文件不能为空");
         }
@@ -80,13 +116,12 @@ public class FileStorageService {
 
         originalName = normalizeOriginalName(originalName);
         String extension = extensionOf(originalName);
-        if (!ALLOWED_EXTENSIONS.contains(extension)) {
+        if (!allowedExtensions.contains(extension)) {
             throw new IllegalArgumentException("不支持该文件格式");
         }
 
-        String directoryId = UUID.randomUUID().toString();
         String fileId = UUID.randomUUID().toString();
-        Path directory = root.resolve("knowledge").resolve(directoryId).normalize();
+        Path directory = root.resolve(bucket).resolve(directoryId).normalize();
         if (!directory.startsWith(root)) {
             throw new IllegalStateException("文件存储路径无效");
         }
