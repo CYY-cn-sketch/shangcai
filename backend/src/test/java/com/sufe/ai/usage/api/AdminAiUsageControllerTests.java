@@ -9,6 +9,7 @@ import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.generation.domain.GenerationProvider;
 import com.sufe.ai.usage.service.AiUsageService;
+import com.sufe.ai.usage.repository.AiUsageRecordRepository;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,9 @@ class AdminAiUsageControllerTests {
     private AiUsageService usageService;
 
     @Autowired
+    private AiUsageRecordRepository usageRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     private UserAccount firstStudent;
@@ -56,6 +60,8 @@ class AdminAiUsageControllerTests {
     @BeforeEach
     void setUp() {
         ProjectGroup group = projectGroupRepository.save(ProjectGroup.create("G-USAGE-TEST", "第 1 组", "校园低碳项目"));
+        projectGroupRepository.save(ProjectGroup.create("G-USAGE-UNUSED", "第 2 组", "旧物循环计划"));
+        projectGroupRepository.save(ProjectGroup.create("G-USAGE-UNUSED-10", "第 10 组", "校园活动助手"));
         userAccountRepository.save(UserAccount.create(
                 "U-USAGE-ADMIN",
                 "usage-admin@test.local",
@@ -111,7 +117,29 @@ class AdminAiUsageControllerTests {
                 .andExpect(jsonPath("$.users[0].displayName").value("李同学"))
                 .andExpect(jsonPath("$.groups[0].groupLabel").value("第 1 组"))
                 .andExpect(jsonPath("$.groups[0].memberCount").value(2))
-                .andExpect(jsonPath("$.groups[0].totalTokens").value(430));
+                .andExpect(jsonPath("$.groups[0].totalTokens").value(430))
+                .andExpect(jsonPath("$.groups[1].groupLabel").value("第 2 组"))
+                .andExpect(jsonPath("$.groups[1].memberCount").value(0))
+                .andExpect(jsonPath("$.groups[1].callCount").value(0))
+                .andExpect(jsonPath("$.groups[1].providers").isEmpty())
+                .andExpect(jsonPath("$.groups[1].totalTokens").value(0))
+                .andExpect(jsonPath("$.groups[2].groupLabel").value("第 10 组"));
+    }
+
+    @Test
+    void adminSeesAllGroupsWhenNoUsageHasBeenReported() throws Exception {
+        usageRepository.deleteAll();
+
+        mockMvc.perform(get("/api/admin/ai-usage")
+                        .param("range", "LAST_30_DAYS")
+                        .cookie(login("usage-admin@test.local")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.summary.callCount").value(0))
+                .andExpect(jsonPath("$.summary.activeGroupCount").value(0))
+                .andExpect(jsonPath("$.groups.length()").value(3))
+                .andExpect(jsonPath("$.groups[0].callCount").value(0))
+                .andExpect(jsonPath("$.groups[1].callCount").value(0))
+                .andExpect(jsonPath("$.groups[2].callCount").value(0));
     }
 
     @Test

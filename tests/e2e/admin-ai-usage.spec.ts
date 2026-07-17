@@ -47,7 +47,11 @@ test("管理员可按个人和小组查看真实 Token 用量", async ({ page },
   await expect(page.getByRole("button", { name: "按小组" })).toHaveAttribute("aria-pressed", "true");
   await page.getByLabel("统计周期").selectOption("LAST_7_DAYS");
   await expect(page.getByLabel("统计周期")).toHaveValue("LAST_7_DAYS");
-  await expect(page.getByText("暂无真实 Token 用量")).toBeVisible();
+  const groupRows = page.locator(".ai-usage-groups-table article.table-row");
+  await expect.poll(async () => groupRows.count()).toBeGreaterThan(0);
+  await expect(groupRows.nth(0)).toContainText("第 1 组");
+  await expect(groupRows.nth(1)).toContainText("第 2 组");
+  await expect(page.getByText("尚未创建项目小组")).toHaveCount(0);
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath(`admin-ai-usage-${testInfo.project.name}.png`), fullPage: true });

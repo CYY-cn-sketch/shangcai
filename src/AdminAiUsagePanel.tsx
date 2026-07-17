@@ -26,7 +26,8 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
-function formatDateTime(value: string) {
+function formatDateTime(value?: string | null) {
+  if (!value) return "暂无使用";
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
@@ -36,7 +37,7 @@ function formatDateTime(value: string) {
 }
 
 function formatProviders(providers: AiUsageProvider[]) {
-  return providers.map((provider) => providerLabels[provider]).join(" / ") || "—";
+  return providers.map((provider) => providerLabels[provider]).join(" / ") || "未使用";
 }
 
 export function AdminAiUsagePanel() {
@@ -216,8 +217,12 @@ export function AdminAiUsagePanel() {
             {!isLoading && (rows?.length ?? 0) === 0 && (
               <div className="ai-usage-empty" role="status">
                 <BarChart3 size={26} aria-hidden="true" />
-                <strong>暂无真实 Token 用量</strong>
-                <span>等待供应商返回可核验的输入与输出 Token 后再统计。</span>
+                <strong>{dimension === "groups" ? "尚未创建项目小组" : "暂无真实 Token 用量"}</strong>
+                <span>
+                  {dimension === "groups"
+                    ? "请先在账号与权限管理中创建项目小组。"
+                    : "等待供应商返回可核验的输入与输出 Token 后再统计。"}
+                </span>
               </div>
             )}
           </div>

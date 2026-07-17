@@ -21,9 +21,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class AiUsageService {
+
+    private static final Pattern GROUP_NUMBER_PATTERN = Pattern.compile("\\d+");
 
     private final AiUsageRecordRepository usageRepository;
     private final UserAccountRepository userAccountRepository;
@@ -80,6 +84,9 @@ public class AiUsageService {
 
         Map<String, UsageAccumulator> userTotals = new LinkedHashMap<>();
         Map<String, UsageAccumulator> groupTotals = new LinkedHashMap<>();
+        groupRepository.findAll().forEach(group ->
+                groupTotals.put(group.getId(), UsageAccumulator.forGroup(group))
+        );
         long inputTokens = 0;
         long outputTokens = 0;
 
@@ -98,14 +105,17 @@ public class AiUsageService {
                 .toList();
         List<GroupUsage> groups = groupTotals.values().stream()
                 .map(UsageAccumulator::toGroupUsage)
-                .sorted(usageComparator(GroupUsage::totalTokens, GroupUsage::groupLabel))
+                .sorted(Comparator.comparingLong(GroupUsage::totalTokens).reversed()
+                        .thenComparingInt(group -> groupNumber(group.groupLabel()))
+                        .thenComparing(GroupUsage::groupLabel))
                 .toList();
+        long activeGroupCount = groups.stream().filter(group -> group.callCount() > 0).count();
 
         return new UsageReport(
                 range,
                 periodStart,
                 generatedAt,
-                new UsageSummary(records.size(), inputTokens, outputTokens, inputTokens + outputTokens, users.size(), groups.size()),
+                new UsageSummary(records.size(), inputTokens, outputTokens, inputTokens + outputTokens, users.size(), activeGroupCount),
                 users,
                 groups
         );
@@ -116,6 +126,16 @@ public class AiUsageService {
             java.util.function.Function<T, String> label
     ) {
         return Comparator.comparingLong(tokens).reversed().thenComparing(label);
+    }
+
+    private static int groupNumber(String label) {
+        Matcher matcher = GROUP_NUMBER_PATTERN.matcher(label);
+        if (!matcher.find()) return Integer.MAX_VALUE;
+        try {
+            return Integer.parseInt(matcher.group());
+        } catch (NumberFormatException ignored) {
+            return Integer.MAX_VALUE;
+        }
     }
 
     private static String requireText(String value, String fieldName) {
@@ -246,6 +266,16 @@ public class AiUsageService {
                     record.getGroupId(),
                     record.getGroupLabel(),
                     record.getGroupName()
+            );
+        }
+
+        static UsageAccumulator forGroup(ProjectGroup group) {
+            return new UsageAccumulator(
+                    null,
+                    null,
+                    group.getId(),
+                    group.getGroupLabel(),
+                    group.getProjectName()
             );
         }
 

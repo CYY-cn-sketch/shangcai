@@ -57,7 +57,7 @@ export type AdminGroupAiUsage = {
   outputTokens: number;
   totalTokens: number;
   providers: AiUsageProvider[];
-  lastUsedAt: string;
+  lastUsedAt?: string | null;
 };
 
 export type AdminAiUsageReport = {
