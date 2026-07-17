@@ -8664,7 +8664,8 @@ button.status-pill {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 16px;
-  align-items: stretch;
+  align-content: start;
+  align-items: start;
   min-height: calc(100vh - 170px);
   padding: 0;
   border: 0;

@@ -23,6 +23,9 @@ test.beforeEach(() => {
 
 test("管理员可按个人和小组查看真实 Token 用量", async ({ page }, testInfo) => {
   const failures = collectUnexpectedFailures(page);
+  if (testInfo.project.name === "desktop-chromium") {
+    await page.setViewportSize({ width: 2048, height: 1152 });
+  }
   await page.goto("/");
 
   await page.getByRole("button", { name: "教师端" }).click();
@@ -33,6 +36,10 @@ test("管理员可按个人和小组查看真实 Token 用量", async ({ page },
   await expect(page.locator(".admin-console-layout")).toBeVisible();
   await page.getByRole("button", { name: "AI 用量统计" }).click();
   await expect(page.getByRole("heading", { name: "AI Token 用量" })).toBeVisible();
+  if (testInfo.project.name === "desktop-chromium") {
+    const navigationHeight = await page.locator(".admin-console-side").evaluate((element) => element.getBoundingClientRect().height);
+    expect(navigationHeight).toBeLessThanOrEqual(90);
+  }
   await expect(page.getByText("暂无真实 Token 用量")).toBeVisible();
   await expect(page.getByLabel("统计周期")).toHaveValue("LAST_30_DAYS");
 
