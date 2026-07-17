@@ -11,7 +11,6 @@ import {
   Download,
   FileText,
   Filter,
-  History,
   Layers3,
   LineChart,
   LogOut,
@@ -36,14 +35,13 @@ import {
   deleteAdminAccount,
   deleteAdminGroup,
   listAdminAccounts,
-  listAdminAuditLogs,
   listAdminGroups,
   updateAdminAccount,
   updateAdminGroup,
   type AdminAccount,
-  type AdminAuditLog,
   type AdminGroup,
 } from "./api/admin";
+import { AdminAiUsagePanel } from "./AdminAiUsagePanel";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
 import {
   artifactDownloadUrl,
@@ -8511,20 +8509,18 @@ function AdminView(props: {
   const [pendingAdminSkillUpload, setPendingAdminSkillUpload] = useState<ExpertSkillUploadRecord | null>(null);
   const [isAdminSkillUploadConfirming, setIsAdminSkillUploadConfirming] = useState(false);
   const [accountSaveMessage, setAccountSaveMessage] = useState<string | null>(null);
-  const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
   const [adminDataLoading, setAdminDataLoading] = useState(true);
   const adminUploadInputRef = useRef<HTMLInputElement | null>(null);
   const adminExpertSkillFolderUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let active = true;
-    Promise.all([listAdminGroups(), listAdminAccounts(), listAdminAuditLogs()])
-      .then(([remoteGroups, remoteAccounts, remoteAuditLogs]) => {
+    Promise.all([listAdminGroups(), listAdminAccounts()])
+      .then(([remoteGroups, remoteAccounts]) => {
         if (!active) return;
         const groups = remoteGroups.map(mapAdminGroup);
         onStudentGroupsChange(groups);
         onAccountRecordsChange(remoteAccounts.map((account) => mapAdminAccount(account, groups)));
-        setAuditLogs(remoteAuditLogs);
       })
       .catch((error) => {
         if (active) setAccountSaveMessage(error instanceof Error ? error.message : "管理端数据加载失败");
@@ -8536,10 +8532,6 @@ function AdminView(props: {
       active = false;
     };
   }, [onAccountRecordsChange, onStudentGroupsChange]);
-
-  async function refreshAuditLogs() {
-    setAuditLogs(await listAdminAuditLogs());
-  }
 
   function openAccountDetail(account: AccountRecord) {
     setAccountEditDraft({
@@ -8567,20 +8559,12 @@ function AdminView(props: {
   const evaluationPassRate = Math.max(passRate, 68);
   const tabs = [
     ["resources", "账号与权限管理", Settings2],
-    ["audit", "操作审计", History],
+    ["audit", "AI 用量统计", BarChart3],
     ["monitor", "运行监控中心", BarChart3],
     ["knowledge", "知识库管理", BookOpen],
     ["prompts", "专家提示词管理", Sparkles],
     ["evaluation", "试点运营评估", LineChart],
   ] as const;
-  const auditActionLabels: Record<string, string> = {
-    ACCOUNT_CREATE: "创建账号",
-    ACCOUNT_UPDATE: "更新账号",
-    ACCOUNT_DELETE: "删除账号",
-    GROUP_CREATE: "创建小组",
-    GROUP_UPDATE: "更新小组",
-    GROUP_DELETE: "删除小组",
-  };
   const kanbanProjects = props.studentGroups.map((group, index) => {
     const groupSubmissions = props.submissions.filter(
       (submission) => submission.group === group.label || submission.groupName === group.projectName || submission.group === group.projectName,
@@ -9147,7 +9131,6 @@ ${modeInstructions[promptMode]}
       setNewAccountGroupId(nextGroup.id);
       setNewGroupLabel("");
       setNewGroupProjectName("");
-      await refreshAuditLogs();
       setAccountSaveMessage("学生小组已新增并写入数据库。");
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "新增小组失败");
@@ -9172,7 +9155,6 @@ ${modeInstructions[promptMode]}
         setNewAccountGroupId(nextGroups[2]?.id || nextGroups[0]?.id || "");
       }
       setPendingDeleteGroupId(null);
-      await refreshAuditLogs();
       setAccountSaveMessage("学生小组已从数据库删除。");
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "删除小组失败");
@@ -9208,7 +9190,6 @@ ${modeInstructions[promptMode]}
         ),
       );
       setEditingGroupId(null);
-      await refreshAuditLogs();
       setAccountSaveMessage("小组名称已更新并写入数据库。");
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "更新小组失败");
@@ -9248,7 +9229,6 @@ ${modeInstructions[promptMode]}
       setNewAccountQuota(String(getDefaultQuota(newAccountRole)));
       setNewAccountGroupId(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
       setIsAccountCreateOpen(false);
-      await refreshAuditLogs();
       setAccountSaveMessage("账号已创建并可使用后端认证登录，密码未在前端保存。");
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "创建账号失败");
@@ -9270,7 +9250,6 @@ ${modeInstructions[promptMode]}
       });
       const next = mapAdminAccount(remoteAccount, props.studentGroups);
       onAccountRecordsChange(accountRecords.map((account) => (account.id === id ? next : account)));
-      await refreshAuditLogs();
       setAccountSaveMessage(`账号已${next.status === "已开通" ? "开通" : "停用"}。`);
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "更新账号状态失败");
@@ -9310,7 +9289,6 @@ ${modeInstructions[promptMode]}
       });
       const next = mapAdminAccount(remoteAccount, props.studentGroups);
       onAccountRecordsChange(accountRecords.map((account) => (account.id === accountId ? next : account)));
-      await refreshAuditLogs();
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "更新账号权限失败");
     }
@@ -9336,7 +9314,6 @@ ${modeInstructions[promptMode]}
       });
       const next = mapAdminAccount(remoteAccount, props.studentGroups);
       onAccountRecordsChange(accountRecords.map((item) => (item.id === accountDetail.id ? next : item)));
-      await refreshAuditLogs();
       setAccountSaveMessage("账号信息已保存到数据库。");
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "保存账号失败");
@@ -9359,7 +9336,6 @@ ${modeInstructions[promptMode]}
       if (selectedAccountId === id) setSelectedAccountId(remaining[0]?.id || "");
       if (accountDetailId === id) setAccountDetailId(null);
       setPendingDeleteAccountId(null);
-      await refreshAuditLogs();
       setAccountSaveMessage("账号已从数据库删除。");
     } catch (error) {
       setAccountSaveMessage(error instanceof Error ? error.message : "删除账号失败");
@@ -9512,45 +9488,7 @@ ${modeInstructions[promptMode]}
       )}
 
       {adminTab === "audit" && (
-        <div className="admin-page" key="admin-audit">
-          <section className="admin-resource-section">
-            <div className="account-table-toolbar admin-resource-toolbar">
-              <div>
-                <strong>基础操作审计</strong>
-                <span>记录账号、小组、状态、配额和权限调整；不记录密码、Token 或供应商密钥</span>
-              </div>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => refreshAuditLogs().catch((error) => setAccountSaveMessage(error instanceof Error ? error.message : "审计日志刷新失败"))}
-              >
-                刷新日志
-              </button>
-            </div>
-            <div className="account-table audit-log-table">
-              <div className="table-row table-head">
-                <span>时间</span>
-                <span>操作人</span>
-                <span>动作</span>
-                <span>对象</span>
-                <span>摘要</span>
-              </div>
-              {auditLogs.length === 0 && !adminDataLoading && <p className="kanban-empty">暂无操作审计记录</p>}
-              {auditLogs.map((log) => (
-                <article className="table-row" key={log.id}>
-                  <span>{formatSubmittedAt(log.createdAt)}</span>
-                  <span title={log.actorAccount}>
-                    <strong>{log.actorDisplayName}</strong>
-                    <small>{log.actorAccount}</small>
-                  </span>
-                  <span>{auditActionLabels[log.action] || log.action}</span>
-                  <span>{log.resourceType === "ACCOUNT" ? "账号" : "项目小组"}</span>
-                  <span title={log.summary}>{log.summary}</span>
-                </article>
-              ))}
-            </div>
-          </section>
-        </div>
+        <AdminAiUsagePanel />
       )}
 
       {adminTab === "monitor" && (

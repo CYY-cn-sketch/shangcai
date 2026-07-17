@@ -20,16 +20,53 @@ export type AdminGroup = {
   memberCount: number;
 };
 
-export type AdminAuditLog = {
-  id: string;
-  actorAccount: string;
-  actorDisplayName: string;
-  actorRole: "STUDENT" | "TEACHER" | "ADMIN";
-  action: string;
-  resourceType: string;
-  resourceId: string;
-  summary: string;
-  createdAt: string;
+export type AiUsageRange = "LAST_7_DAYS" | "LAST_30_DAYS" | "LAST_90_DAYS" | "ALL";
+
+export type AiUsageProvider = "LEXIANG" | "WORKBUDDY";
+
+export type AdminAiUsageSummary = {
+  callCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  activeUserCount: number;
+  activeGroupCount: number;
+};
+
+export type AdminUserAiUsage = {
+  userId: string;
+  displayName: string;
+  groupId?: string;
+  groupLabel?: string;
+  groupName?: string;
+  callCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  providers: AiUsageProvider[];
+  lastUsedAt: string;
+};
+
+export type AdminGroupAiUsage = {
+  groupId: string;
+  groupLabel: string;
+  groupName: string;
+  memberCount: number;
+  callCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  providers: AiUsageProvider[];
+  lastUsedAt: string;
+};
+
+export type AdminAiUsageReport = {
+  range: AiUsageRange;
+  periodStart?: string;
+  generatedAt: string;
+  summary: AdminAiUsageSummary;
+  users: AdminUserAiUsage[];
+  groups: AdminGroupAiUsage[];
 };
 
 export type CreateAdminAccount = {
@@ -146,6 +183,6 @@ export function deleteAdminGroup(groupId: string) {
   return deleteResource(`/api/admin/groups/${encodeURIComponent(groupId)}`);
 }
 
-export function listAdminAuditLogs(limit = 100) {
-  return readJson<AdminAuditLog[]>(`/api/admin/audit-logs?limit=${limit}`);
+export function getAdminAiUsage(range: AiUsageRange) {
+  return readJson<AdminAiUsageReport>(`/api/admin/ai-usage?range=${encodeURIComponent(range)}`);
 }

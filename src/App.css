@@ -10330,16 +10330,6 @@ button.status-pill {
   width: 100%;
 }
 
-.audit-log-table .table-row {
-  grid-template-columns: minmax(150px, 0.75fr) minmax(180px, 0.9fr) minmax(110px, 0.55fr) minmax(90px, 0.45fr) minmax(280px, 1.5fr);
-}
-
-.audit-log-table .table-row > span:nth-child(2) {
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-}
-
 .account-table .table-head {
   position: sticky;
   top: 0;
@@ -12194,12 +12184,6 @@ button.status-pill {
   .account-management-layout .account-table .table-row > span:nth-child(5)::before { content: "调用配额"; }
   .account-management-layout .account-table .table-row > span:nth-child(6)::before { content: "状态"; }
   .account-management-layout .account-table .table-row > span:nth-child(7)::before { content: "操作"; }
-
-  .audit-log-table .table-row > span:nth-child(1)::before { content: "时间"; }
-  .audit-log-table .table-row > span:nth-child(2)::before { content: "操作人"; }
-  .audit-log-table .table-row > span:nth-child(3)::before { content: "动作"; }
-  .audit-log-table .table-row > span:nth-child(4)::before { content: "对象"; }
-  .audit-log-table .table-row > span:nth-child(5)::before { content: "摘要"; }
 
   .account-table .table-row:not(.table-head) > span:first-child {
     grid-template-columns: 82px minmax(0, 1fr);
