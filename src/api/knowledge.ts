@@ -244,20 +244,14 @@ export function deleteKnowledgeExpert(id: string) {
   return deleteResource(`/api/knowledge/experts/${encodeURIComponent(id)}`);
 }
 
-export async function uploadExpertSkillFolder(input: FileList | File[]) {
-  const files = Array.from(input)
-    .filter((file) => /\.(md|txt|json)$/i.test(file.name))
-    .slice(0, 21);
-  if (!files.length) throw new KnowledgeApiError("文件夹中没有可解析的 .md、.txt 或 .json 文件", 400);
-  if (files.length > 20) throw new KnowledgeApiError("Skill 文件夹最多读取 20 个文本配置文件", 400);
+export async function uploadExpertSkillArchive(archive: File) {
+  if (!/\.zip$/i.test(archive.name)) throw new KnowledgeApiError("请选择 .zip 格式的 Skill 压缩包", 400);
+  if (archive.size > 2 * 1024 * 1024) throw new KnowledgeApiError("Skill ZIP 压缩包不能超过 2 MB", 400);
 
   const csrf = await getCsrfToken();
   const form = new FormData();
-  files.forEach((file) => {
-    form.append("files", file, file.name);
-    form.append("paths", file.webkitRelativePath || file.name);
-  });
-  const response = await fetch("/api/knowledge/expert-skill-uploads", {
+  form.append("archive", archive, archive.name);
+  const response = await fetch("/api/knowledge/expert-skill-uploads/archive", {
     method: "POST",
     credentials: "include",
     headers: {

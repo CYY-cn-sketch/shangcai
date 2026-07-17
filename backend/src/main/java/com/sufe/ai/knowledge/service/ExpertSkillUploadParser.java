@@ -6,6 +6,7 @@ import com.sufe.ai.knowledge.domain.ExpertSkillUploadRecord;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -16,6 +17,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 @Service
 public class ExpertSkillUploadParser {
@@ -23,6 +26,8 @@ public class ExpertSkillUploadParser {
     static final int MAX_FILES = 20;
     static final long MAX_FILE_BYTES = 256 * 1024L;
     static final long MAX_TOTAL_BYTES = 1024 * 1024L;
+    static final long MAX_ARCHIVE_BYTES = 2 * 1024 * 1024L;
+    private static final int MAX_ARCHIVE_ENTRIES = 100;
     private static final int MAX_COMBINED_CHARACTERS = 250_000;
     private static final Pattern ACCENT_PATTERN = Pattern.compile("^#[0-9a-fA-F]{6}$");
     private static final List<String> ALLOWED_EXTENSIONS = List.of(".md", ".txt", ".json");
@@ -51,6 +56,46 @@ public class ExpertSkillUploadParser {
             textFiles.add(new UploadedTextFile(relativePath, readUtf8(file, relativePath)));
         }
 
+        return parseTextFiles(textFiles);
+    }
+
+    public ExpertSkillUploadRecord.ParsedSkill parseArchive(MultipartFile archive) {
+        if (archive == null || archive.isEmpty()) throw invalid("请选择 Skill ZIP 压缩包");
+        String fileName = archive.getOriginalFilename();
+        if (fileName == null || !fileName.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+            throw invalid("只允许上传 .zip 格式的 Skill 压缩包");
+        }
+        if (archive.getSize() > MAX_ARCHIVE_BYTES) throw invalid("Skill ZIP 压缩包不能超过 2 MB");
+
+        List<UploadedTextFile> textFiles = new ArrayList<>();
+        long totalBytes = 0;
+        int entryCount = 0;
+        try (ZipInputStream input = new ZipInputStream(archive.getInputStream(), StandardCharsets.UTF_8)) {
+            ZipEntry entry;
+            while ((entry = input.getNextEntry()) != null) {
+                entryCount++;
+                if (entryCount > MAX_ARCHIVE_ENTRIES) throw invalid("Skill ZIP 压缩包内文件过多");
+                if (entry.isDirectory()) continue;
+
+                String relativePath = normalizeRelativePath(entry.getName());
+                if (!hasAllowedExtension(relativePath)) continue;
+                if (textFiles.size() >= MAX_FILES) throw invalid("Skill 压缩包最多读取 20 个文本配置文件");
+
+                byte[] bytes = readArchiveEntry(input, relativePath);
+                totalBytes += bytes.length;
+                if (totalBytes > MAX_TOTAL_BYTES) throw invalid("Skill 压缩包内文本总大小不能超过 1 MB");
+                textFiles.add(new UploadedTextFile(relativePath, readUtf8(bytes, relativePath)));
+            }
+        } catch (IllegalArgumentException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw invalid("无法读取 Skill ZIP 压缩包");
+        }
+        if (textFiles.isEmpty()) throw invalid("压缩包中没有可解析的 .md、.txt 或 .json 文件");
+        return parseTextFiles(textFiles);
+    }
+
+    private ExpertSkillUploadRecord.ParsedSkill parseTextFiles(List<UploadedTextFile> textFiles) {
         textFiles.sort(Comparator
                 .comparing((UploadedTextFile file) -> !file.path().toLowerCase(Locale.ROOT).endsWith("/skill.md")
                         && !file.path().equalsIgnoreCase("SKILL.md"))
@@ -72,6 +117,19 @@ public class ExpertSkillUploadParser {
                 fields.systemPrompt(),
                 fields.userPrompt()
         );
+    }
+
+    private static byte[] readArchiveEntry(ZipInputStream input, String relativePath) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            if ((long) output.size() + read > MAX_FILE_BYTES) {
+                throw invalid("单个 Skill 文件不能超过 256 KB：" + relativePath);
+            }
+            output.write(buffer, 0, read);
+        }
+        return output.toByteArray();
     }
 
     private ParsedFields parseFields(UploadedTextFile mainFile, String folderName) {
@@ -181,7 +239,14 @@ public class ExpertSkillUploadParser {
 
     private static String readUtf8(MultipartFile file, String relativePath) {
         try {
-            byte[] bytes = file.getBytes();
+            return readUtf8(file.getBytes(), relativePath);
+        } catch (IOException exception) {
+            throw invalid("无法读取 Skill 文件：" + relativePath);
+        }
+    }
+
+    private static String readUtf8(byte[] bytes, String relativePath) {
+        try {
             String content = StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
@@ -193,8 +258,6 @@ public class ExpertSkillUploadParser {
             return content.trim();
         } catch (CharacterCodingException exception) {
             throw invalid("Skill 文件必须使用 UTF-8 编码：" + relativePath);
-        } catch (IOException exception) {
-            throw invalid("无法读取 Skill 文件：" + relativePath);
         }
     }
 
@@ -213,10 +276,14 @@ public class ExpertSkillUploadParser {
     }
 
     private static void validateExtension(String path) {
-        String lower = path.toLowerCase(Locale.ROOT);
-        if (ALLOWED_EXTENSIONS.stream().noneMatch(lower::endsWith)) {
+        if (!hasAllowedExtension(path)) {
             throw invalid("只允许上传 .md、.txt、.json 文本配置文件");
         }
+    }
+
+    private static boolean hasAllowedExtension(String path) {
+        String lower = path.toLowerCase(Locale.ROOT);
+        return ALLOWED_EXTENSIONS.stream().anyMatch(lower::endsWith);
     }
 
     private static String folderName(String path) {

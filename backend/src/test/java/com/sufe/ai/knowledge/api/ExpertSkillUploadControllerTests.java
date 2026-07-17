@@ -21,7 +21,11 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -154,6 +158,52 @@ class ExpertSkillUploadControllerTests {
     }
 
     @Test
+    void parsesZipArchiveWithoutDirectoryUploadFlow() throws Exception {
+        Cookie session = login();
+        MockMultipartFile archive = new MockMultipartFile(
+                "archive",
+                "market-expert.zip",
+                "application/zip",
+                zipEntry("market-expert/SKILL.md", """
+                        # 市场洞察专家
+                        专家定位：帮助学生验证用户需求。
+                        适用场景：用户访谈、市场分析
+
+                        ## 系统提示词
+                        只根据课程资料提出验证建议。
+                        """)
+        );
+
+        mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(archive)
+                        .with(csrf())
+                        .cookie(session))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("PARSED"))
+                .andExpect(jsonPath("$.parsedName").value("市场洞察专家"))
+                .andExpect(jsonPath("$.mainFilePath").value("market-expert/SKILL.md"))
+                .andExpect(jsonPath("$.fileCount").value(1));
+    }
+
+    @Test
+    void rejectsUnsafeZipEntryPath() throws Exception {
+        MockMultipartFile archive = new MockMultipartFile(
+                "archive",
+                "unsafe.zip",
+                "application/zip",
+                zipEntry("../SKILL.md", "# 不安全专家")
+        );
+
+        mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(archive)
+                        .with(csrf())
+                        .cookie(login()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_EXPERT_SKILL_UPLOAD"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("路径无效")));
+    }
+
+    @Test
     void requiresAuthenticationAndCsrf() throws Exception {
         MockMultipartFile file = new MockMultipartFile(
                 "files", "SKILL.md", "text/markdown", "# Test".getBytes(StandardCharsets.UTF_8)
@@ -180,5 +230,15 @@ class ExpertSkillUploadControllerTests {
                 .andReturn()
                 .getResponse()
                 .getCookie("SUFE_SESSION");
+    }
+
+    private static byte[] zipEntry(String path, String content) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
+            zip.putNextEntry(new ZipEntry(path));
+            zip.write(content.getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        return output.toByteArray();
     }
 }

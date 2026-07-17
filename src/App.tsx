@@ -72,7 +72,7 @@ import {
   listKnowledgeExperts,
   knowledgeAssetDownloadUrl,
   saveKnowledgeExpert,
-  uploadExpertSkillFolder,
+  uploadExpertSkillArchive,
   uploadKnowledgeAsset,
   updateKnowledgeAsset,
   updateKnowledgeBase,
@@ -1114,16 +1114,6 @@ function normalizeCustomExperts(records: CustomExpertRecord[]) {
         ? item.skills
         : [{ id: "custom-output", name: "阶段成果生成", stage: "自定义专家", description: "根据教师配置的提示词生成阶段成果" }],
     }));
-}
-
-function configureFolderUploadInput(input: HTMLInputElement | null) {
-  if (!input) return;
-  input.setAttribute("webkitdirectory", "");
-  input.setAttribute("directory", "");
-  input.setAttribute("multiple", "");
-  const folderInput = input as HTMLInputElement & { webkitdirectory?: boolean; directory?: boolean };
-  folderInput.webkitdirectory = true;
-  folderInput.directory = true;
 }
 
 function getSkillUploadKnowledgeCategories(catalog: KnowledgeBaseCatalogItem[], states: KnowledgeBaseStates) {
@@ -5092,15 +5082,15 @@ function ExpertDeleteConfirmModal(props: { expert: Expert; onCancel: () => void;
   );
 }
 
-function SkillFolderUploadGuideModal(props: { actorLabel: string; onCancel: () => void; onConfirm: () => void }) {
+function SkillArchiveUploadGuideModal(props: { actorLabel: string; onCancel: () => void; onConfirm: () => void }) {
   return createPortal(
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
       <section className="media-modal skill-folder-upload-modal" role="dialog" aria-modal="true" aria-labelledby="skill-folder-upload-title">
         <header>
           <div>
             <span className="eyebrow">{props.actorLabel}</span>
-            <h3 id="skill-folder-upload-title">上传专家 Skill 文件夹</h3>
-            <p>请选择专家 Skill 文件夹。服务端会优先解析 SKILL.md，并把同目录下的 md、txt、json 文件作为只读配置。</p>
+            <h3 id="skill-folder-upload-title">上传专家 Skill 压缩包</h3>
+            <p>请先把完整 Skill 文件夹压缩为 ZIP。服务端会优先解析 SKILL.md，并把包内的 md、txt、json 文件作为只读配置。</p>
           </div>
           <button type="button" aria-label="关闭上传说明" onClick={props.onCancel}>
             <X size={18} />
@@ -5108,12 +5098,12 @@ function SkillFolderUploadGuideModal(props: { actorLabel: string; onCancel: () =
         </header>
         <div className="skill-folder-upload-body">
           <article>
-            <strong>浏览器安全确认</strong>
-            <p>选择文件夹后，Edge / Chrome 会弹出“是否将文件上传到此站点”的原生确认。这个弹窗属于浏览器安全机制，页面不能修改样式或按钮文案。</p>
+            <strong>不再出现浏览器二次确认</strong>
+            <p>ZIP 作为单个文件上传，不再触发 Edge / Chrome 的“是否将多个文件上传到此站点”提示。</p>
           </article>
           <article>
             <strong>读取范围</strong>
-            <p>只接收 UTF-8 文本配置，不接收或执行脚本、程序和二进制文件；解析后还需要人工确认才会启用专家。</p>
+            <p>压缩包不超过 2 MB；只读取最多 20 个 UTF-8 文本配置，不执行脚本、程序或其他二进制文件。解析后还需人工确认才会启用专家。</p>
           </article>
         </div>
         <footer className="skill-folder-upload-actions">
@@ -5122,7 +5112,7 @@ function SkillFolderUploadGuideModal(props: { actorLabel: string; onCancel: () =
           </button>
           <button className="primary-button prompt-save-button skill-folder-upload-primary" type="button" onClick={props.onConfirm}>
             <Upload size={15} />
-            继续选择文件夹
+            选择 ZIP 压缩包
           </button>
         </footer>
       </section>
@@ -6658,7 +6648,7 @@ function TeacherView(props: {
   const [teacherSystemPromptDraft, setTeacherSystemPromptDraft] = useState(initialTeacherPromptParts.system);
   const [teacherUserPromptDraft, setTeacherUserPromptDraft] = useState(initialTeacherPromptParts.user);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
-  const [isSkillFolderGuideOpen, setIsSkillFolderGuideOpen] = useState(false);
+  const [isSkillArchiveGuideOpen, setIsSkillArchiveGuideOpen] = useState(false);
   const [pendingSkillUpload, setPendingSkillUpload] = useState<ExpertSkillUploadRecord | null>(null);
   const [isSkillUploadConfirming, setIsSkillUploadConfirming] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
@@ -6670,7 +6660,7 @@ function TeacherView(props: {
   const [reviewActionMessage, setReviewActionMessage] = useState<string | null>(null);
   const [rubricDrafts, setRubricDrafts] = useState<Record<string, RubricScore[]>>({});
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
-  const expertSkillFolderUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const expertSkillArchiveUploadInputRef = useRef<HTMLInputElement | null>(null);
   const selectedUpload = props.knowledgeUploads.find((asset) => asset.id === selectedUploadId) || null;
   const knowledgePreviewAsset = knowledgePreviewId ? props.knowledgeUploads.find((asset) => asset.id === knowledgePreviewId) || null : null;
   const activeKnowledgeCatalog = getActiveKnowledgeCatalog(props.knowledgeCatalog);
@@ -7276,13 +7266,14 @@ function TeacherView(props: {
     setKnowledgeSaveMessage("新增专家已同步到学生端专家列表。");
   }
 
-  async function handleTeacherUploadExpertSkillFolder(files: FileList | null) {
-    if (!files?.length) return;
+  async function handleTeacherUploadExpertSkillArchive(files: FileList | null) {
+    const archive = files?.item(0);
+    if (!archive) return;
     try {
-      const upload = await uploadExpertSkillFolder(files);
+      const upload = await uploadExpertSkillArchive(archive);
       setPendingSkillUpload(upload);
     } catch (error) {
-      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 文件夹解析失败。");
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 压缩包解析失败。");
     }
   }
 
@@ -7808,22 +7799,20 @@ function TeacherView(props: {
                   <Sparkles size={16} />
                   新增专家
                 </button>
-                <button className="ghost-button expert-skill-upload-button" type="button" onClick={() => setIsSkillFolderGuideOpen(true)}>
+                <button className="ghost-button expert-skill-upload-button" type="button" onClick={() => setIsSkillArchiveGuideOpen(true)}>
                   <Upload size={16} />
-                  上传 Skill 文件夹
+                  上传 Skill 压缩包
                 </button>
               </div>
               <input
                 ref={(node) => {
-                  expertSkillFolderUploadInputRef.current = node;
-                  configureFolderUploadInput(node);
+                  expertSkillArchiveUploadInputRef.current = node;
                 }}
                 className="visually-hidden-input"
                 type="file"
-                multiple
-                accept=".md,.txt,.json,text/markdown,text/plain,application/json"
+                accept=".zip,application/zip"
                 onChange={(event) => {
-                  void handleTeacherUploadExpertSkillFolder(event.target.files);
+                  void handleTeacherUploadExpertSkillArchive(event.target.files);
                   event.currentTarget.value = "";
                 }}
               />
@@ -8400,13 +8389,13 @@ function TeacherView(props: {
         />
       )}
       {isPromptSaveOpen && <PromptSaveSuccessModal onClose={() => setIsPromptSaveOpen(false)} />}
-      {isSkillFolderGuideOpen && (
-        <SkillFolderUploadGuideModal
+      {isSkillArchiveGuideOpen && (
+        <SkillArchiveUploadGuideModal
           actorLabel="教师端"
-          onCancel={() => setIsSkillFolderGuideOpen(false)}
+          onCancel={() => setIsSkillArchiveGuideOpen(false)}
           onConfirm={() => {
-            setIsSkillFolderGuideOpen(false);
-            expertSkillFolderUploadInputRef.current?.click();
+            setIsSkillArchiveGuideOpen(false);
+            expertSkillArchiveUploadInputRef.current?.click();
           }}
         />
       )}
@@ -8505,13 +8494,13 @@ function AdminView(props: {
   const [adminSystemPromptDraft, setAdminSystemPromptDraft] = useState(initialAdminPromptParts.system);
   const [adminUserPromptDraft, setAdminUserPromptDraft] = useState(initialAdminPromptParts.user);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
-  const [isAdminSkillFolderGuideOpen, setIsAdminSkillFolderGuideOpen] = useState(false);
+  const [isAdminSkillArchiveGuideOpen, setIsAdminSkillArchiveGuideOpen] = useState(false);
   const [pendingAdminSkillUpload, setPendingAdminSkillUpload] = useState<ExpertSkillUploadRecord | null>(null);
   const [isAdminSkillUploadConfirming, setIsAdminSkillUploadConfirming] = useState(false);
   const [accountSaveMessage, setAccountSaveMessage] = useState<string | null>(null);
   const [adminDataLoading, setAdminDataLoading] = useState(true);
   const adminUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const adminExpertSkillFolderUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const adminExpertSkillArchiveUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -8959,13 +8948,14 @@ ${modeInstructions[promptMode]}
     setKnowledgeSaveMessage("新增专家已同步到学生端专家列表。");
   }
 
-  async function handleAdminUploadExpertSkillFolder(files: FileList | null) {
-    if (!files?.length) return;
+  async function handleAdminUploadExpertSkillArchive(files: FileList | null) {
+    const archive = files?.item(0);
+    if (!archive) return;
     try {
-      const upload = await uploadExpertSkillFolder(files);
+      const upload = await uploadExpertSkillArchive(archive);
       setPendingAdminSkillUpload(upload);
     } catch (error) {
-      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 文件夹解析失败。");
+      setKnowledgeSaveMessage(error instanceof Error ? error.message : "专家 Skill 压缩包解析失败。");
     }
   }
 
@@ -9932,22 +9922,20 @@ ${modeInstructions[promptMode]}
                   <Sparkles size={16} />
                   新增专家
                 </button>
-                <button className="ghost-button expert-skill-upload-button" type="button" onClick={() => setIsAdminSkillFolderGuideOpen(true)}>
+                <button className="ghost-button expert-skill-upload-button" type="button" onClick={() => setIsAdminSkillArchiveGuideOpen(true)}>
                   <Upload size={16} />
-                  上传 Skill 文件夹
+                  上传 Skill 压缩包
                 </button>
               </div>
               <input
                 ref={(node) => {
-                  adminExpertSkillFolderUploadInputRef.current = node;
-                  configureFolderUploadInput(node);
+                  adminExpertSkillArchiveUploadInputRef.current = node;
                 }}
                 className="visually-hidden-input"
                 type="file"
-                multiple
-                accept=".md,.txt,.json,text/markdown,text/plain,application/json"
+                accept=".zip,application/zip"
                 onChange={(event) => {
-                  void handleAdminUploadExpertSkillFolder(event.target.files);
+                  void handleAdminUploadExpertSkillArchive(event.target.files);
                   event.currentTarget.value = "";
                 }}
               />
@@ -10196,13 +10184,13 @@ ${modeInstructions[promptMode]}
         />
       )}
       {isPromptSaveOpen && <PromptSaveSuccessModal onClose={() => setIsPromptSaveOpen(false)} />}
-      {isAdminSkillFolderGuideOpen && (
-        <SkillFolderUploadGuideModal
+      {isAdminSkillArchiveGuideOpen && (
+        <SkillArchiveUploadGuideModal
           actorLabel="管理端"
-          onCancel={() => setIsAdminSkillFolderGuideOpen(false)}
+          onCancel={() => setIsAdminSkillArchiveGuideOpen(false)}
           onConfirm={() => {
-            setIsAdminSkillFolderGuideOpen(false);
-            adminExpertSkillFolderUploadInputRef.current?.click();
+            setIsAdminSkillArchiveGuideOpen(false);
+            adminExpertSkillArchiveUploadInputRef.current?.click();
           }}
         />
       )}

@@ -86,6 +86,29 @@ public class ExpertSkillUploadController {
         } catch (IllegalArgumentException exception) {
             return badRequest("INVALID_EXPERT_SKILL_UPLOAD", exception.getMessage());
         }
+        return saveParsedUpload(parsed, authentication, "文件夹");
+    }
+
+    @PostMapping(path = "/archive", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Transactional
+    public ResponseEntity<?> uploadArchive(
+            @RequestParam("archive") MultipartFile archive,
+            Authentication authentication
+    ) {
+        ExpertSkillUploadRecord.ParsedSkill parsed;
+        try {
+            parsed = parser.parseArchive(archive);
+        } catch (IllegalArgumentException exception) {
+            return badRequest("INVALID_EXPERT_SKILL_UPLOAD", exception.getMessage());
+        }
+        return saveParsedUpload(parsed, authentication, "ZIP 压缩包");
+    }
+
+    private ResponseEntity<UploadResponse> saveParsedUpload(
+            ExpertSkillUploadRecord.ParsedSkill parsed,
+            Authentication authentication,
+            String sourceLabel
+    ) {
         ExpertSkillUploadRecord record = uploadRepository.saveAndFlush(
                 ExpertSkillUploadRecord.parsed(authentication.getName(), parsed)
         );
@@ -94,7 +117,7 @@ public class ExpertSkillUploadController {
                 "EXPERT_SKILL_PARSED",
                 "EXPERT_SKILL_UPLOAD",
                 record.getId(),
-                "解析专家 Skill 文件夹：" + record.getFolderName() + "（未启用）"
+                "解析专家 Skill " + sourceLabel + "：" + record.getFolderName() + "（未启用）"
         );
         return ResponseEntity.created(URI.create("/api/knowledge/expert-skill-uploads/" + record.getId()))
                 .body(toUploadResponse(record));
