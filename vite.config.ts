@@ -9,6 +9,18 @@ export default defineConfig(({ mode }) => {
   return {
     base: './',
     plugins: [react()],
+    build: {
+      chunkSizeWarningLimit: 550,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'react-vendor': ['react', 'react-dom'],
+            'three-vendor': ['three'],
+            'icon-vendor': ['lucide-react'],
+          },
+        },
+      },
+    },
     server: {
       proxy: {
         '/api': {
