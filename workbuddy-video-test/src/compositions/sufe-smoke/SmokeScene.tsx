@@ -17,7 +17,7 @@ const BRAND = {
 };
 
 const CONTENT = {
-  title: "SUFE AI Demo",
+  title: "上财 AI 示范平台",
   subtitle: "WorkBuddy Video · Smoke Test",
   badge: "Remotion 4.0 · 16:9 · 30fps · 3s",
 };

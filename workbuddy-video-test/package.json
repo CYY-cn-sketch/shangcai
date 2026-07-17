@@ -1,7 +1,7 @@
 {
   "name": "workbuddy-video-test",
   "version": "1.0.0",
-  "description": "Remotion smoke test for SUFE AI Demo (WorkBuddy Video validation)",
+  "description": "Remotion smoke test for the SUFE AI Platform (WorkBuddy Video validation)",
   "type": "module",
   "scripts": {
     "dev": "remotion studio",

@@ -2172,20 +2172,20 @@ function buildUploadPreview(file: File, text?: string, selectedCategory?: Knowle
       多媒体模板:
         "资料摘要：该资料将作为多媒体物料模板使用，可解析短视频脚本、分镜表、海报文案和视觉 Prompt，用于快速产出宣传素材。",
     };
-    return `${categorySummaries[selectedCategory]} 文件名：${file.name}。正式版会进一步做文本抽取、切片入库、标签维护、权限控制和向量检索。`;
+    return `${categorySummaries[selectedCategory]} 文件名：${file.name}。平台会保存原文件和可读文本，并提供分类、权限控制和专家调用。`;
   }
   const lowerName = file.name.toLowerCase();
   if (lowerName.includes("bp") || lowerName.includes("商业计划")) {
-    return "资料摘要：已识别为商业计划书相关材料，正式版可解析执行摘要、商业模式、市场分析、财务假设与风险评估，并同步到 BP 专家能力中。";
+    return "资料摘要：已识别为商业计划书相关材料，平台可解析执行摘要、商业模式、市场分析、财务假设与风险评估，并同步到 BP 专家能力中。";
   }
   if (lowerName.includes("ppt") || lowerName.includes("路演")) {
-    return "资料摘要：已识别为路演展示相关材料，正式版可解析页面标题、核心观点、图表建议和演讲提示，并用于 PPT 专家生成。";
+    return "资料摘要：已识别为路演展示相关材料，平台可解析页面标题、核心观点、图表建议和演讲提示，并用于 PPT 专家生成。";
   }
   if (lowerName.includes("评分") || lowerName.includes("rubric")) {
-    return "资料摘要：已识别为评分标准材料，正式版可解析评分维度、权重、等级描述和教师点评口径。";
+    return "资料摘要：已识别为评分标准材料，平台可解析评分维度、权重、等级描述和教师点评口径。";
   }
   if (lowerName.includes("案例")) {
-    return "资料摘要：已识别为创业案例材料，正式版可解析项目背景、创新点、商业模式、路演亮点和可复用教学标签。";
+    return "资料摘要：已识别为创业案例材料，平台可解析项目背景、创新点、商业模式、路演亮点和可复用教学标签。";
   }
   return "资料摘要：平台已保存该资料，可继续进行文档解析、分类和专家调用。";
 }

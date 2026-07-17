@@ -147,7 +147,7 @@ function ProfileSettingsModal(props: {
           <div>
             <span className="eyebrow">个人资料</span>
             <h3 id="profile-settings-title">个人资料设置</h3>
-            <p>设置头像、昵称和登录密码；账号作为登录标识，正式版不建议学生自行修改。</p>
+            <p>设置头像、昵称和登录密码；账号作为登录标识，不支持在个人资料中修改。</p>
           </div>
           <button className="modal-close-button" type="button" aria-label="关闭个人资料设置" onClick={props.onClose} disabled={isSaving}>
             <X size={18} />
