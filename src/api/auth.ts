@@ -45,11 +45,11 @@ async function getCsrfToken() {
 }
 
 export async function loadCurrentAuth(): Promise<RemoteAuthSession | null> {
-  const response = await fetch("/api/auth/me", {
+  const response = await fetch("/api/auth/session", {
     credentials: "include",
     headers: { Accept: "application/json" },
   });
-  if (response.status === 401) return null;
+  if (response.status === 204) return null;
   if (!response.ok) {
     throw new Error(await parseError(response));
   }

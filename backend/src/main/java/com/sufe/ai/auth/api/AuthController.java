@@ -107,6 +107,14 @@ public class AuthController {
         return buildResponse(authentication.getName());
     }
 
+    @GetMapping("/session")
+    public ResponseEntity<AuthResponse> session(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.ok(buildResponse(authentication.getName()));
+    }
+
     @PatchMapping("/me")
     public ResponseEntity<?> updateProfile(
             Authentication authentication,

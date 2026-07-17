@@ -42,7 +42,7 @@ public class SecurityConfig {
         http
                 .csrf(csrf -> csrf.csrfTokenRepository(csrfTokenRepository))
                 .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers("/actuator/health", "/api/auth/csrf", "/api/auth/login").permitAll()
+                        .requestMatchers("/actuator/health/**", "/api/auth/csrf", "/api/auth/login", "/api/auth/session").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/knowledge/**").hasAnyRole("TEACHER", "ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/api/knowledge/**").hasAnyRole("TEACHER", "ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/api/knowledge/**").hasAnyRole("TEACHER", "ADMIN")

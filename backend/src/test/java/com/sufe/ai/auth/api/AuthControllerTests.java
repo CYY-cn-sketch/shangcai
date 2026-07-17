@@ -88,6 +88,16 @@ class AuthControllerTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.account").value("student@test.local"))
                 .andExpect(jsonPath("$.name").value("测试学生"));
+
+        mockMvc.perform(get("/api/auth/session").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.account").value("student@test.local"));
+    }
+
+    @Test
+    void reportsMissingSessionWithoutAConsoleLevelHttpFailure() throws Exception {
+        mockMvc.perform(get("/api/auth/session"))
+                .andExpect(status().isNoContent());
     }
 
     @Test
