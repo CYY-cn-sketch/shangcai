@@ -20,14 +20,19 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.ByteArrayOutputStream;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -206,6 +211,73 @@ class ArtifactFlowControllerTests {
     }
 
     @Test
+    void uploadsPersistsAndDownloadsGeneratedPptx() throws Exception {
+        String artifactBody = mockMvc.perform(post("/api/student/artifacts")
+                        .with(student())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(artifactRequest("PPT", "message-ppt-file")))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String artifactId = objectMapper.readTree(artifactBody).get("id").asText();
+        byte[] pptx = validPptxBytes();
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "课程路演.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                pptx
+        );
+
+        mockMvc.perform(multipart("/api/student/artifacts/{artifactId}/pptx", artifactId)
+                        .file(file)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fileAvailable").value(true));
+
+        mockMvc.perform(get("/api/artifacts/{artifactId}/download", artifactId).with(student()))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("application/vnd.openxmlformats-officedocument.presentationml.presentation"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(".pptx")))
+                .andExpect(content().bytes(pptx));
+    }
+
+    @Test
+    void rejectsInvalidPptxAndCrossOwnerUpload() throws Exception {
+        String artifactBody = mockMvc.perform(post("/api/student/artifacts")
+                        .with(student())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(artifactRequest("PPT", "message-invalid-ppt-file")))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String artifactId = objectMapper.readTree(artifactBody).get("id").asText();
+        MockMultipartFile invalid = new MockMultipartFile("file", "伪造文件.pptx", "application/octet-stream", "not-a-pptx".getBytes());
+
+        mockMvc.perform(multipart("/api/student/artifacts/{artifactId}/pptx", artifactId)
+                        .file(invalid)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isBadRequest());
+
+        MockMultipartFile valid = new MockMultipartFile(
+                "file",
+                "其他学生.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                validPptxBytes()
+        );
+        mockMvc.perform(multipart("/api/student/artifacts/{artifactId}/pptx", artifactId)
+                        .file(valid)
+                        .with(otherStudent())
+                        .with(csrf()))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void requiresAuthentication() throws Exception {
         mockMvc.perform(get("/api/student/artifacts"))
                 .andExpect(status().isUnauthorized());
@@ -224,6 +296,19 @@ class ArtifactFlowControllerTests {
                 "summary", "已形成完整商业计划书。",
                 "content", content
         ));
+    }
+
+    private static byte[] validPptxBytes() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(output)) {
+            zip.putNextEntry(new ZipEntry("[Content_Types].xml"));
+            zip.write("<Types/>".getBytes());
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("ppt/presentation.xml"));
+            zip.write("<presentation/>".getBytes());
+            zip.closeEntry();
+        }
+        return output.toByteArray();
     }
 
     private static SecurityMockMvcRequestPostProcessors.UserRequestPostProcessor student() {

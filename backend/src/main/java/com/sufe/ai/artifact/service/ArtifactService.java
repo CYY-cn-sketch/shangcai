@@ -21,15 +21,24 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.util.HtmlUtils;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
+import java.util.Locale;
+import java.util.zip.ZipFile;
 
 @Service
 public class ArtifactService {
+
+    private static final String PPTX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    private static final long MAX_PPTX_BYTES = 30L * 1024 * 1024;
 
     private final UserAccountRepository userAccountRepository;
     private final GroupMembershipRepository membershipRepository;
@@ -88,6 +97,62 @@ public class ArtifactService {
                 command.summary(),
                 command.contentJson()
         ));
+    }
+
+    @Transactional
+    public ArtifactRecord attachPptxFile(String accountName, String artifactId, MultipartFile file) {
+        UserAccount owner = resolveUser(accountName);
+        ArtifactRecord artifact = requireOwnedArtifact(owner.getId(), artifactId);
+        if (!"PPT".equals(artifact.getArtifactType())) {
+            throw new ArtifactFileValidationException("只有 PPT 成果可以上传 PPTX 文件");
+        }
+        if (file == null || file.isEmpty()) {
+            throw new ArtifactFileValidationException("PPTX 文件不能为空");
+        }
+        if (file.getSize() > MAX_PPTX_BYTES) {
+            throw new ArtifactFileValidationException("PPTX 文件不能超过 30 MB");
+        }
+        String originalName = file.getOriginalFilename() == null ? artifact.getTitle() + ".pptx" : file.getOriginalFilename();
+        if (!originalName.toLowerCase(Locale.ROOT).endsWith(".pptx")) {
+            throw new ArtifactFileValidationException("仅支持 PPTX 文件");
+        }
+
+        Path directory = artifactRoot.resolve(owner.getId()).resolve(artifact.getId()).normalize();
+        Path target = directory.resolve("presentation.pptx").normalize();
+        if (!target.startsWith(artifactRoot)) {
+            throw new ArtifactFileValidationException("成果文件路径不安全");
+        }
+
+        Path temporary = null;
+        try {
+            Files.createDirectories(directory);
+            temporary = Files.createTempFile(directory, "presentation-", ".tmp");
+            try (var input = file.getInputStream()) {
+                Files.copy(input, temporary, StandardCopyOption.REPLACE_EXISTING);
+            }
+            validatePptxPackage(temporary);
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            temporary = null;
+            String relativePath = artifactRoot.relativize(target).toString().replace('\\', '/');
+            artifact.attachFile(relativePath, safeFileName(originalName), PPTX_MEDIA_TYPE);
+            return artifact;
+        } catch (ArtifactFileValidationException exception) {
+            throw exception;
+        } catch (IOException exception) {
+            throw new IllegalStateException("PPTX 文件保存失败", exception);
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException ignored) {
+                    // 临时文件清理由后续平台目录巡检兜底。
+                }
+            }
+        }
     }
 
     @Transactional
@@ -238,6 +303,16 @@ public class ArtifactService {
     private static String safeFileName(String value) {
         String safe = value.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
         return safe.isEmpty() ? "成果文档" : safe;
+    }
+
+    private static void validatePptxPackage(Path file) throws IOException {
+        try (ZipFile zipFile = new ZipFile(file.toFile())) {
+            if (zipFile.getEntry("[Content_Types].xml") == null || zipFile.getEntry("ppt/presentation.xml") == null) {
+                throw new ArtifactFileValidationException("文件不是有效的 PPTX 文档");
+            }
+        } catch (java.util.zip.ZipException exception) {
+            throw new ArtifactFileValidationException("文件不是有效的 PPTX 文档");
+        }
     }
 
     public record SaveArtifactCommand(

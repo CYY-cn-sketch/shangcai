@@ -13,5 +13,6 @@ spring:
 sufe:
   storage:
     files-root: ${java.io.tmpdir}/sufe-ai-test-files
+    artifacts-root: ${java.io.tmpdir}/sufe-ai-test-artifacts
   bootstrap:
     starter-content-enabled: false

@@ -46,6 +46,7 @@ import {
 } from "./api/admin";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
 import {
+  artifactDownloadUrl,
   deleteStudentSubmission,
   listStudentArtifacts,
   listStudentSubmissions,
@@ -54,10 +55,13 @@ import {
   reviewTeacherSubmission,
   saveStudentArtifact,
   submitStudentArtifact,
+  uploadStudentArtifactPptx,
   withdrawStudentSubmission,
   type RemoteArtifact,
   type RemoteSubmission,
 } from "./api/artifacts";
+import { buildPptxFile, parsePptSlideOutline } from "./pptxBuilder";
+import { PptPreviewModal } from "./PptPreviewModal";
 import {
   confirmExpertSkillUpload,
   createKnowledgeAsset,
@@ -549,10 +553,15 @@ function mapGeneratedAssetRecord(record: RemoteArtifact): GeneratedAsset | null 
   if (!isObjectRecord(record.content) || record.content.kind !== "GENERATED_ASSET" || !isObjectRecord(record.content.asset)) return null;
   const asset = record.content.asset as Partial<GeneratedAsset>;
   if (!asset.id || !asset.ideaId || !asset.title || (asset.type !== "PPT" && asset.type !== "VIDEO")) return null;
+  const storedFileUrl = record.fileAvailable ? artifactDownloadUrl(record.id) : undefined;
   return {
     ...(asset as GeneratedAsset),
     ideaId: record.ideaId,
     createdAt: asset.createdAt || record.createdAt,
+    ...(asset.type === "PPT" && storedFileUrl
+      ? { pptUrl: storedFileUrl, pptFileName: asset.pptFileName || `${asset.title}.pptx` }
+      : {}),
+    ...(asset.type === "VIDEO" && storedFileUrl ? { videoUrl: storedFileUrl } : {}),
   };
 }
 
@@ -1150,12 +1159,9 @@ function getStudentExpertPermissionNames() {
 }
 
 const studentFeaturePermissionSet = new Set(studentFeaturePermissionNames);
-const demoPptUrl = "/demo-assets/AI_Coach_Roadshow.pptx";
-const demoVideoUrl = "/demo-assets/AI_Coach_30s.mp4";
 function getWorkBuddyRunResultUrl(runId: string) {
   return `/api/provider/workbuddy/runs/${encodeURIComponent(runId)}/result`;
 }
-const pptPreviewImages = Array.from({ length: 10 }, (_, index) => `/demo-assets/ppt-preview/slide-${String(index + 1).padStart(2, "0")}.png`);
 const artifactExpertMap: Record<ArtifactType, ExpertId> = {
   BRAINSTORM: "brainstorm",
   POSITIONING: "positioning",
@@ -1198,37 +1204,6 @@ const initialIdeas: Idea[] = [
     updatedAt: "10:18",
   },
 ];
-
-const pptSlides = [
-  ["项目愿景", "用 AI 降低学生求职准备门槛", "展示用户痛点与教学价值"],
-  ["用户痛点", "缺少即时、个性化、低成本反馈", "三类用户画像对比"],
-  ["解决方案", "简历、岗位、面试三位一体训练", "产品流程图"],
-  ["市场机会", "高校就业服务正在数字化升级", "趋势与政策窗口"],
-  ["竞品分析", "差异点在课程化训练与教师闭环", "竞品矩阵"],
-  ["商业模式", "B2B2C 校园订阅 + 增值训练包", "收入模型图"],
-  ["产品路径", "从简历反馈切入，扩展到模拟面试", "阶段路线图"],
-  ["运营策略", "绑定就业指导中心和创业实践课程", "获客漏斗"],
-  ["财务假设", "以试点验证续费和转化", "收入/成本假设表"],
-  ["行动计划", "8 周完成 MVP 试点与数据复盘", "里程碑计划"],
-];
-
-function parseGeneratedPptSlides(content?: string) {
-  if (!content) return pptSlides;
-  const slides = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /第?\s*\d+\s*页|^\d+[.、)]/.test(line))
-    .slice(0, 10)
-    .map((line) => {
-      const cleaned = line.replace(/^[-*\s]*/, "").replace(/^第?\s*\d+\s*页[：:｜|、.)]?\s*/, "").replace(/^\d+[.、)]\s*/, "");
-      const parts = cleaned
-        .split(/[｜|]/)
-        .map((part) => part.trim())
-        .filter(Boolean);
-      return [parts[0] || cleaned.slice(0, 18) || "PPT 页面", parts[1] || parts[2] || "基于乐享知识库生成的页面观点", parts[2] || parts[3] || "图表与素材建议"];
-    });
-  return slides.length ? slides : pptSlides;
-}
 
 function inferKnowledgeCategory(name: string): KnowledgeCategory {
   const lower = name.toLowerCase();
@@ -1334,7 +1309,7 @@ function getKnowledgeUsageBlock(
   }
   const sourceItems = resolved.uploads.length
     ? resolved.uploads.slice(0, 6).map((asset) => `${asset.category || inferKnowledgeCategory(asset.name)}知识库：${asset.name}（${asset.sizeLabel}）`)
-    : categories.map((category) => `${category}知识库：暂无教师上传资料，使用 Demo 内置课程模板口径。`);
+    : categories.map((category) => `${category}知识库：暂无教师上传资料，使用平台预置课程模板口径。`);
   return {
     title: "我会参考这些资料",
     items: [
@@ -1368,7 +1343,7 @@ function getKnowledgeSpecificBlocks(
   const publicReferenceBlock: ResultBlock = {
     title: "外部公开资料参考",
     items: [
-      "高校职业发展场景中，AI 工具常被用于简历反馈、模拟面试、岗位探索和职业路径建议；Demo 文案会把这些能力落到学生端任务，而不是只写“AI 生成”。",
+      "高校职业发展场景中，AI 工具常被用于简历反馈、模拟面试、岗位探索和职业路径建议；平台文案会把这些能力落到学生端任务，而不是只写“AI 生成”。",
       "创业教育场景中，BP 和路演材料通常要覆盖问题、目标用户、解决方案、市场、商业模式、财务假设、团队、风险和验证计划；因此最终 Word 会补齐这些章节。",
       "路演评审常追问商业可行性、客户为什么付费、数据安全、落地成本和试点指标；答辩和 PPT 内容会围绕这些问题提前准备。",
     ],
@@ -1443,7 +1418,7 @@ function getKnowledgeSpecificBlocks(
     items: [
       `当前选择了${selected}知识库，系统会优先引用该目录下已启用资料。`,
       selectedUploadNames.length ? `本轮重点参考材料：${selectedUploadNames.join("、")}。` : "本轮未指定具体材料，优先使用目录下已启用资料。",
-      "如果该目录暂无资料，Demo 会使用课程通用口径生成建议。",
+      "如果该目录暂无资料，平台会使用课程通用口径生成建议。",
       "建议先上传模板、案例或评分材料，让学生端回答更贴近课堂要求。",
     ],
   };
@@ -1503,7 +1478,7 @@ ${expert.sourceSkillContent}`
 
 知识库引用规则：
 ${promptKnowledgeBases.map((base) => `- ${base.category}知识库：${base.description}`).join("\n")}
-引用方式：优先使用已启用资料；如果某个知识库暂无教师上传资料，则使用 Demo 预置教学口径生成，但需要在结果中保持“知识来源标签”。
+引用方式：优先使用已启用资料；如果某个知识库暂无教师上传资料，则使用平台预置教学口径生成，但需要在结果中保持“知识来源标签”。
 
 模式策略：${mode}
 ${modeInstructions[mode]}
@@ -1519,7 +1494,7 @@ ${modeInstructions[mode]}
 - 本轮输入：学生在聊天框提出的问题、上传文件摘要、语音转写摘要
 - 当前专家字段：${expert.name} / ${expert.scenario}
 - 可引用知识库：${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}
-- 已启用资料数量：${enabledKnowledgeCount} 个；如为 0，则使用 Demo 内置教学口径并保留知识来源标签
+- 已启用资料数量：${enabledKnowledgeCount} 个；如为 0，则使用平台预置教学口径并保留知识来源标签
 
 生成任务：
 请基于以上上下文，调用“${expert.name}”，由系统自动匹配技能，并按照“${mode}”模式输出结果。
@@ -1914,8 +1889,8 @@ function downloadWord(filename: string, title: string, blocks?: ResultBlock[]) {
             `<h2>${escapeHtml(block.title)}</h2><ul>${block.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`,
         )
         .join("")
-    : "<p>Demo 演示版成果内容。</p>";
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:"Microsoft YaHei",Arial,sans-serif;line-height:1.75;color:#10233f;padding:40px 48px}.doc-meta{color:#5f7088;font-size:13px;margin:0 0 18px}h1{color:#003b79;border-bottom:3px solid #bf8f2a;padding-bottom:12px;margin-bottom:10px}h2{margin:26px 0 10px;color:#003b79;font-size:20px}ul{margin-top:8px;padding-left:22px}li{margin:7px 0}.footer{margin-top:34px;padding-top:12px;border-top:1px solid #d7e3ef;color:#7b8ca4;font-size:12px}</style></head><body><h1>${escapeHtml(title)}</h1><p class="doc-meta">上海财经大学商学院 AI 赋能创业实践教学示范平台 Demo｜阶段成果自动生成稿</p>${body}<p class="footer">说明：本文件为演示版生成内容，正式版可接入课程知识库、教师审核记录和真实导出服务。</p></body></html>`;
+    : "<p>暂无结构化成果内容。</p>";
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:"Microsoft YaHei",Arial,sans-serif;line-height:1.75;color:#10233f;padding:40px 48px}.doc-meta{color:#5f7088;font-size:13px;margin:0 0 18px}h1{color:#003b79;border-bottom:3px solid #bf8f2a;padding-bottom:12px;margin-bottom:10px}h2{margin:26px 0 10px;color:#003b79;font-size:20px}ul{margin-top:8px;padding-left:22px}li{margin:7px 0}.footer{margin-top:34px;padding-top:12px;border-top:1px solid #d7e3ef;color:#7b8ca4;font-size:12px}</style></head><body><h1>${escapeHtml(title)}</h1><p class="doc-meta">上海财经大学商学院 AI 赋能创业实践教学示范平台｜阶段成果自动生成稿</p>${body}<p class="footer">说明：本文件由平台根据当前成果内容生成，请结合课程资料和教师审核意见复核。</p></body></html>`;
   const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
   triggerDownload(URL.createObjectURL(blob), filename, true);
 }
@@ -1986,16 +1961,10 @@ function downloadArtifactWord(message: Pick<ChatMessage, "artifactType" | "block
   downloadWord(filename, title, message.blocks);
 }
 
-function downloadDemoPpt() {
-  triggerDownload(demoPptUrl, "AI就业教练-路演PPT.pptx");
-}
-
 function downloadPptAsset(asset?: GeneratedAsset) {
-  if (asset?.pptUrl) {
-    triggerDownload(asset.pptUrl, asset.pptFileName || `${asset.title}.pptx`);
-    return;
-  }
-  downloadDemoPpt();
+  if (!asset?.pptUrl) return false;
+  triggerDownload(asset.pptUrl, asset.pptFileName || `${asset.title}.pptx`);
+  return true;
 }
 
 async function generateLexiangPptContext(message: ChatMessage, idea: Idea) {
@@ -2044,16 +2013,10 @@ function downloadMediaPackage(asset: GeneratedAsset) {
   ]);
 }
 
-function downloadDemoVideo() {
-  triggerDownload(demoVideoUrl, "AI就业教练-宣传视频.mp4");
-}
-
 function downloadVideoAsset(asset?: GeneratedAsset) {
-  if (asset?.videoUrl) {
-    triggerDownload(asset.videoUrl, `${asset.title}.mp4`);
-    return;
-  }
-  downloadDemoVideo();
+  if (!asset?.videoUrl) return false;
+  triggerDownload(asset.videoUrl, `${asset.title}.mp4`);
+  return true;
 }
 
 function getSubmissionPptAsset(submission: Submission, generatedAssets: GeneratedAsset[]) {
@@ -2087,20 +2050,25 @@ function getSubmissionDownloadLabel(submission: Submission) {
   return `下载 ${getDownloadTitle(submission)} Word`;
 }
 
+function isSubmissionDownloadAvailable(submission: Submission, generatedAssets: GeneratedAsset[]) {
+  if (submission.artifactType === "PPT") return Boolean(getSubmissionPptAsset(submission, generatedAssets)?.pptUrl);
+  if (submission.artifactType === "MEDIA") return Boolean(getSubmissionVideoAsset(submission, generatedAssets)?.videoUrl);
+  return true;
+}
+
 function downloadSubmissionArtifact(submission: Submission, generatedAssets: GeneratedAsset[]) {
   if (submission.artifactType === "PPT") {
-    downloadPptAsset(getSubmissionPptAsset(submission, generatedAssets));
-    return;
+    return downloadPptAsset(getSubmissionPptAsset(submission, generatedAssets));
   }
   if (submission.artifactType === "MEDIA") {
-    downloadVideoAsset(getSubmissionVideoAsset(submission, generatedAssets));
-    return;
+    return downloadVideoAsset(getSubmissionVideoAsset(submission, generatedAssets));
   }
   if (submission.artifactType === "BRAINSTORM") {
     downloadWord("待验证任务清单.doc", "待验证任务清单", getBrainstormTaskBlocks(submission.blocks));
-    return;
+    return true;
   }
   downloadWord(`${submission.artifactTitle}.doc`, submission.artifactTitle, submission.blocks);
+  return true;
 }
 
 function buildWorkBuddyVideoPrompt(asset: GeneratedAsset) {
@@ -2219,7 +2187,7 @@ function buildUploadPreview(file: File, text?: string, selectedCategory?: Knowle
   if (lowerName.includes("案例")) {
     return "资料摘要：已识别为创业案例材料，正式版可解析项目背景、创新点、商业模式、路演亮点和可复用教学标签。";
   }
-  return "资料摘要：Demo 已记录该本地资料。正式版可进行文档解析、切片入库、标签提取，并供学生端专家调用。";
+  return "资料摘要：平台已保存该资料，可继续进行文档解析、分类和专家调用。";
 }
 
 function readFileAsDataUrl(file: File) {
@@ -3236,7 +3204,6 @@ function App() {
       if (existingIndex < 0) return [asset, ...current];
       return current.map((item, index) => (index === existingIndex ? { ...asset, id: item.id, createdAt: item.createdAt } : item));
     });
-    void persistGeneratedAsset(asset);
     return asset;
   }
 
@@ -3251,11 +3218,28 @@ function App() {
         content: { kind: "GENERATED_ASSET", asset },
       });
       setArtifactRecords((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+      if (asset.type !== "PPT" || asset.pptUrl) return asset;
+
+      const pptxFile = await buildPptxFile({
+        title: asset.title,
+        content: asset.pptKnowledgeContent,
+        references: asset.pptKnowledgeReferences,
+      });
+      const uploaded = await uploadStudentArtifactPptx(saved.id, pptxFile);
+      setArtifactRecords((current) => [uploaded, ...current.filter((item) => item.id !== uploaded.id)]);
+      const storedAsset: GeneratedAsset = {
+        ...asset,
+        pptUrl: artifactDownloadUrl(uploaded.id),
+        pptFileName: pptxFile.name,
+      };
+      setGeneratedAssets((current) => current.map((item) => (item.id === asset.id ? storedAsset : item)));
+      return storedAsset;
     } catch (error) {
       setSystemNotice({
         title: "生成成果保存失败",
         message: error instanceof Error ? error.message : "成果暂未写入数据库，请稍后重试。",
       });
+      return null;
     }
   }
 
@@ -3274,15 +3258,20 @@ function App() {
         });
         try {
           const pptContext = await generateLexiangPptContext(message, activeIdea);
-          setPptPreview(buildPptAssetFromMessage(message, pptContext));
+          const asset = buildPptAssetFromMessage(message, pptContext);
+          setPptPreview((await persistGeneratedAsset(asset)) || asset);
         } catch (error) {
-          setPptPreview(
-            buildPptAssetFromMessage(message, {
-              configured: false,
-              content: error instanceof Error ? `乐享知识库调用失败：${error.message}` : "乐享知识库调用失败。",
-              references: [],
-            }),
-          );
+          const asset = buildPptAssetFromMessage(message, {
+            configured: false,
+            content: "",
+            references: [],
+          });
+          const storedAsset = await persistGeneratedAsset(asset);
+          setPptPreview(storedAsset || asset);
+          setSystemNotice({
+            title: "已使用平台预置结构生成 PPTX",
+            message: error instanceof Error ? `乐享当前不可用：${error.message}` : "乐享当前不可用，未产生供应商消耗。",
+          });
         } finally {
           setPendingAssetGeneration(null);
         }
@@ -3307,6 +3296,20 @@ function App() {
         blockPermission("下载个人成果");
         return;
       }
+      const downloadablePpt = message.artifactType === "PPT"
+        ? generatedAssets.find((asset) => asset.type === "PPT" && asset.sourceMessageId === message.id)
+        : undefined;
+      const downloadableVideo = message.artifactType === "MEDIA"
+        ? generatedAssets.find((asset) => asset.type === "VIDEO" && (asset.sourceMessageId === message.id || asset.ideaId === activeIdea.id))
+        : undefined;
+      if (message.artifactType === "PPT" && !downloadablePpt?.pptUrl) {
+        setSystemNotice({ title: "PPTX 尚未生成", message: "请先点击预览，平台会组装并保存真实 PPTX 文件，然后才能下载。" });
+        return;
+      }
+      if (message.artifactType === "MEDIA" && !downloadableVideo?.videoUrl) {
+        setSystemNotice({ title: "MP4 尚未生成", message: "当前仅保存了视频脚本和分镜，尚无可下载的真实 MP4 文件。" });
+        return;
+      }
       try {
         const artifact = artifactRecords.find((item) => item.sourceMessageId === message.id) || (await saveMessageArtifact(message));
         if (artifact) await recordArtifactClientDownload(artifact.id);
@@ -3318,12 +3321,11 @@ function App() {
         return;
       }
       if (message.artifactType === "PPT") {
-        downloadPptAsset(generatedAssets.find((asset) => asset.type === "PPT" && asset.sourceMessageId === message.id));
+        downloadPptAsset(downloadablePpt);
         return;
       }
       if (message.artifactType === "MEDIA") {
-        const asset = generatedAssets.find((item) => item.type === "VIDEO" && (item.sourceMessageId === message.id || item.ideaId === activeIdea.id));
-        downloadVideoAsset(asset || buildMediaAsset(activeIdea, message));
+        downloadVideoAsset(downloadableVideo);
         return;
       }
       downloadArtifactWord(message);
@@ -4897,7 +4899,7 @@ function ResultPanel(props: { result: ResultBlock[]; expertId: ExpertId }) {
     <section className="result-panel">
       {props.expertId === "pitch" && (
         <div className="slide-preview-grid">
-          {pptSlides.map((slide, index) => (
+          {parsePptSlideOutline().map((slide, index) => (
             <article className="slide-thumb" key={slide[0]}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <strong>{slide[0]}</strong>
@@ -4931,7 +4933,7 @@ function IdeaDeleteConfirmModal(props: { idea: Idea; onCancel: () => void; onCon
           <div>
             <span className="eyebrow">删除创意</span>
             <h3 id="delete-idea-title">确认删除《{props.idea.title}》？</h3>
-            <p>删除后，该创意会从左侧创意空间中移除；Demo 中不会继续展示这条创意的对话入口。</p>
+            <p>删除后，该创意会从左侧创意空间中移除，平台不会继续展示这条创意的对话入口。</p>
           </div>
           <button type="button" aria-label="关闭删除确认" onClick={props.onCancel}>
             <X size={18} />
@@ -5368,94 +5370,6 @@ function KnowledgeAssetActionConfirmModal(props: {
   );
 }
 
-function PptPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }) {
-  const [activeSlide, setActiveSlide] = useState(0);
-  const generatedSlides = parseGeneratedPptSlides(props.asset.pptKnowledgeContent);
-  const activeImage = pptPreviewImages[activeSlide];
-  const activeMeta = generatedSlides[activeSlide] || generatedSlides[0];
-  const pptSourceLabel = props.asset.pptUsesLexiang ? "乐享知识库生成" : "Demo 内置结构";
-  const pptFileUrl = props.asset.pptUrl || demoPptUrl;
-  const pptReferences = props.asset.pptKnowledgeReferences || [];
-  const visibleReferences = pptReferences.slice(0, 3);
-  const hiddenReferenceCount = Math.max(0, pptReferences.length - visibleReferences.length);
-
-  return (
-    <div className="modal-backdrop preview-modal-backdrop" role="presentation">
-      <section className="media-modal ppt-modal" role="dialog" aria-modal="true" aria-label="预览路演 PPT">
-        <header>
-          <div>
-            <span className="eyebrow">{pptSourceLabel}</span>
-            <h3>{props.asset.title}</h3>
-            <p>
-              {props.asset.pptUsesLexiang && props.asset.pptUrl
-                ? "已根据乐享知识库结果生成新的 PPTX 文件；页面图片用于模板预览，下载按钮会获取乐享生成的 PPTX。"
-                : props.asset.pptUsesLexiang
-                  ? "这里展示基于乐享知识库生成的 10 页路演结构；页面图片沿用当前 Demo 模板，标题和观点来自乐享结果。"
-                : "这里展示 Demo 内置 PPT 结构；配置乐享 AppKey/AppSecret 后，点击预览会调用乐享知识库生成内容。"}
-            </p>
-          </div>
-          <button className="modal-close-button" type="button" onClick={props.onClose} aria-label="关闭">
-            <X size={18} />
-          </button>
-        </header>
-        <div className="ppt-image-preview-body">
-          <section className="ppt-image-stage">
-            <img src={activeImage} alt={`PPT 第 ${activeSlide + 1} 页预览`} />
-            <div className="ppt-slide-bottom">
-              <article className="ppt-slide-meta-card">
-                <span>{String(activeSlide + 1).padStart(2, "0")} / {pptPreviewImages.length}</span>
-                <strong>{activeMeta[0]}</strong>
-                <p>{activeMeta[1]} · {activeMeta[2]}</p>
-              </article>
-              {visibleReferences.length ? (
-                <article className="ppt-reference-card">
-                  <span>引用来源</span>
-                  <div>
-                    {visibleReferences.map((reference) =>
-                      reference.url ? (
-                        <a href={reference.url} key={`${reference.title}-${reference.url}`} target="_blank" rel="noreferrer">
-                          {reference.title}
-                        </a>
-                      ) : (
-                        <em key={`${reference.title}-${reference.url || ""}`}>{reference.title}</em>
-                      ),
-                    )}
-                    {hiddenReferenceCount > 0 && <em>+{hiddenReferenceCount} 个来源</em>}
-                  </div>
-                </article>
-              ) : (
-                <article className="ppt-reference-card muted">
-                  <span>引用来源</span>
-                  <p>暂无外部来源，当前页使用内置模板结构。</p>
-                </article>
-              )}
-            </div>
-          </section>
-          <section className="ppt-thumb-strip" aria-label="PPT 页面缩略图">
-            {pptPreviewImages.map((image, index) => (
-              <button className={activeSlide === index ? "active" : ""} key={image} type="button" onClick={() => setActiveSlide(index)}>
-                <img src={image} alt={`第 ${index + 1} 页缩略图`} />
-                <span>{String(index + 1).padStart(2, "0")}</span>
-                <strong>{generatedSlides[index]?.[0] || `第 ${index + 1} 页`}</strong>
-              </button>
-            ))}
-          </section>
-        </div>
-        <footer className="context-actions">
-          <a className="button-link" href={pptFileUrl} target="_blank" rel="noreferrer">
-            <MonitorPlay size={15} />
-            浏览器打开
-          </a>
-          <button type="button" onClick={() => (props.asset.pptUrl ? triggerDownload(props.asset.pptUrl, props.asset.pptFileName || `${props.asset.title}.pptx`) : downloadDemoPpt())}>
-            <Download size={15} />
-            下载 PPTX
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
 function WordPreviewModal(props: { preview: WordPreview; onClose: () => void }) {
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
@@ -5464,7 +5378,7 @@ function WordPreviewModal(props: { preview: WordPreview; onClose: () => void }) 
           <div>
             <span className="eyebrow">Word 成果预览</span>
             <h3>{props.preview.title}</h3>
-            <p>这里展示将要下载为 Word 的阶段成果内容，正式版可接入真实文档模板和批注导出。</p>
+            <p>这里展示将要下载为 Word 的阶段成果内容，可继续结合课程模板和教师批注完善。</p>
           </div>
           <button className="modal-close-button" type="button" onClick={props.onClose} aria-label="关闭">
             <X size={18} />
@@ -5472,7 +5386,7 @@ function WordPreviewModal(props: { preview: WordPreview; onClose: () => void }) 
         </header>
         <div className="word-preview-page">
           <h1>{props.preview.title}</h1>
-          <p className="word-meta">上海财经大学商学院 AI 赋能创业实践教学示范平台 Demo｜阶段成果自动生成稿</p>
+          <p className="word-meta">上海财经大学商学院 AI 赋能创业实践教学示范平台｜阶段成果自动生成稿</p>
           {props.preview.blocks.map((block) => (
             <section key={block.title}>
               <h2>{block.title}</h2>
@@ -5533,7 +5447,6 @@ function GenerationPendingModal(props: { pending: PendingAssetGeneration }) {
 
 function VideoPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }) {
   const hasGeneratedVideo = Boolean(props.asset.videoUrl);
-  const videoUrl = props.asset.videoUrl || demoVideoUrl;
 
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
@@ -5549,12 +5462,20 @@ function VideoPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }
           </button>
         </header>
         <div className="video-only-body">
-          <video className="video-player" controls preload="metadata" src={videoUrl}>
-            <track kind="captions" />
-          </video>
+          {props.asset.videoUrl ? (
+            <video className="video-player" controls preload="metadata" src={props.asset.videoUrl}>
+              <track kind="captions" />
+            </video>
+          ) : (
+            <div className="video-preview pending-video">
+              <Clapperboard size={26} />
+              <strong>MP4 尚未生成</strong>
+              <p>当前只保存了脚本、分镜和视觉提示词，没有使用样例视频冒充生成结果。</p>
+            </div>
+          )}
           <div className="video-asset-summary">
             <strong>视频生成说明</strong>
-            <p>{hasGeneratedVideo ? "已显示 WorkBuddy 生成的视频成果。" : props.asset.prompt || "已接入预生成视频：AI_Coach_30s.mp4。"}</p>
+            <p>{hasGeneratedVideo ? "已显示 WorkBuddy 生成的视频成果。" : props.asset.prompt || "视频生成提示词尚未填写。"}</p>
             <span>生成时间：{props.asset.createdAt}</span>
           </div>
         </div>
@@ -5563,9 +5484,9 @@ function VideoPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }
             <Download size={15} />
             下载视频物料包
           </button>
-            <button type="button" onClick={() => downloadVideoAsset(props.asset)}>
+          <button type="button" disabled={!props.asset.videoUrl} onClick={() => downloadVideoAsset(props.asset)}>
             <MonitorPlay size={15} />
-            下载 MP4 视频
+            {props.asset.videoUrl ? "下载 MP4 视频" : "MP4 尚未生成"}
           </button>
         </footer>
       </section>
@@ -5606,7 +5527,7 @@ function MediaGenerationModal(props: {
   const isVideoWaitingForResult = videoRenderProgress >= 91.5 && !hasRenderTimedOut;
   const videoPreviewUrl = hasGeneratedWorkBuddyVideo && props.asset.videoUrl
     ? `${props.asset.videoUrl}?v=${generatedVideoVersion}`
-    : demoVideoUrl;
+    : undefined;
   const { asset: activeMediaAsset, onAssetChange, onConfirm } = props;
 
   const markWorkBuddyVideoReady = useCallback((runId: string) => {
@@ -5759,7 +5680,7 @@ function MediaGenerationModal(props: {
             </div>
           )}
           {workBuddyError && <p className="asset-hint workbuddy-error">{workBuddyError}</p>}
-          {showPreview && (
+          {showPreview && videoPreviewUrl && (
             <div className="video-preview">
               <video
                 className="video-player"
@@ -5770,9 +5691,7 @@ function MediaGenerationModal(props: {
                 <track kind="captions" />
               </video>
               <p className="asset-hint">
-                {hasGeneratedWorkBuddyVideo
-                  ? "已显示 WorkBuddy 生成的 MP4。"
-                  : "已接入预生成视频：AI_Coach_30s.mp4。可继续下载 MP4 或视频物料包。"}
+                已显示 WorkBuddy 生成的 MP4。
               </p>
             </div>
           )}
@@ -6112,6 +6031,7 @@ function DeleteWithdrawnSubmissionConfirmModal(props: { submission: Submission; 
 
 function StudentSubmissionDetailModal(props: { submission: Submission; generatedAssets: GeneratedAsset[]; onClose: () => void }) {
   const blocks = props.submission.blocks || [];
+  const canDownload = isSubmissionDownloadAvailable(props.submission, props.generatedAssets);
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -6186,9 +6106,15 @@ function StudentSubmissionDetailModal(props: { submission: Submission; generated
           <button className="ghost-button" type="button" onClick={props.onClose}>
             关闭
           </button>
-          <button className="primary-button" type="button" onClick={() => downloadSubmissionArtifact(props.submission, props.generatedAssets)}>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={!canDownload}
+            title={canDownload ? undefined : "真实文件尚未生成"}
+            onClick={() => downloadSubmissionArtifact(props.submission, props.generatedAssets)}
+          >
             <Download size={15} />
-            {getSubmissionDownloadLabel(props.submission)}
+            {canDownload ? getSubmissionDownloadLabel(props.submission) : "文件尚未生成"}
           </button>
         </footer>
       </section>
@@ -7127,7 +7053,9 @@ function TeacherView(props: {
   }
 
   function downloadSubmission(submission: Submission) {
-    downloadSubmissionArtifact(submission, props.generatedAssets);
+    if (!downloadSubmissionArtifact(submission, props.generatedAssets)) {
+      setReviewActionMessage("真实文件尚未生成，当前不能下载。");
+    }
   }
 
   function previewSubmission(submission: Submission) {
@@ -7225,15 +7153,16 @@ function TeacherView(props: {
   }
 
   function renderSubmissionAssetActions(submission: Submission) {
+    const canDownload = isSubmissionDownloadAvailable(submission, props.generatedAssets);
     return (
       <div className="teacher-file-actions">
         <button type="button" onClick={() => previewSubmission(submission)}>
           <MonitorPlay size={15} />
           {submission.artifactType === "PPT" ? "预览 PPT" : submission.artifactType === "MEDIA" ? "预览视频" : "预览 Word"}
         </button>
-        <button type="button" onClick={() => downloadSubmission(submission)}>
+        <button type="button" disabled={!canDownload} title={canDownload ? undefined : "真实文件尚未生成"} onClick={() => downloadSubmission(submission)}>
           <Download size={15} />
-          {getSubmissionDownloadLabel(submission)}
+          {canDownload ? getSubmissionDownloadLabel(submission) : "文件尚未生成"}
         </button>
       </div>
     );
@@ -8701,7 +8630,7 @@ function AdminView(props: {
 
 知识库引用规则：
 ${promptKnowledgeBases.map((base) => `- ${base.category}知识库：${base.description}`).join("\n")}
-引用方式：优先使用已启用资料；如果某个知识库暂无教师上传资料，则使用 Demo 预置教学口径生成，但需要在结果中保持“知识来源标签”。
+引用方式：优先使用已启用资料；如果某个知识库暂无教师上传资料，则使用平台预置教学口径生成，但需要在结果中保持“知识来源标签”。
 
 模式策略：${promptMode}
 ${modeInstructions[promptMode]}
@@ -8717,7 +8646,7 @@ ${modeInstructions[promptMode]}
 - 本轮输入：学生在聊天框提出的问题、上传文件摘要、语音转写摘要
 - 当前专家字段：${promptExpert.name} / ${promptExpert.scenario}
 - 可引用知识库：${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}
-- 已启用资料数量：${enabledKnowledgeCount} 个；如为 0，则使用 Demo 内置教学口径并保留知识来源标签
+- 已启用资料数量：${enabledKnowledgeCount} 个；如为 0，则使用平台预置教学口径并保留知识来源标签
 
 生成任务：
 请基于以上上下文，调用“${promptExpert.name}”，由系统自动匹配技能，并按照“${promptMode}”模式输出结果。
@@ -8879,7 +8808,7 @@ ${modeInstructions[promptMode]}
       items: [
         "教学价值：教师能在创意、定位、BP、PPT、答辩前看到学生阶段成果，点评从期末结果批改前移到过程指导。",
         "运营价值：管理员可追踪账号使用、知识库命中、成果审核和优秀案例沉淀，便于向学院汇报试点运行情况。",
-        "扩展价值：正式版可继续接入真实 AI、知识库 API、数据库和导出服务，当前 Demo 已保留账号、资料、提示词和看板入口。",
+        "扩展价值：平台已接入账号、资料、提示词、数据库和导出链路，可在授权后继续扩展真实模型与供应商能力。",
       ],
     },
     {

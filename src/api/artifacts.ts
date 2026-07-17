@@ -106,6 +106,20 @@ export function saveStudentArtifact(input: SaveArtifactInput) {
   return mutateJson<RemoteArtifact>("/api/student/artifacts", "POST", input);
 }
 
+export async function uploadStudentArtifactPptx(artifactId: string, file: File) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await fetch(`/api/student/artifacts/${encodeURIComponent(artifactId)}/pptx`, {
+    method: "POST",
+    credentials: "include",
+    headers: { Accept: "application/json", [csrf.headerName]: csrf.token },
+    body: form,
+  });
+  if (!response.ok) throw new Error(await parseError(response));
+  return (await response.json()) as RemoteArtifact;
+}
+
 export function submitStudentArtifact(artifactId: string) {
   return mutateJson<RemoteSubmission>(`/api/student/artifacts/${encodeURIComponent(artifactId)}/submit`, "POST");
 }
