@@ -24,12 +24,20 @@ npm run dev -- --host 0.0.0.0 --port 5174
 ## 验证
 
 ```powershell
-npm run lint
-npm run build
+npm run test:ci
+
+# 需要在当前进程提供专用测试密码；不要写入仓库
+$env:SUFE_E2E_PASSWORD = '<专用测试密码>'
+npm run test:e2e
+Remove-Item Env:SUFE_E2E_PASSWORD
 
 Set-Location -LiteralPath 'D:\桌面\shangcai\backend'
 .\mvnw.cmd test
 ```
+
+- `test:ci` 串行执行 ESLint、6 项 Vitest 单元测试（含最低覆盖率门槛）和生产构建。
+- `test:e2e` 使用 Playwright 验证学生/教师在桌面端与移动端的登录、退出和受保护页面，共 4 条流程。
+- GitHub Actions 会在推送和拉取请求时使用隔离的 H2 数据库重复执行前后端测试与浏览器验收，供应商开关保持关闭。
 
 ## 数据与供应商边界
 
