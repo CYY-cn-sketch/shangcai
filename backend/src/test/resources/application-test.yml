@@ -13,3 +13,5 @@ spring:
 sufe:
   storage:
     files-root: ${java.io.tmpdir}/sufe-ai-test-files
+  bootstrap:
+    starter-content-enabled: false

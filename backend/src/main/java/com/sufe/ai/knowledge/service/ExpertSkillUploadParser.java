@@ -94,7 +94,11 @@ public class ExpertSkillUploadParser {
                 labeledValue(mainFile.content(), "适用场景", "场景", "Scenario", "scenario"),
                 "课程专题指导、阶段成果生成"
         );
-        String accentCandidate = firstText(jsonText(json, "accent"), "#0f7b73");
+        String accentCandidate = firstText(
+                jsonText(json, "accent"),
+                labeledValue(mainFile.content(), "主题色", "Accent", "accent"),
+                "#0f7b73"
+        );
         String accent = ACCENT_PATTERN.matcher(accentCandidate).matches() ? accentCandidate : "#0f7b73";
         String systemPrompt = firstText(
                 jsonText(json, "systemPrompt"),

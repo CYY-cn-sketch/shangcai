@@ -8,6 +8,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -59,7 +60,25 @@ public class FileStorageService {
             throw new IllegalArgumentException("上传文件不能超过 20 MB");
         }
 
-        String originalName = normalizeOriginalName(file.getOriginalFilename());
+        return storeKnowledgeFile(file.getOriginalFilename(), file.getInputStream(), file.getSize());
+    }
+
+    public StoredFile storeKnowledgeFile(String originalName, byte[] content) throws IOException {
+        if (content == null || content.length == 0) {
+            throw new IllegalArgumentException("上传文件不能为空");
+        }
+        return storeKnowledgeFile(originalName, new ByteArrayInputStream(content), content.length);
+    }
+
+    private StoredFile storeKnowledgeFile(String originalName, InputStream input, long declaredSize) throws IOException {
+        if (declaredSize <= 0) {
+            throw new IllegalArgumentException("上传文件不能为空");
+        }
+        if (declaredSize > MAX_FILE_SIZE) {
+            throw new IllegalArgumentException("上传文件不能超过 20 MB");
+        }
+
+        originalName = normalizeOriginalName(originalName);
         String extension = extensionOf(originalName);
         if (!ALLOWED_EXTENSIONS.contains(extension)) {
             throw new IllegalArgumentException("不支持该文件格式");
@@ -77,7 +96,7 @@ public class FileStorageService {
         MessageDigest digest = sha256();
         long size = 0;
 
-        try (InputStream input = file.getInputStream(); var output = Files.newOutputStream(temporary)) {
+        try (input; var output = Files.newOutputStream(temporary)) {
             byte[] buffer = new byte[8192];
             int read;
             while ((read = input.read(buffer)) >= 0) {

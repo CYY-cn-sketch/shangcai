@@ -5,6 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "sufe.bootstrap")
 public record BootstrapProperties(
         boolean demoDataEnabled,
-        String demoPassword
+        String demoPassword,
+        boolean starterContentEnabled
 ) {
 }

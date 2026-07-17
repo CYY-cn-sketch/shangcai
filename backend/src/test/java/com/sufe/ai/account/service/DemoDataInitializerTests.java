@@ -62,7 +62,7 @@ class DemoDataInitializerTests {
         when(artifactSubmissionRepository.existsByArtifactId(demoArtifact.getId())).thenReturn(true);
 
         DemoDataInitializer initializer = new DemoDataInitializer(
-                new BootstrapProperties(true, "demo-password"),
+                new BootstrapProperties(true, "demo-password", false),
                 passwordEncoder,
                 userAccountRepository,
                 projectGroupRepository,
