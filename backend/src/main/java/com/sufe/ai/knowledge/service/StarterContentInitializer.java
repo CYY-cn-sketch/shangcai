@@ -79,6 +79,54 @@ public class StarterContentInitializer implements ApplicationRunner {
                 "starter-content/knowledge/项目定位与价值主张工作表.md",
                 "用于拆分用户角色、形成价值主张、验证差异化并限定 MVP 范围。"
         );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("教学大纲"),
+                "创业实践八周教学节点.md",
+                "starter-content/knowledge/创业实践八周教学节点.md",
+                "平台默认的八周阶段目标、阶段成果、教师检查点和返工边界。"
+        );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("评分标准"),
+                "创业项目阶段成果评分标准.md",
+                "starter-content/knowledge/创业项目阶段成果评分标准.md",
+                "用于检查创新、市场、商业、表达、协作与证据质量的默认评分框架。"
+        );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("创业案例"),
+                "市场与竞品分析框架.md",
+                "starter-content/knowledge/市场与竞品分析框架.md",
+                "用于界定市场边界、比较替代方案并形成可验证进入策略。"
+        );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("BP 模板"),
+                "商业模式与BP撰写框架.md",
+                "starter-content/knowledge/商业模式与BP撰写框架.md",
+                "用于形成付费闭环、关键假设、财务口径和可审核 BP 结构。"
+        );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("PPT 模板"),
+                "路演PPT结构模板.md",
+                "starter-content/knowledge/路演PPT结构模板.md",
+                "用于生成结论先行、证据可追溯的路演页面结构。"
+        );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("PPT 模板"),
+                "路演稿结构与时间控制.md",
+                "starter-content/knowledge/路演稿结构与时间控制.md",
+                "用于生成与 PPT 对齐的 1、3、5 分钟路演讲稿。"
+        );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("答辩题库"),
+                "答辩题库与回答框架.md",
+                "starter-content/knowledge/答辩题库与回答框架.md",
+                "用于分层模拟追问、组织证据回答和形成复盘记录。"
+        );
+        seedKnowledgeAsset(
+                requiredKnowledgeBase("多媒体模板"),
+                "多媒体物料脚本与分镜模板.md",
+                "starter-content/knowledge/多媒体物料脚本与分镜模板.md",
+                "用于课程路演场景的短视频脚本、分镜、海报文案和视觉提示词。"
+        );
 
         seedExpert(new ExpertStarter(
                 "brainstorm",
@@ -91,7 +139,8 @@ public class StarterContentInitializer implements ApplicationRunner {
                         new SkillStarter("idea-map", "创意整理", "头脑风暴", "归纳讨论内容并形成候选创业方向"),
                         new SkillStarter("pain-points", "痛点识别", "需求发现", "识别目标用户、具体场景和高频痛点"),
                         new SkillStarter("hypothesis", "任务清单生成", "验证任务", "输出关键假设、失败信号和七天验证任务")
-                )
+                ),
+                List.of(KNOWLEDGE_CATEGORY, "创业案例", "教学大纲")
         ));
         seedExpert(new ExpertStarter(
                 "positioning",
@@ -104,8 +153,98 @@ public class StarterContentInitializer implements ApplicationRunner {
                         new SkillStarter("value", "价值主张明确", "产品定位", "明确为谁在什么场景解决什么问题"),
                         new SkillStarter("persona", "多维用户画像", "目标用户", "区分使用者、决策者、购买者和受益者"),
                         new SkillStarter("differentiation", "差异化表达", "竞争定位", "对比替代方案并形成可验证的一句话定位")
-                )
+                ),
+                List.of(KNOWLEDGE_CATEGORY, "创业案例", "教学大纲")
         ));
+        seedExpert(new ExpertStarter(
+                "market",
+                "市场与竞品专家",
+                "基于项目定位和可追溯证据，界定市场、识别替代方案并形成可验证的进入策略。",
+                "市场机会、替代方案、竞品维度、市场边界和早期进入策略。",
+                "#8b5c00",
+                "starter-content/experts/market-expert/SKILL.md",
+                List.of(
+                        new SkillStarter("market-size", "市场机会", "市场分析", "梳理市场边界、趋势口径和切入窗口"),
+                        new SkillStarter("competitors", "竞品维度", "竞品分析", "建立替代方案矩阵并标记证据缺口"),
+                        new SkillStarter("entry", "进入策略", "增长策略", "形成细分市场、触达渠道和验证路线")
+                ),
+                List.of("创业案例", "教学大纲", "评分标准")
+        ));
+        seedExpert(new ExpertStarter(
+                "business",
+                "商业模式/BP 专家",
+                "把已确认的定位、市场判断和验证证据组织为可审核的商业模式与商业计划书。",
+                "商业模式画布、付费闭环、BP 结构、财务假设和风险验证。",
+                "#22406a",
+                "starter-content/experts/business-expert/SKILL.md",
+                List.of(
+                        new SkillStarter("canvas", "商业模式画布", "商业模式", "明确客户、价值、交付、渠道与关键资源"),
+                        new SkillStarter("bp", "BP 大纲", "商业计划书", "生成逻辑一致且可供教师审核的 BP 结构"),
+                        new SkillStarter("finance", "财务假设", "财务模型", "拆分收入、成本、现金流假设及验证方式")
+                ),
+                List.of("BP 模板", "创业案例", "教学大纲", "评分标准")
+        ));
+        seedExpert(new ExpertStarter(
+                "pitch",
+                "路演 PPT 专家",
+                "将已确认的商业计划和证据转化为结论先行、可讲述的路演 PPT 内容结构。",
+                "路演结构、逐页观点、证据、图表建议和讲述提示。",
+                "#005aa8",
+                "starter-content/experts/pitch-expert/SKILL.md",
+                List.of(
+                        new SkillStarter("deck", "10 页 PPT 大纲", "路演 PPT", "生成页面标题、核心观点和证据要求"),
+                        new SkillStarter("slide-points", "页面观点", "观点提炼", "为每页形成一句话结论和图表建议"),
+                        new SkillStarter("speaker-notes", "讲稿建议", "路演表达", "生成逐页讲述提示和转场建议")
+                ),
+                List.of("PPT 模板", "BP 模板", "评分标准")
+        ));
+        seedExpert(new ExpertStarter(
+                "script",
+                "路演稿生成专家",
+                "基于已确认的 BP 和 PPT，生成与页面一致、口语自然且便于练习的多时长讲稿。",
+                "1 分钟、3 分钟、5 分钟路演稿、逐页要点和转场话术。",
+                "#7a4b00",
+                "starter-content/experts/script-expert/SKILL.md",
+                List.of(
+                        new SkillStarter("roadshow-script", "路演稿生成", "路演稿", "生成 1、3、5 分钟路演稿"),
+                        new SkillStarter("talking-points", "讲述要点", "路演表达", "提炼逐页讲述重点和评委追问承接")
+                ),
+                List.of("PPT 模板", "BP 模板", "评分标准")
+        ));
+        seedExpert(new ExpertStarter(
+                "defense",
+                "AI 评委/答辩陪练专家",
+                "基于已确认的 BP、PPT 和路演稿模拟分层追问，训练学生用证据回答并复盘。",
+                "模拟评委追问、压力测试、回答训练、证据缺口识别和答辩复盘。",
+                "#6a4a12",
+                "starter-content/experts/defense-expert/SKILL.md",
+                List.of(
+                        new SkillStarter("questions", "模拟追问", "答辩准备", "按项目证据生成分层评委问题"),
+                        new SkillStarter("answers", "回答建议", "答辩优化", "用结论、证据、边界和下一步组织回答"),
+                        new SkillStarter("stress", "压力测试", "现场应变", "识别商业与落地漏洞并连续追问")
+                ),
+                List.of("答辩题库", "BP 模板", "PPT 模板", "评分标准")
+        ));
+        seedExpert(new ExpertStarter(
+                "media",
+                "多媒体物料专家",
+                "将已确认的项目叙事转化为适合课程路演和成果展示的多媒体内容规格。",
+                "短视频脚本、分镜、海报文案、视觉提示词和物料清单。",
+                "#0b6b88",
+                "starter-content/experts/media-expert/SKILL.md",
+                List.of(
+                        new SkillStarter("video-script", "宣传视频脚本", "多媒体展示", "生成 30 秒项目宣传视频脚本"),
+                        new SkillStarter("storyboard", "视频分镜表", "视觉脚本", "生成镜头、旁白、字幕和时长表"),
+                        new SkillStarter("poster", "海报文案 Prompt", "海报物料", "输出海报标题、文案和视觉提示词"),
+                        new SkillStarter("visual", "视觉素材 Prompt", "原型视觉", "生成受品牌与内容约束的视觉提示词")
+                ),
+                List.of("多媒体模板", "PPT 模板", "评分标准")
+        ));
+    }
+
+    private KnowledgeBase requiredKnowledgeBase(String category) {
+        return knowledgeBaseRepository.findByCategory(category)
+                .orElseThrow(() -> new IllegalStateException("平台默认知识库缺失：" + category));
     }
 
     private void seedKnowledgeAsset(KnowledgeBase knowledgeBase, String fileName, String resourcePath, String preview) {
@@ -149,19 +288,24 @@ public class StarterContentInitializer implements ApplicationRunner {
     }
 
     private void seedExpert(ExpertStarter definition) {
-        if (expertProfileRepository.existsById(definition.id())
-                || expertProfileRepository.findByName(definition.name()).isPresent()) {
-            return;
-        }
-
         String sourceContent = new String(readResource(definition.resourcePath()), StandardCharsets.UTF_8);
-        ExpertProfile expert = ExpertProfile.create(
-                definition.id(),
-                definition.name(),
-                definition.role(),
-                definition.scenario(),
-                definition.accent()
-        );
+        ExpertProfile byId = expertProfileRepository.findById(definition.id()).orElse(null);
+        ExpertProfile byName = expertProfileRepository.findByName(definition.name()).orElse(null);
+        if (byId != null && byName != null && !byId.getId().equals(byName.getId())) return;
+        ExpertProfile expert = byId != null ? byId : byName;
+        if (expert != null && (!expert.getId().equals(definition.id())
+                || !UPLOADED_BY.equals(expert.getSourceSkillUploadedBy()))) return;
+        if (expert != null && sourceContent.equals(expert.getSourceSkillContent())) return;
+        boolean existing = expert != null;
+        if (expert == null) {
+            expert = ExpertProfile.create(
+                    definition.id(),
+                    definition.name(),
+                    definition.role(),
+                    definition.scenario(),
+                    definition.accent()
+            );
+        }
         expert.update(
                 definition.name(),
                 definition.role(),
@@ -170,11 +314,17 @@ public class StarterContentInitializer implements ApplicationRunner {
                 definition.resourcePath(),
                 sourceContent,
                 UPLOADED_BY,
-                sectionValue(sourceContent, "系统提示词"),
+                composeSystemPrompt(sourceContent),
                 sectionValue(sourceContent, "用户提示词"),
                 true
         );
-        expertProfileRepository.save(expert);
+        expertProfileRepository.saveAndFlush(expert);
+        if (existing) {
+            expertSkillRepository.deleteByExpertId(expert.getId());
+            expertKnowledgeRouteRepository.deleteByExpertId(expert.getId());
+            expertSkillRepository.flush();
+            expertKnowledgeRouteRepository.flush();
+        }
         definition.skills().forEach(skill -> expertSkillRepository.save(ExpertSkill.create(
                 definition.id() + "-" + skill.id(),
                 definition.id(),
@@ -182,9 +332,23 @@ public class StarterContentInitializer implements ApplicationRunner {
                 skill.stage(),
                 skill.description()
         )));
-        List.of(KNOWLEDGE_CATEGORY, "创业案例").forEach(category ->
+        definition.knowledgeCategories().forEach(category ->
                 expertKnowledgeRouteRepository.save(ExpertKnowledgeRoute.create(definition.id(), category))
         );
+    }
+
+    private static String composeSystemPrompt(String content) {
+        StringBuilder prompt = new StringBuilder(sectionValue(content, "系统提示词"));
+        appendSection(prompt, "知识库调用规则", sectionValue(content, "知识库调用规则"));
+        appendSection(prompt, "输出格式", sectionValue(content, "输出格式"));
+        appendSection(prompt, "禁止事项", sectionValue(content, "禁止事项"));
+        appendSection(prompt, "能力边界", sectionValue(content, "能力边界"));
+        appendSection(prompt, "专家交接", sectionValue(content, "专家交接"));
+        return prompt.toString();
+    }
+
+    private static void appendSection(StringBuilder prompt, String title, String value) {
+        prompt.append("\n\n## ").append(title).append('\n').append(value);
     }
 
     private static byte[] readResource(String resourcePath) {
@@ -223,7 +387,8 @@ public class StarterContentInitializer implements ApplicationRunner {
             String scenario,
             String accent,
             String resourcePath,
-            List<SkillStarter> skills
+            List<SkillStarter> skills,
+            List<String> knowledgeCategories
     ) {
     }
 

@@ -74,6 +74,7 @@ export function createBrainstormArtifactContent(input: {
   blocks: ExpertHandoffBlock[];
   createdAt?: string;
 }): BrainstormArtifactContent {
+  const namedDirections = collectItems(input.blocks, /创意|方向|候选/);
   const userAndProblemSignals = collectItems(input.blocks, /用户|痛点|问题|需求/);
   const validationTasks = collectItems(input.blocks, /验证|任务|行动|下一步/);
   return {
@@ -90,7 +91,7 @@ export function createBrainstormArtifactContent(input: {
       projectTitle: input.projectTitle,
       projectDescription: input.projectDescription,
       sourceSummary: input.sourceSummary,
-      ideaDirections: input.blocks[0]?.items.slice(0, 8) || [],
+      ideaDirections: (namedDirections.length ? namedDirections : input.blocks[0]?.items || []).slice(0, 8),
       userAndProblemSignals,
       validationTasks,
       reviewStatus: "PENDING_STUDENT_CONFIRMATION",

@@ -66,4 +66,18 @@ describe("专家阶段交接", () => {
     expect(appendPositioningHandoffPrompt("基础提示", handoff)).toContain("尚待学生确认");
     expect(appendPositioningHandoffPrompt("基础提示", handoff)).toContain("访谈 8 名学生");
   });
+
+  it("根据标题识别候选方向，不依赖结果块顺序", () => {
+    const content = createBrainstormArtifactContent({
+      sourceMessageId: "message-reordered",
+      ideaId: "idea-1",
+      projectTitle: "AI 就业教练",
+      projectDescription: "商学院学生训练平台",
+      sourceSummary: "结果块顺序已调整",
+      blocks: [blocks[1], blocks[2], blocks[0]],
+    });
+
+    expect(content.handoff.ideaDirections).toEqual(["方向 A", "方向 B"]);
+    expect(content.handoff.userAndProblemSignals).toEqual(["学生缺少连续训练", "教师反馈周期长"]);
+  });
 });

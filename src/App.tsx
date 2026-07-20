@@ -719,6 +719,7 @@ const rubricDimensions = [
 const studentExpertPermissionNames = [
   "创意头脑风暴专家",
   "项目定位专家",
+  "市场与竞品专家",
   "商业模式/BP 专家",
   "路演 PPT 专家",
   "路演稿生成专家",
@@ -1105,7 +1106,7 @@ const baseExperts: Expert[] = [
 ];
 
 let experts: Expert[] = baseExperts;
-const baseStudentExpertIds: ExpertId[] = ["brainstorm", "positioning", "business", "pitch", "script", "media"];
+const baseStudentExpertIds: ExpertId[] = ["brainstorm", "positioning", "market", "business", "pitch", "script", "media"];
 let studentExpertIds: ExpertId[] = baseStudentExpertIds;
 
 function normalizeCustomExperts(records: CustomExpertRecord[]) {
