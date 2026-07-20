@@ -14,6 +14,17 @@ function collectFailures(page: Page) {
   return { consoleErrors, httpFailures };
 }
 
+async function submitLogin(page: Page) {
+  const loginResponsePromise = page.waitForResponse(
+    (response) => response.url().includes("/api/auth/login") && response.request().method() === "POST",
+    { timeout: 15_000 },
+  );
+  await page.getByRole("button", { name: "登录进入系统" }).click();
+  const loginResponse = await loginResponsePromise;
+  expect(loginResponse.status(), `登录接口返回 HTTP ${loginResponse.status()}`).toBe(200);
+  await expect(page.locator(".app-shell")).toBeVisible({ timeout: 15_000 });
+}
+
 test.beforeEach(() => {
   test.skip(!password, "需要通过 SUFE_E2E_PASSWORD 提供专用测试密码");
 });
@@ -25,8 +36,7 @@ test("学生登录、受保护页面和退出流程不产生 HTTP 失败", async
   await expect(page).toHaveTitle("上海财经大学商学院 AI 赋能创业实践教学示范平台");
   await page.getByLabel("账号").fill("student@sufe.demo");
   await page.getByLabel("密码").fill(password);
-  await page.getByRole("button", { name: "登录进入系统" }).click();
-  await expect(page.locator(".app-shell")).toBeVisible();
+  await submitLogin(page);
   await expect(page.locator("html")).not.toHaveClass(/overflow/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
@@ -45,8 +55,7 @@ test("教师账号进入教师端且页面保持可访问名称", async ({ page 
   await page.getByRole("button", { name: "教师端" }).click();
   await page.getByLabel("账号").fill("teacher@sufe.demo");
   await page.getByLabel("密码").fill(password);
-  await page.getByRole("button", { name: "登录进入系统" }).click();
-  await expect(page.locator(".app-shell")).toBeVisible();
+  await submitLogin(page);
   await page.waitForLoadState("networkidle");
 
   const unnamedButtons = await page.locator("button").evaluateAll((buttons) =>
