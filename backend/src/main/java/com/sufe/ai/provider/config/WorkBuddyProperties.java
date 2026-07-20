@@ -12,4 +12,9 @@ public record WorkBuddyProperties(
         Path jobsRoot,
         int maxConcurrency
 ) {
+    public WorkBuddyProperties {
+        if (maxConcurrency < 1) {
+            throw new IllegalArgumentException("WorkBuddy maxConcurrency 必须大于 0");
+        }
+    }
 }

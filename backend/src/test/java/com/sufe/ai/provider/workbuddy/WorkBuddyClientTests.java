@@ -73,6 +73,7 @@ class WorkBuddyClientTests {
         );
 
         assertThat(result.runId()).isEqualTo("run-001");
+        assertThat(result.verifiedUsage()).isEmpty();
     }
 
     @Test
@@ -96,6 +97,7 @@ class WorkBuddyClientTests {
         assertThat(result.data().path("status").asText()).isEqualTo("future-vendor-status");
         assertThat(result.data().path("progress").path("step").asInt()).isEqualTo(3);
         assertThat(result.data().path("newField").get(0).asText()).isEqualTo("kept");
+        assertThat(result.verifiedUsage()).isEmpty();
     }
 
     @Test

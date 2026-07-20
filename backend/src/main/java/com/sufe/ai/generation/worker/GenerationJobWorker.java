@@ -36,11 +36,32 @@ public class GenerationJobWorker {
                 });
     }
 
+    @Transactional(readOnly = true)
+    public long countRunning(GenerationProvider provider) {
+        return generationJobRepository.countByProviderAndStatus(provider, GenerationJobStatus.RUNNING);
+    }
+
     @Transactional
     public GenerationJob recordExternalRunId(String jobId, String externalRunId) {
         GenerationJob job = generationJobRepository.findById(jobId)
                 .orElseThrow(() -> new IllegalArgumentException("生成任务不存在: " + jobId));
         job.recordExternalRunId(externalRunId);
+        return job;
+    }
+
+    @Transactional
+    public GenerationJob complete(String jobId, String outputPath, String externalSessionId) {
+        GenerationJob job = generationJobRepository.findById(jobId)
+                .orElseThrow(() -> new IllegalArgumentException("生成任务不存在: " + jobId));
+        job.complete(outputPath, externalSessionId);
+        return job;
+    }
+
+    @Transactional
+    public GenerationJob fail(String jobId, String errorMessage) {
+        GenerationJob job = generationJobRepository.findById(jobId)
+                .orElseThrow(() -> new IllegalArgumentException("生成任务不存在: " + jobId));
+        job.fail(errorMessage);
         return job;
     }
 }

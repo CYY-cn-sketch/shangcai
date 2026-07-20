@@ -2,11 +2,13 @@ package com.sufe.ai.provider.workbuddy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.sufe.ai.provider.config.WorkBuddyProperties;
+import com.sufe.ai.provider.VerifiedProviderUsage;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.util.Objects;
+import java.util.Optional;
 
 @Component
 public class WorkBuddyClient {
@@ -37,7 +39,7 @@ public class WorkBuddyClient {
         if (runId == null) {
             throw new IllegalStateException("WorkBuddy 响应缺少 runId");
         }
-        return new RunSubmission(runId);
+        return new RunSubmission(runId, Optional.empty());
     }
 
     public RunStatus getRun(String runId) {
@@ -45,7 +47,7 @@ public class WorkBuddyClient {
         JsonNode data = restClient.get()
                 .uri("/api/v1/runs/{runId}", normalizedRunId)
                 .exchange((httpRequest, response) -> extractData(response.getStatusCode(), response.bodyTo(JsonNode.class)));
-        return new RunStatus(normalizedRunId, data);
+        return new RunStatus(normalizedRunId, data, Optional.empty());
     }
 
     private static JsonNode extractData(HttpStatusCode statusCode, JsonNode envelope) {
@@ -97,9 +99,26 @@ public class WorkBuddyClient {
         }
     }
 
-    public record RunSubmission(String runId) {
+    public record RunSubmission(String runId, Optional<VerifiedProviderUsage> verifiedUsage) {
+        public RunSubmission {
+            runId = requireText(runId, "runId");
+            verifiedUsage = verifiedUsage == null ? Optional.empty() : verifiedUsage;
+        }
+
+        public RunSubmission(String runId) {
+            this(runId, Optional.empty());
+        }
     }
 
-    public record RunStatus(String runId, JsonNode data) {
+    public record RunStatus(String runId, JsonNode data, Optional<VerifiedProviderUsage> verifiedUsage) {
+        public RunStatus {
+            runId = requireText(runId, "runId");
+            data = Objects.requireNonNull(data, "data 不能为空");
+            verifiedUsage = verifiedUsage == null ? Optional.empty() : verifiedUsage;
+        }
+
+        public RunStatus(String runId, JsonNode data) {
+            this(runId, data, Optional.empty());
+        }
     }
 }

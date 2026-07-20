@@ -134,6 +134,7 @@ class LexiangAiQaClientTests {
                 "https://example.invalid/doc-001",
                 "参考摘要"
         ));
+        assertThat(result.verifiedUsage()).isEmpty();
         verify(providerSessionService).updateExternalSessionId(providerSession.getId(), "lexiang-session-001");
         server.verify();
     }

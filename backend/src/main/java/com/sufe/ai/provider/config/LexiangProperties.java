@@ -14,6 +14,12 @@ public record LexiangProperties(
         String spaceId,
         int maxConcurrency
 ) {
+    public LexiangProperties {
+        if (maxConcurrency < 1) {
+            throw new IllegalArgumentException("乐享 maxConcurrency 必须大于 0");
+        }
+    }
+
     public boolean configured() {
         return enabled && hasText(appKey) && hasText(appSecret);
     }

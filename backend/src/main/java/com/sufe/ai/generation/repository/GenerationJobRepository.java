@@ -13,6 +13,8 @@ public interface GenerationJobRepository extends JpaRepository<GenerationJob, St
 
     Optional<GenerationJob> findByUserIdAndIdempotencyKey(String userId, String idempotencyKey);
 
+    long countByProviderAndStatus(GenerationProvider provider, GenerationJobStatus status);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<GenerationJob> findFirstByProviderAndStatusOrderByCreatedAtAscQueueSequenceAsc(
             GenerationProvider provider,

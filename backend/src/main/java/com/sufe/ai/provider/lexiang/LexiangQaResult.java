@@ -1,16 +1,25 @@
 package com.sufe.ai.provider.lexiang;
 
 import java.util.List;
+import java.util.Optional;
+
+import com.sufe.ai.provider.VerifiedProviderUsage;
 
 public record LexiangQaResult(
         String content,
         String sessionId,
-        List<LexiangReferenceDoc> referenceDocs
+        List<LexiangReferenceDoc> referenceDocs,
+        Optional<VerifiedProviderUsage> verifiedUsage
 ) {
     public LexiangQaResult {
         content = requireText(content, "content");
         sessionId = requireText(sessionId, "sessionId");
         referenceDocs = referenceDocs == null ? List.of() : List.copyOf(referenceDocs);
+        verifiedUsage = verifiedUsage == null ? Optional.empty() : verifiedUsage;
+    }
+
+    public LexiangQaResult(String content, String sessionId, List<LexiangReferenceDoc> referenceDocs) {
+        this(content, sessionId, referenceDocs, Optional.empty());
     }
 
     private static String requireText(String value, String fieldName) {

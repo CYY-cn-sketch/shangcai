@@ -10,6 +10,7 @@ import com.sufe.ai.generation.domain.GenerationProvider;
 import com.sufe.ai.usage.domain.AiUsageRecord;
 import com.sufe.ai.usage.repository.AiUsageRecordRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -60,7 +61,7 @@ public class AiUsageService {
                 .flatMap(groupRepository::findById)
                 .orElse(null);
 
-        return usageRepository.save(AiUsageRecord.create(
+        AiUsageRecord reported = AiUsageRecord.create(
                 user.getId(),
                 user.getDisplayName(),
                 group == null ? null : group.getId(),
@@ -72,7 +73,13 @@ public class AiUsageService {
                 requestId,
                 command.inputTokens(),
                 command.outputTokens()
-        ));
+        );
+        try {
+            return usageRepository.saveAndFlush(reported);
+        } catch (DataIntegrityViolationException exception) {
+            return usageRepository.findByProviderAndRequestId(command.provider(), requestId)
+                    .orElseThrow(() -> exception);
+        }
     }
 
     public UsageReport report(UsageRange range) {

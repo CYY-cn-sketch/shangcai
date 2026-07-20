@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.provider.config.LexiangProperties;
 import com.sufe.ai.provider.config.WorkBuddyProperties;
+import com.sufe.ai.provider.VerifiedProviderUsage;
 import com.sufe.ai.provider.lexiang.LexiangAiQaClient;
 import com.sufe.ai.provider.lexiang.LexiangQaCommand;
 import com.sufe.ai.provider.lexiang.LexiangQaResult;
@@ -12,6 +13,8 @@ import com.sufe.ai.provider.lexiang.LexiangTarget;
 import com.sufe.ai.provider.workbuddy.WorkBuddyApiException;
 import com.sufe.ai.provider.workbuddy.WorkBuddyClient;
 import com.sufe.ai.provider.workbuddy.service.WorkBuddyRunService;
+import com.sufe.ai.generation.domain.GenerationProvider;
+import com.sufe.ai.usage.service.AiUsageService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -28,8 +31,11 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.Optional;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.io.IOException;
@@ -38,12 +44,15 @@ import java.io.IOException;
 @RequestMapping("/api/provider")
 public class ProviderGatewayController {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(ProviderGatewayController.class);
+
     private final WorkBuddyProperties workBuddyProperties;
     private final LexiangProperties lexiangProperties;
     private final WorkBuddyClient workBuddyClient;
     private final WorkBuddyRunService workBuddyRunService;
     private final LexiangAiQaClient lexiangAiQaClient;
     private final UserAccountRepository userAccountRepository;
+    private final AiUsageService usageService;
 
     public ProviderGatewayController(
             WorkBuddyProperties workBuddyProperties,
@@ -51,7 +60,8 @@ public class ProviderGatewayController {
             WorkBuddyClient workBuddyClient,
             WorkBuddyRunService workBuddyRunService,
             LexiangAiQaClient lexiangAiQaClient,
-            UserAccountRepository userAccountRepository
+            UserAccountRepository userAccountRepository,
+            AiUsageService usageService
     ) {
         this.workBuddyProperties = workBuddyProperties;
         this.lexiangProperties = lexiangProperties;
@@ -59,6 +69,7 @@ public class ProviderGatewayController {
         this.workBuddyRunService = workBuddyRunService;
         this.lexiangAiQaClient = lexiangAiQaClient;
         this.userAccountRepository = userAccountRepository;
+        this.usageService = usageService;
     }
 
     @PostMapping("/workbuddy/runs")
@@ -77,6 +88,12 @@ public class ProviderGatewayController {
                     new WorkBuddyClient.Sender(userId, authentication.getName())
             );
             workBuddyRunService.record(userId, submission.runId(), preparedRun);
+            recordVerifiedUsage(
+                    userId,
+                    GenerationProvider.WORKBUDDY,
+                    "VIDEO",
+                    submission.verifiedUsage()
+            );
             return ResponseEntity.accepted().body(new WorkBuddyRunResponse(submission.runId()));
         } catch (WorkBuddyApiException exception) {
             return ResponseEntity.status(exception.getStatusCode())
@@ -99,6 +116,7 @@ public class ProviderGatewayController {
         }
         try {
             WorkBuddyClient.RunStatus status = workBuddyClient.getRun(runId);
+            recordVerifiedUsage(userId, GenerationProvider.WORKBUDDY, "VIDEO", status.verifiedUsage());
             return ResponseEntity.ok(new WorkBuddyStatusResponse(status.runId(), status.data()));
         } catch (WorkBuddyApiException exception) {
             return ResponseEntity.status(exception.getStatusCode())
@@ -148,7 +166,36 @@ public class ProviderGatewayController {
                         ? List.of()
                         : request.targets().stream().map(target -> new LexiangTarget(target.type(), target.id())).toList()
         ));
+        recordVerifiedUsage(userId, GenerationProvider.LEXIANG, "EXPERT_CHAT", result.verifiedUsage());
         return ResponseEntity.ok(new LexiangQaResponse(result.content(), result.sessionId(), result.referenceDocs()));
+    }
+
+    private void recordVerifiedUsage(
+            String userId,
+            GenerationProvider provider,
+            String operation,
+            Optional<VerifiedProviderUsage> usage
+    ) {
+        usage.ifPresent(verified -> {
+            try {
+                usageService.recordReportedUsage(new AiUsageService.ReportedUsage(
+                        userId,
+                        provider,
+                        verified.modelName(),
+                        operation,
+                        verified.requestId(),
+                        verified.inputTokens(),
+                        verified.outputTokens()
+                ));
+            } catch (RuntimeException exception) {
+                LOGGER.error(
+                        "供应商 Token 用量落库失败: provider={}, requestId={}, errorType={}",
+                        provider,
+                        verified.requestId(),
+                        exception.getClass().getSimpleName()
+                );
+            }
+        });
     }
 
     private String resolveUserId(Authentication authentication) {

@@ -50,6 +50,9 @@ management:
       show-details: never
 
 sufe:
+  generation:
+    queue:
+      poll-interval-ms: ${GENERATION_QUEUE_POLL_INTERVAL_MS:1000}
   storage:
     files-root: ${SUFE_FILE_STORAGE_ROOT:./data/files}
     artifacts-root: ${SUFE_ARTIFACT_STORAGE_ROOT:./data/artifacts}

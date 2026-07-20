@@ -3,6 +3,8 @@ package com.sufe.ai.provider.api;
 import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.provider.lexiang.LexiangAiQaClient;
+import com.sufe.ai.provider.workbuddy.WorkBuddyClient;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -19,6 +22,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @ActiveProfiles("test")
 @SpringBootTest
@@ -34,6 +38,12 @@ class ProviderGatewayControllerTests {
 
     @Autowired
     private PasswordEncoder passwordEncoder;
+
+    @MockitoBean
+    private WorkBuddyClient workBuddyClient;
+
+    @MockitoBean
+    private LexiangAiQaClient lexiangAiQaClient;
 
     @BeforeEach
     void setUp() {
@@ -80,6 +90,8 @@ class ProviderGatewayControllerTests {
                                 """))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("LEXIANG_DISABLED"));
+
+        verifyNoInteractions(workBuddyClient, lexiangAiQaClient);
     }
 
     @Test
