@@ -4,6 +4,7 @@ import com.sufe.ai.audit.service.AuditLogService;
 import com.sufe.ai.knowledge.domain.ExpertKnowledgeRoute;
 import com.sufe.ai.knowledge.domain.ExpertProfile;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadFile;
+import com.sufe.ai.knowledge.domain.ExpertSkillFileRole;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadRecord;
 import com.sufe.ai.knowledge.domain.KnowledgeAsset;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
@@ -203,6 +204,7 @@ public class ExpertSkillUploadController {
             Authentication authentication
     ) {
         ExpertSkillConfirmationService.ConfirmationCommand command = new ExpertSkillConfirmationService.ConfirmationCommand(
+                request.targetExpertId(),
                 request.name(),
                 request.role(),
                 request.scenario(),
@@ -284,7 +286,9 @@ public class ExpertSkillUploadController {
     }
 
     private FileResponse toFileResponse(ExpertSkillUploadFile file) {
-        String preview = file.getContentText();
+        String preview = file.getFileRole() == ExpertSkillFileRole.SOURCE_CODE
+                ? null
+                : file.getContentText();
         if (preview != null && preview.length() > 300) preview = preview.substring(0, 300) + "…";
         return new FileResponse(
                 file.getId(),
@@ -344,6 +348,7 @@ public class ExpertSkillUploadController {
     }
 
     public record ConfirmRequest(
+            @Size(max = 64) String targetExpertId,
             @NotBlank @Size(max = 100) String name,
             @NotBlank @Size(max = 500) String role,
             @NotBlank @Size(max = 300) String scenario,

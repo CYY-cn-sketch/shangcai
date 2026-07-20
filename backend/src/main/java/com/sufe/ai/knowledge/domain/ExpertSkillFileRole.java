@@ -4,5 +4,6 @@ public enum ExpertSkillFileRole {
     CONFIG,
     PROMPT,
     KNOWLEDGE_CANDIDATE,
+    SOURCE_CODE,
     REFERENCE
 }

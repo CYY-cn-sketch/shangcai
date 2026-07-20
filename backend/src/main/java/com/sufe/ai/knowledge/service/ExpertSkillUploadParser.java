@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sufe.ai.knowledge.domain.ExpertSkillFileRole;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadRecord;
+import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -18,6 +21,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -36,7 +40,11 @@ public class ExpertSkillUploadParser {
     private static final Pattern ACCENT_PATTERN = Pattern.compile("^#[0-9a-fA-F]{6}$");
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
             "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "json", "yaml", "yml",
-            "png", "jpg", "jpeg"
+            "png", "jpg", "jpeg",
+            "py", "sh", "bash", "ps1", "bat", "cmd", "js", "mjs", "cjs", "ts", "tsx", "jsx"
+    );
+    private static final Set<String> SOURCE_CODE_EXTENSIONS = Set.of(
+            "py", "sh", "bash", "ps1", "bat", "cmd", "js", "mjs", "cjs", "ts", "tsx", "jsx"
     );
     private static final Set<String> TEXT_EXTENSIONS = Set.of("csv", "txt", "md", "json", "yaml", "yml");
     private static final Set<String> KNOWLEDGE_DIRECTORIES = Set.of("references", "knowledge", "docs");
@@ -72,7 +80,7 @@ public class ExpertSkillUploadParser {
             }
             parsedFiles.add(toParsedFile(relativePath, content));
         }
-        return parseFiles(parsedFiles);
+        return parseFiles(parsedFiles, null);
     }
 
     public ParsedUpload parseArchive(MultipartFile archive) {
@@ -115,16 +123,17 @@ public class ExpertSkillUploadParser {
             throw invalid("无法读取 Skill ZIP 压缩包");
         }
         if (parsedFiles.isEmpty()) throw invalid("压缩包中没有可保存的 Skill 文件");
-        return parseFiles(parsedFiles);
+        String archiveFolderName = fileName.substring(0, fileName.length() - 4).trim();
+        return parseFiles(parsedFiles, archiveFolderName);
     }
 
-    private ParsedUpload parseFiles(List<ParsedFile> files) {
+    private ParsedUpload parseFiles(List<ParsedFile> files, String rootFallbackName) {
         files.sort(Comparator.comparing(ParsedFile::relativePath, String.CASE_INSENSITIVE_ORDER));
         ParsedFile mainFile = files.stream()
                 .filter(file -> file.fileRole() == ExpertSkillFileRole.PROMPT)
                 .min(Comparator.comparingInt(file -> file.relativePath().length()))
                 .orElseThrow(() -> invalid("Skill 文件夹必须包含 SKILL.md"));
-        String folderName = folderName(mainFile.relativePath());
+        String folderName = folderName(mainFile.relativePath(), rootFallbackName);
         List<ParsedFile> promptAndConfigFiles = files.stream()
                 .filter(file -> file.contentText() != null)
                 .filter(file -> file.fileRole() == ExpertSkillFileRole.PROMPT || file.fileRole() == ExpertSkillFileRole.CONFIG)
@@ -162,26 +171,43 @@ public class ExpertSkillUploadParser {
                 .findFirst()
                 .orElse(null);
         String mainContent = mainFile.contentText();
+        JsonNode yaml = files.stream()
+                .filter(file -> file.fileRole() == ExpertSkillFileRole.CONFIG)
+                .filter(file -> Set.of("yaml", "yml").contains(extensionOf(file.relativePath())))
+                .map(ParsedFile::contentText)
+                .map(this::parseYaml)
+                .filter(node -> node != null)
+                .findFirst()
+                .orElse(null);
+        JsonNode frontmatter = parseFrontmatter(mainContent);
         String name = firstText(
                 jsonText(json, "name"),
                 jsonText(json, "expertName"),
-                labeledValue(mainContent, "专家名称", "名称", "Name", "name"),
+                labeledValue(mainContent, "专家名称", "名称", "Name"),
+                nestedText(yaml, "interface", "display_name"),
+                jsonText(yaml, "display_name"),
                 firstHeading(mainContent),
+                jsonText(frontmatter, "name"),
                 folderName
         );
         String role = firstText(
                 jsonText(json, "role"),
                 jsonText(json, "description"),
                 labeledValue(mainContent, "专家定位", "定位", "角色", "Role", "role"),
+                nestedText(yaml, "interface", "short_description"),
+                jsonText(yaml, "short_description"),
+                jsonText(frontmatter, "description"),
                 "由教师或管理员上传的专家 Skill，仅解析提示词和配置。"
         );
         String scenario = firstText(
                 jsonText(json, "scenario"),
+                jsonText(yaml, "scenario"),
                 labeledValue(mainContent, "适用场景", "场景", "Scenario", "scenario"),
                 "课程专题指导、阶段成果生成"
         );
         String accentCandidate = firstText(
                 jsonText(json, "accent"),
+                jsonText(yaml, "accent"),
                 labeledValue(mainContent, "主题色", "Accent", "accent"),
                 "#0f7b73"
         );
@@ -189,35 +215,45 @@ public class ExpertSkillUploadParser {
         String systemPrompt = firstText(
                 jsonText(json, "systemPrompt"),
                 jsonText(json, "prompt"),
+                jsonText(yaml, "systemPrompt"),
+                jsonText(yaml, "system_prompt"),
                 sectionValue(mainContent, "系统提示词", "System Prompt"),
                 mainContent
         );
         String userPrompt = firstText(
                 jsonText(json, "userPrompt"),
+                jsonText(yaml, "userPrompt"),
+                jsonText(yaml, "user_prompt"),
+                nestedText(yaml, "interface", "default_prompt"),
                 sectionValue(mainContent, "用户输入组装规则", "用户提示词", "User Prompt")
         );
         String skillName = firstText(
                 jsonText(json, "skillName"),
+                jsonText(yaml, "skillName"),
                 labeledValue(mainContent, "Skill 名称", "技能名称", "Skill Name"),
                 name + " Skill"
         );
         String skillDescription = firstText(
                 jsonText(json, "skillDescription"),
                 jsonText(json, "capability"),
+                jsonText(yaml, "skillDescription"),
+                jsonText(yaml, "capability"),
                 sectionValue(mainContent, "能力说明", "Skill 说明", "Capability"),
                 role
         );
         String knowledgeRule = firstText(
                 jsonText(json, "knowledgeRule"),
+                jsonText(yaml, "knowledgeRule"),
                 sectionValue(mainContent, "知识库调用规则", "Knowledge Rule")
         );
         String outputFormat = firstText(
                 jsonText(json, "outputFormat"),
+                jsonText(yaml, "outputFormat"),
                 sectionValue(mainContent, "输出格式", "Output Format")
         );
         String boundaries = joinSections(
-                firstText(jsonText(json, "boundaries"), sectionValue(mainContent, "能力边界", "Boundaries")),
-                firstText(jsonText(json, "forbidden"), sectionValue(mainContent, "禁止事项", "Forbidden"))
+                firstText(jsonText(json, "boundaries"), jsonText(yaml, "boundaries"), sectionValue(mainContent, "能力边界", "Boundaries")),
+                firstText(jsonText(json, "forbidden"), jsonText(yaml, "forbidden"), sectionValue(mainContent, "禁止事项", "Forbidden"))
         );
         return new ParsedFields(
                 name, role, scenario, accent, systemPrompt, userPrompt, skillName, skillDescription,
@@ -236,6 +272,7 @@ public class ExpertSkillUploadParser {
         String fileName = lower.substring(lower.lastIndexOf('/') + 1);
         if (fileName.equals("skill.md")) return ExpertSkillFileRole.PROMPT;
         String extension = extensionOf(lower);
+        if (SOURCE_CODE_EXTENSIONS.contains(extension)) return ExpertSkillFileRole.SOURCE_CODE;
         if (extension.equals("json") || extension.equals("yaml") || extension.equals("yml")) {
             return ExpertSkillFileRole.CONFIG;
         }
@@ -278,10 +315,42 @@ public class ExpertSkillUploadParser {
         }
     }
 
+    private JsonNode parseYaml(String content) {
+        if (content == null || content.isBlank()) return null;
+        try {
+            LoaderOptions options = new LoaderOptions();
+            options.setAllowDuplicateKeys(false);
+            options.setMaxAliasesForCollections(10);
+            options.setCodePointLimit(200_000);
+            Object parsed = new Yaml(new SafeConstructor(options)).load(content);
+            return parsed instanceof Map<?, ?> ? objectMapper.valueToTree(parsed) : null;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private JsonNode parseFrontmatter(String content) {
+        if (content == null) return null;
+        String[] lines = content.split("\\R", -1);
+        if (lines.length < 3 || !lines[0].trim().equals("---")) return null;
+        StringBuilder yaml = new StringBuilder();
+        for (int index = 1; index < lines.length; index++) {
+            if (lines[index].trim().equals("---")) return parseYaml(yaml.toString());
+            yaml.append(lines[index]).append('\n');
+        }
+        return null;
+    }
+
     private static String jsonText(JsonNode node, String field) {
         if (node == null) return null;
         JsonNode value = node.get(field);
         return value != null && value.isTextual() ? normalizeOptional(value.asText()) : null;
+    }
+
+    private static String nestedText(JsonNode node, String parent, String field) {
+        if (node == null) return null;
+        JsonNode parentNode = node.get(parent);
+        return jsonText(parentNode, field);
     }
 
     private static String labeledValue(String content, String... labels) {
@@ -389,9 +458,11 @@ public class ExpertSkillUploadParser {
         return normalized.startsWith("__macosx/") || normalized.endsWith("/.ds_store") || normalized.equals(".ds_store");
     }
 
-    private static String folderName(String path) {
+    private static String folderName(String path, String rootFallbackName) {
         int separator = path.indexOf('/');
-        String candidate = separator > 0 ? path.substring(0, separator) : path.replaceFirst("(?i)\\.[a-z0-9]+$", "");
+        String candidate = separator > 0
+                ? path.substring(0, separator)
+                : firstText(rootFallbackName, path.replaceFirst("(?i)\\.[a-z0-9]+$", ""));
         return candidate.isBlank() ? "专家 Skill" : candidate;
     }
 

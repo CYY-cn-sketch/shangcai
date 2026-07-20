@@ -5,8 +5,12 @@ import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadStatus;
+import com.sufe.ai.knowledge.domain.ExpertProfile;
+import com.sufe.ai.knowledge.domain.ExpertKnowledgeRoute;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
+import com.sufe.ai.knowledge.repository.ExpertKnowledgeRouteRepository;
+import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillUploadFileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillUploadRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeAssetRepository;
@@ -61,6 +65,12 @@ class ExpertSkillUploadControllerTests {
 
     @Autowired
     private ExpertProfileRepository expertProfileRepository;
+
+    @Autowired
+    private ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository;
+
+    @Autowired
+    private ExpertSkillRepository expertSkillRepository;
 
     @Autowired
     private ExpertSkillUploadRepository uploadRepository;
@@ -181,7 +191,7 @@ class ExpertSkillUploadControllerTests {
     }
 
     @Test
-    void rejectsExecutableAndNonUtf8SkillFiles() throws Exception {
+    void rejectsUnsupportedBinaryAndNonUtf8SkillFiles() throws Exception {
         Cookie session = login();
         MockMultipartFile executable = new MockMultipartFile(
                 "files", "run.exe", "application/octet-stream", new byte[]{1, 2, 3}
@@ -204,6 +214,131 @@ class ExpertSkillUploadControllerTests {
                         .cookie(session))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("UTF-8")));
+    }
+
+    @Test
+    void archivesSourceCodeWithoutExecutingItAndParsesSafeYamlMetadata() throws Exception {
+        Cookie session = login();
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("SKILL.md", """
+                ---
+                name: creative-brainstorming-expert
+                description: 面向学生的创意发散专家。
+                ---
+
+                # 创意头脑风暴专家
+
+                只根据学生已经提供的事实发散候选方向。
+                """.getBytes(StandardCharsets.UTF_8));
+        entries.put("agents/openai.yaml", """
+                interface:
+                  display_name: 创意头脑风暴专家
+                  short_description: 把模糊主题转化为可验证的候选创意。
+                  default_prompt: 请组合当前输入、历史上下文和已确认事实。
+                """.getBytes(StandardCharsets.UTF_8));
+        entries.put("scripts/generate_outline_docx.py", "print('source only')".getBytes(StandardCharsets.UTF_8));
+        entries.put("references/brainstorming-methods.md", "# 创意发散方法".getBytes(StandardCharsets.UTF_8));
+
+        String response = mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(new MockMultipartFile(
+                                "archive", "creative-brainstorming-expert.zip", "application/zip", zipEntries(entries)
+                        ))
+                        .with(csrf())
+                        .cookie(session))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.folderName").value("creative-brainstorming-expert"))
+                .andExpect(jsonPath("$.parsedName").value("创意头脑风暴专家"))
+                .andExpect(jsonPath("$.parsedRole").value("把模糊主题转化为可验证的候选创意。"))
+                .andExpect(jsonPath("$.parsedUserPrompt").value("请组合当前输入、历史上下文和已确认事实。"))
+                .andExpect(jsonPath("$.files[?(@.relativePath == 'scripts/generate_outline_docx.py')].fileRole")
+                        .value("SOURCE_CODE"))
+                .andExpect(jsonPath("$.files[?(@.relativePath == 'scripts/generate_outline_docx.py')].contentPreview")
+                        .value(org.hamcrest.Matchers.contains(org.hamcrest.Matchers.nullValue())))
+                .andExpect(jsonPath("$.files[?(@.relativePath == 'references/brainstorming-methods.md')].fileRole")
+                        .value("KNOWLEDGE_CANDIDATE"))
+                .andReturn().getResponse().getContentAsString();
+
+        String uploadId = objectMapper.readTree(response).path("id").asText();
+        assertThat(uploadFileRepository.findByUploadIdOrderByRelativePathAsc(uploadId))
+                .filteredOn(file -> file.getFileRole().name().equals("SOURCE_CODE"))
+                .singleElement()
+                .satisfies(file -> assertThat(file.getContentText()).isNull());
+    }
+
+    @Test
+    void confirmationCanUpdateExistingExpertWithoutCreatingDuplicate() throws Exception {
+        ExpertProfile existing = ExpertProfile.create(
+                "brainstorm",
+                "创意头脑风暴专家",
+                "原有创意专家定位",
+                "原有创意场景",
+                "#0f7b73"
+        );
+        existing.update(
+                existing.getName(),
+                existing.getRoleDescription(),
+                existing.getScenario(),
+                existing.getAccent(),
+                "starter-content/brainstorm/SKILL.md",
+                "原有来源内容",
+                "平台内置内容",
+                "原有系统提示词",
+                "原有用户提示词",
+                true
+        );
+        expertProfileRepository.saveAndFlush(existing);
+        expertKnowledgeRouteRepository.saveAndFlush(ExpertKnowledgeRoute.create("brainstorm", "旧知识库"));
+        Cookie session = login();
+        String uploadJson = mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(new MockMultipartFile("archive", "brainstorm-update.zip", "application/zip", zipEntry("SKILL.md", """
+                                # 创意头脑风暴专家
+
+                                ## 系统提示词
+                                只根据学生确认的信息生成候选创意。
+
+                                ## 用户输入组装规则
+                                组合当前输入、历史成果和教师反馈。
+                                """)))
+                        .with(csrf())
+                        .cookie(session))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String uploadId = objectMapper.readTree(uploadJson).path("id").asText();
+
+        mockMvc.perform(post("/api/knowledge/expert-skill-uploads/{uploadId}/confirm", uploadId)
+                        .with(csrf())
+                        .cookie(session)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "targetExpertId": "brainstorm",
+                                  "name": "创意头脑风暴专家",
+                                  "role": "把模糊主题转化为可验证创业方向。",
+                                  "scenario": "创意发散、候选比较和验证任务",
+                                  "accent": "#0f7b73",
+                                  "skillName": "创意发散与验证",
+                                  "skillDescription": "生成候选创意、验证任务和交接卡。",
+                                  "systemPrompt": "只根据学生确认的信息生成候选创意。",
+                                  "userPrompt": "组合当前输入、历史成果和教师反馈。",
+                                  "knowledge": {"mode": "EXISTING", "knowledgeBaseId": "%s"},
+                                  "importFileIds": [],
+                                  "active": true
+                                }
+                                """.formatted(skillKnowledgeBaseId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.expert.id").value("brainstorm"))
+                .andExpect(jsonPath("$.expert.systemPrompt").value(org.hamcrest.Matchers.containsString("## 平台运行约束")))
+                .andExpect(jsonPath("$.upload.expertId").value("brainstorm"));
+
+        assertThat(expertProfileRepository.findAll())
+                .filteredOn(expert -> expert.getName().equals("创意头脑风暴专家"))
+                .singleElement()
+                .satisfies(expert -> assertThat(expert.getId()).isEqualTo("brainstorm"));
+        assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("brainstorm"))
+                .anySatisfy(skill -> assertThat(skill.getStage()).isEqualTo("已确认上传"));
+        assertThat(expertKnowledgeRouteRepository.findByExpertId("brainstorm"))
+                .singleElement()
+                .satisfies(route -> assertThat(route.getCategory()).isEqualTo("Skill 测试资料"));
     }
 
     @Test

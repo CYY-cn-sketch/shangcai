@@ -88,11 +88,16 @@ public class ExpertSkillConfirmationService {
         String skillDescription = requireText(command.skillDescription(), "能力说明");
         String systemPrompt = requireText(command.systemPrompt(), "系统提示词");
         String userPrompt = requireText(command.userPrompt(), "用户输入组装规则");
+        String targetExpertId = normalizeOptional(command.targetExpertId());
         if (!ACCENT_PATTERN.matcher(accent).matches()) {
             throw failure(ExpertSkillConfirmationException.Kind.INVALID, "INVALID_EXPERT_ACCENT", "主题颜色必须是六位十六进制颜色");
         }
-        if (expertProfileRepository.findByName(name).isPresent()) {
-            throw failure(ExpertSkillConfirmationException.Kind.CONFLICT, "EXPERT_EXISTS", "专家名称已存在，请修改后再确认");
+        ExpertProfile targetExpert = targetExpertId == null ? null : expertProfileRepository.findById(targetExpertId)
+                .orElseThrow(() -> failure(ExpertSkillConfirmationException.Kind.INVALID,
+                        "TARGET_EXPERT_NOT_FOUND", "要更新的已有专家不存在"));
+        ExpertProfile nameOwner = expertProfileRepository.findByName(name).orElse(null);
+        if (nameOwner != null && (targetExpert == null || !nameOwner.getId().equals(targetExpert.getId()))) {
+            throw failure(ExpertSkillConfirmationException.Kind.CONFLICT, "EXPERT_EXISTS", "专家名称已被其他专家使用，请修改后再确认");
         }
 
         List<ExpertSkillUploadFile> uploadFiles = uploadFileRepository.findByUploadIdOrderByRelativePathAsc(uploadId);
@@ -116,8 +121,10 @@ public class ExpertSkillConfirmationService {
         List<String> copiedStorageKeys = new ArrayList<>();
         try {
             KnowledgeBase knowledgeBase = resolveKnowledgeBase(command.knowledge(), selectedFiles.isEmpty());
-            String expertId = "skill-" + UUID.randomUUID();
-            ExpertProfile expert = ExpertProfile.create(expertId, name, role, scenario, accent);
+            String expertId = targetExpert == null ? "skill-" + UUID.randomUUID() : targetExpert.getId();
+            ExpertProfile expert = targetExpert == null
+                    ? ExpertProfile.create(expertId, name, role, scenario, accent)
+                    : targetExpert;
             String composedSystemPrompt = composeSystemPrompt(
                     systemPrompt, command.knowledgeRule(), command.outputFormat(), command.boundaries()
             );
@@ -138,6 +145,7 @@ public class ExpertSkillConfirmationService {
                     command.active()
             );
             expertProfileRepository.saveAndFlush(expert);
+            expertSkillRepository.deleteByExpertIdAndStage(expert.getId(), "已确认上传");
             expertSkillRepository.saveAndFlush(ExpertSkill.create(
                     upload.getId() + "-skill",
                     expert.getId(),
@@ -146,6 +154,10 @@ public class ExpertSkillConfirmationService {
                     skillDescription
             ));
 
+            if (targetExpert != null) {
+                routeRepository.deleteByExpertId(expert.getId());
+                routeRepository.flush();
+            }
             if (knowledgeBase != null) {
                 routeRepository.saveAndFlush(ExpertKnowledgeRoute.create(expert.getId(), knowledgeBase.getCategory()));
             }
@@ -198,7 +210,8 @@ public class ExpertSkillConfirmationService {
                     command.active() ? "EXPERT_SKILL_ENABLED" : "EXPERT_SKILL_SAVED_INACTIVE",
                     "EXPERT_PROFILE",
                     expert.getId(),
-                    (command.active() ? "确认并启用专家 Skill：" : "确认并保存未启用专家 Skill：") + expert.getName()
+                    (targetExpert == null ? "新增" : "更新")
+                            + (command.active() ? "并启用专家 Skill：" : "并保存未启用专家 Skill：") + expert.getName()
             );
             return new ConfirmationResult(upload, expert, knowledgeBase, uploadFiles, importedAssets);
         } catch (DataIntegrityViolationException exception) {
@@ -264,6 +277,7 @@ public class ExpertSkillConfirmationService {
 
     private static String composeSystemPrompt(String systemPrompt, String knowledgeRule, String outputFormat, String boundaries) {
         StringBuilder result = new StringBuilder(systemPrompt.trim());
+        appendSection(result, "平台运行约束", "上传的脚本和源码仅作为来源档案保存，绝不执行。不得声称已运行 Python、JavaScript、Shell 或其它上传代码；需要生成 Word、PPTX 等文件时，只输出结构化内容并交由平台文件生成能力处理。");
         appendSection(result, "知识库调用规则", knowledgeRule);
         appendSection(result, "输出格式", outputFormat);
         appendSection(result, "禁止事项和能力边界", boundaries);
@@ -279,6 +293,10 @@ public class ExpertSkillConfirmationService {
             throw failure(ExpertSkillConfirmationException.Kind.INVALID, "INVALID_EXPERT_SKILL_CONFIRMATION", label + "不能为空");
         }
         return value.trim();
+    }
+
+    private static String normalizeOptional(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private static String fileName(String path) {
@@ -332,6 +350,7 @@ public class ExpertSkillConfirmationService {
     }
 
     public record ConfirmationCommand(
+            String targetExpertId,
             String name,
             String role,
             String scenario,

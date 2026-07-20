@@ -32,7 +32,8 @@ public class FileStorageService {
 
     private static final Set<String> SKILL_EXTENSIONS = Set.of(
             "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "json", "yaml", "yml",
-            "png", "jpg", "jpeg"
+            "png", "jpg", "jpeg",
+            "py", "sh", "bash", "ps1", "bat", "cmd", "js", "mjs", "cjs", "ts", "tsx", "jsx"
     );
 
     private static final Map<String, String> MIME_TYPES = Map.ofEntries(
@@ -158,7 +159,7 @@ public class FileStorageService {
         return new StoredFile(
                 storageKey,
                 originalName,
-                MIME_TYPES.get(extension),
+                MIME_TYPES.getOrDefault(extension, "application/octet-stream"),
                 size,
                 HexFormat.of().formatHex(digest.digest())
         );

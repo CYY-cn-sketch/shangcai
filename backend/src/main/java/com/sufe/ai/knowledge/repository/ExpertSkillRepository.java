@@ -9,5 +9,7 @@ public interface ExpertSkillRepository extends JpaRepository<ExpertSkill, String
 
     List<ExpertSkill> findByExpertIdOrderByCreatedAtAsc(String expertId);
 
+    void deleteByExpertIdAndStage(String expertId, String stage);
+
     void deleteByExpertId(String expertId);
 }
