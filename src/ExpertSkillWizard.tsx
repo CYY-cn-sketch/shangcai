@@ -8,6 +8,7 @@ import {
   type ExpertSkillConfirmationRecord,
   type ExpertSkillKnowledgeSelection,
   type ExpertSkillUploadRecord,
+  type KnowledgeExpertRecord,
 } from "./api/knowledge";
 import "./ExpertSkillWizard.css";
 
@@ -61,12 +62,19 @@ const fileRoleLabels = {
   CONFIG: "配置",
   PROMPT: "提示词",
   KNOWLEDGE_CANDIDATE: "知识资料候选",
+  SOURCE_CODE: "源码档案（不执行）",
   REFERENCE: "普通参考",
 } as const;
+
+function matchingExpertId(experts: KnowledgeExpertRecord[], name: string) {
+  const normalizedName = name.trim().toLocaleLowerCase();
+  return experts.find((expert) => expert.name.trim().toLocaleLowerCase() === normalizedName)?.id || "";
+}
 
 export function ExpertSkillWizard(props: {
   actorLabel: string;
   knowledgeBases: KnowledgeBaseOption[];
+  experts: KnowledgeExpertRecord[];
   initialUpload?: ExpertSkillUploadRecord | null;
   onClose: () => void;
   onConfirmed: (result: ExpertSkillConfirmationRecord) => void | Promise<void>;
@@ -78,6 +86,9 @@ export function ExpertSkillWizard(props: {
   const [upload, setUpload] = useState<ExpertSkillUploadRecord | null>(props.initialUpload || null);
   const [step, setStep] = useState(props.initialUpload ? 2 : 1);
   const [draft, setDraft] = useState<ExpertDraft | null>(initialDraft);
+  const initialTargetExpertId = initialDraft ? matchingExpertId(props.experts, initialDraft.name) : "";
+  const [saveMode, setSaveMode] = useState<"CREATE" | "UPDATE">(initialTargetExpertId ? "UPDATE" : "CREATE");
+  const [targetExpertId, setTargetExpertId] = useState(initialTargetExpertId);
   const [knowledgeMode, setKnowledgeMode] = useState<"EXISTING" | "CREATE" | "NONE">(
     props.knowledgeBases.some((base) => base.id) ? "EXISTING" : "CREATE",
   );
@@ -137,6 +148,9 @@ export function ExpertSkillWizard(props: {
     const nextDraft = fromUpload(nextUpload);
     setUpload(nextUpload);
     setDraft(nextDraft);
+    const matchedExpertId = matchingExpertId(props.experts, nextDraft.name);
+    setSaveMode(matchedExpertId ? "UPDATE" : "CREATE");
+    setTargetExpertId(matchedExpertId);
     setSelectedFileIds(
       nextUpload.files.filter((file) => file.fileRole === "KNOWLEDGE_CANDIDATE" && !file.importedAssetId).map((file) => file.id),
     );
@@ -169,6 +183,10 @@ export function ExpertSkillWizard(props: {
   function validateCurrentStep() {
     if (!draft || !upload) return false;
     if (step === 2) {
+      if (saveMode === "UPDATE" && !targetExpertId) {
+        setError("请选择需要更新的现有专家。");
+        return false;
+      }
       if (![draft.name, draft.role, draft.scenario, draft.skillName, draft.skillDescription].every((value) => value.trim())) {
         setError("请完整填写专家名称、定位、适用场景、Skill 名称和能力说明。");
         return false;
@@ -217,6 +235,7 @@ export function ExpertSkillWizard(props: {
     setError(null);
     const input: ConfirmExpertSkillUploadInput = {
       ...draft,
+      targetExpertId: saveMode === "UPDATE" ? targetExpertId : undefined,
       knowledge: knowledgeSelection(),
       importFileIds: knowledgeMode === "NONE" ? [] : selectedFileIds,
       active: studentVisible,
@@ -277,13 +296,34 @@ export function ExpertSkillWizard(props: {
   function renderExpertStep() {
     if (!draft) return null;
     return (
-      <div className="skill-wizard-form-grid">
-        <label><span>专家名称</span><input value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} /></label>
-        <label><span>主题颜色</span><input value={draft.accent} onChange={(event) => updateDraft("accent", event.target.value)} placeholder="#0f7b73" /></label>
-        <label className="wide"><span>专家定位</span><textarea rows={3} value={draft.role} onChange={(event) => updateDraft("role", event.target.value)} /></label>
-        <label className="wide"><span>适用场景</span><textarea rows={2} value={draft.scenario} onChange={(event) => updateDraft("scenario", event.target.value)} /></label>
-        <label><span>Skill 名称</span><input value={draft.skillName} onChange={(event) => updateDraft("skillName", event.target.value)} /></label>
-        <label><span>能力说明</span><textarea rows={3} value={draft.skillDescription} onChange={(event) => updateDraft("skillDescription", event.target.value)} /></label>
+      <div className="skill-wizard-expert-step">
+        <div className="skill-wizard-choice-grid skill-wizard-save-mode" role="radiogroup" aria-label="专家保存方式">
+          <label className={saveMode === "CREATE" ? "selected" : ""}>
+            <input type="radio" name="expert-save-mode" checked={saveMode === "CREATE"} onChange={() => setSaveMode("CREATE")} />
+            <strong>新建专家</strong><span>使用解析结果创建新的专家档案</span>
+          </label>
+          <label className={saveMode === "UPDATE" ? "selected" : ""}>
+            <input type="radio" name="expert-save-mode" checked={saveMode === "UPDATE"} onChange={() => setSaveMode("UPDATE")} />
+            <strong>更新现有专家</strong><span>替换所选专家的配置，不重复创建</span>
+          </label>
+        </div>
+        {saveMode === "UPDATE" && (
+          <label className="skill-wizard-field skill-wizard-target-expert"><span>需要更新的专家</span>
+            <select value={targetExpertId} onChange={(event) => setTargetExpertId(event.target.value)}>
+              <option value="">请选择现有专家</option>
+              {props.experts.map((expert) => <option key={expert.id} value={expert.id}>{expert.name}{expert.active ? "" : "（未启用）"}</option>)}
+            </select>
+            <small>系统仅在专家名称完全一致时自动匹配；提交前请人工确认目标。</small>
+          </label>
+        )}
+        <div className="skill-wizard-form-grid">
+          <label><span>专家名称</span><input value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} /></label>
+          <label><span>主题颜色</span><input value={draft.accent} onChange={(event) => updateDraft("accent", event.target.value)} placeholder="#0f7b73" /></label>
+          <label className="wide"><span>专家定位</span><textarea rows={3} value={draft.role} onChange={(event) => updateDraft("role", event.target.value)} /></label>
+          <label className="wide"><span>适用场景</span><textarea rows={2} value={draft.scenario} onChange={(event) => updateDraft("scenario", event.target.value)} /></label>
+          <label><span>Skill 名称</span><input value={draft.skillName} onChange={(event) => updateDraft("skillName", event.target.value)} /></label>
+          <label><span>能力说明</span><textarea rows={3} value={draft.skillDescription} onChange={(event) => updateDraft("skillDescription", event.target.value)} /></label>
+        </div>
       </div>
     );
   }
@@ -351,10 +391,12 @@ export function ExpertSkillWizard(props: {
   function renderConfirmStep() {
     if (!draft || !upload) return null;
     const selectedBase = props.knowledgeBases.find((base) => base.id === existingKnowledgeBaseId);
+    const targetExpert = props.experts.find((expert) => expert.id === targetExpertId);
     const baseName = knowledgeMode === "EXISTING" ? selectedBase?.category : knowledgeMode === "CREATE" ? newKnowledgeBase.category : "未配置";
     return (
       <div className="skill-wizard-confirm-step">
         <dl>
+          <div><dt>保存方式</dt><dd><strong>{saveMode === "UPDATE" ? `更新：${targetExpert?.name || "未选择"}` : "新建专家"}</strong><span>{saveMode === "UPDATE" ? "保留专家 ID，并替换本次确认的配置" : "创建新的专家 ID 和配置"}</span></dd></div>
           <div><dt>专家</dt><dd><strong>{draft.name}</strong><span>{draft.role}</span></dd></div>
           <div><dt>Skill</dt><dd><strong>{draft.skillName}</strong><span>{draft.skillDescription}</span></dd></div>
           <div><dt>知识库</dt><dd><strong>{baseName || "未命名"}</strong><span>将导入 {selectedFileIds.length} 个已勾选资料</span></dd></div>

@@ -315,6 +315,18 @@
   gap: 0.9rem;
 }
 
+.skill-wizard-save-mode {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.skill-wizard-target-expert {
+  margin-bottom: 1rem;
+}
+
+.skill-wizard-target-expert small {
+  color: var(--muted);
+}
+
 .skill-wizard-form-grid label,
 .skill-wizard-prompt-grid label,
 .skill-wizard-field {

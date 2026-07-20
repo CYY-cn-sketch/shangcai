@@ -27,7 +27,7 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
     id: "upload-e2e",
     folderName: "e2e-skill",
     mainFilePath: "e2e-skill/SKILL.md",
-    fileCount: 3,
+    fileCount: 4,
     parsedName: "E2E 财务专家",
     parsedRole: "验证项目财务假设",
     parsedScenario: "收入、成本和现金流测算",
@@ -45,6 +45,7 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
     files: [
       { id: "prompt-e2e", relativePath: "e2e-skill/SKILL.md", fileRole: "PROMPT", mimeType: "text/markdown", fileSizeBytes: 300, sha256: "a".repeat(64), downloadUrl: "/prompt" },
       { id: "config-e2e", relativePath: "e2e-skill/config.json", fileRole: "CONFIG", mimeType: "application/json", fileSizeBytes: 120, sha256: "b".repeat(64), downloadUrl: "/config" },
+      { id: "source-e2e", relativePath: "e2e-skill/scripts/helper.py", fileRole: "SOURCE_CODE", mimeType: "application/octet-stream", fileSizeBytes: 80, sha256: "d".repeat(64), downloadUrl: "/source" },
       { id: "knowledge-e2e", relativePath: "e2e-skill/references/case.md", fileRole: "KNOWLEDGE_CANDIDATE", mimeType: "text/markdown", fileSizeBytes: 500, sha256: "c".repeat(64), downloadUrl: "/knowledge" },
     ],
   };
@@ -101,6 +102,9 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
 
   await archiveInput.setInputFiles({ name: "e2e-skill.zip", mimeType: "application/zip", buffer: Buffer.from("safe-e2e-fixture") });
   await expect(dialog.getByRole("heading", { name: "确认专家信息" })).toBeVisible();
+  await dialog.getByRole("button", { name: /上一步/ }).click();
+  await expect(dialog.getByText("源码档案（不执行）")).toBeVisible();
+  await dialog.getByRole("button", { name: /下一步/ }).click();
   await dialog.getByRole("button", { name: /下一步/ }).click();
   await expect(dialog.getByRole("heading", { name: "配置知识库" })).toBeVisible();
   await dialog.getByRole("radio", { name: /新建知识库并导入/ }).check();

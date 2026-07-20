@@ -77,7 +77,7 @@ export type ExpertSkillUploadRecord = {
 export type ExpertSkillUploadFileRecord = {
   id: string;
   relativePath: string;
-  fileRole: "CONFIG" | "PROMPT" | "KNOWLEDGE_CANDIDATE" | "REFERENCE";
+  fileRole: "CONFIG" | "PROMPT" | "KNOWLEDGE_CANDIDATE" | "SOURCE_CODE" | "REFERENCE";
   contentPreview?: string | null;
   mimeType: string;
   fileSizeBytes: number;
@@ -100,6 +100,7 @@ export type ExpertSkillKnowledgeSelection =
   | { mode: "NONE" };
 
 export type ConfirmExpertSkillUploadInput = {
+  targetExpertId?: string;
   name: string;
   role: string;
   scenario: string;

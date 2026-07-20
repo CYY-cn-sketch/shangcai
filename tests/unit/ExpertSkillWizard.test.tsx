@@ -88,6 +88,7 @@ describe("ExpertSkillWizard", () => {
       <ExpertSkillWizard
         actorLabel="教师端"
         knowledgeBases={[{ id: "kb-1", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true }]}
+        experts={[]}
         initialUpload={upload}
         onClose={vi.fn()}
         onConfirmed={onConfirmed}
@@ -113,5 +114,50 @@ describe("ExpertSkillWizard", () => {
       }),
     );
     expect(onConfirmed).toHaveBeenCalledWith(result);
+  });
+
+  it("名称匹配时允许明确更新已有专家并提交目标专家 ID", async () => {
+    const user = userEvent.setup();
+    const existingExpert = {
+      id: "brainstorm",
+      name: upload.parsedName,
+      role: "旧定位",
+      scenario: "旧场景",
+      accent: "#174a7e",
+      active: true,
+      skills: [],
+      knowledgeCategories: [],
+    };
+    const result: ExpertSkillConfirmationRecord = {
+      expert: { ...existingExpert, role: upload.parsedRole, scenario: upload.parsedScenario },
+      upload: { ...upload, status: "ENABLED", expertId: existingExpert.id },
+      knowledgeBase: { id: "kb-1", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true },
+      importedAssets: [],
+    };
+    confirmExpertSkillUpload.mockResolvedValue(result);
+
+    render(
+      <ExpertSkillWizard
+        actorLabel="管理员端"
+        knowledgeBases={[{ id: "kb-1", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true }]}
+        experts={[existingExpert]}
+        initialUpload={upload}
+        onClose={vi.fn()}
+        onConfirmed={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "专家配置与 Skill 管理" });
+    expect(within(dialog).getByRole("radio", { name: /更新现有专家/ })).toBeChecked();
+    expect(within(dialog).getByRole("combobox", { name: /需要更新的专家/ })).toHaveValue("brainstorm");
+    await user.click(within(dialog).getByRole("button", { name: /下一步/ }));
+    await user.click(within(dialog).getByRole("button", { name: /下一步/ }));
+    await user.click(within(dialog).getByRole("button", { name: /下一步/ }));
+    await user.click(within(dialog).getByRole("button", { name: /确认保存并启用/ }));
+
+    expect(confirmExpertSkillUpload).toHaveBeenCalledWith(
+      "upload-1",
+      expect.objectContaining({ targetExpertId: "brainstorm" }),
+    );
   });
 });
