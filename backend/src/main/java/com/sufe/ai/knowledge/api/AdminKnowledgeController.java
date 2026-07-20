@@ -1,5 +1,6 @@
 package com.sufe.ai.knowledge.api;
 
+import com.sufe.ai.audit.service.AuditLogService;
 import com.sufe.ai.knowledge.domain.ExpertKnowledgeRoute;
 import com.sufe.ai.knowledge.domain.ExpertProfile;
 import com.sufe.ai.knowledge.domain.ExpertSkill;
@@ -56,6 +57,7 @@ public class AdminKnowledgeController {
     private final ExpertSkillRepository expertSkillRepository;
     private final ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository;
     private final FileStorageService fileStorageService;
+    private final AuditLogService auditLogService;
 
     public AdminKnowledgeController(
             KnowledgeBaseRepository knowledgeBaseRepository,
@@ -63,7 +65,8 @@ public class AdminKnowledgeController {
             ExpertProfileRepository expertProfileRepository,
             ExpertSkillRepository expertSkillRepository,
             ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository,
-            FileStorageService fileStorageService
+            FileStorageService fileStorageService,
+            AuditLogService auditLogService
     ) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.knowledgeAssetRepository = knowledgeAssetRepository;
@@ -71,6 +74,7 @@ public class AdminKnowledgeController {
         this.expertSkillRepository = expertSkillRepository;
         this.expertKnowledgeRouteRepository = expertKnowledgeRouteRepository;
         this.fileStorageService = fileStorageService;
+        this.auditLogService = auditLogService;
     }
 
     @GetMapping("/knowledge-bases")
@@ -84,13 +88,23 @@ public class AdminKnowledgeController {
     @PostMapping("/knowledge-bases")
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
-    public ResponseEntity<?> createKnowledgeBase(@Valid @RequestBody KnowledgeBaseRequest request) {
+    public ResponseEntity<?> createKnowledgeBase(
+            Authentication authentication,
+            @Valid @RequestBody KnowledgeBaseRequest request
+    ) {
         if (knowledgeBaseRepository.findByCategory(request.category().trim()).isPresent()) {
             return conflict("KNOWLEDGE_BASE_EXISTS", "知识库目录已存在");
         }
         try {
             KnowledgeBase base = knowledgeBaseRepository.saveAndFlush(
                     KnowledgeBase.create(request.category(), request.description(), request.usedBy())
+            );
+            auditLogService.record(
+                    authentication.getName(),
+                    "KNOWLEDGE_BASE_CREATE",
+                    "KNOWLEDGE_BASE",
+                    base.getId(),
+                    "创建知识库 " + base.getCategory()
             );
             return ResponseEntity.created(URI.create("/api/admin/knowledge-bases/" + base.getId()))
                     .body(toKnowledgeBaseResponse(base));
@@ -102,7 +116,11 @@ public class AdminKnowledgeController {
     @PatchMapping("/knowledge-bases/{baseId}")
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
-    public ResponseEntity<?> updateKnowledgeBase(@PathVariable String baseId, @Valid @RequestBody UpdateKnowledgeBaseRequest request) {
+    public ResponseEntity<?> updateKnowledgeBase(
+            Authentication authentication,
+            @PathVariable String baseId,
+            @Valid @RequestBody UpdateKnowledgeBaseRequest request
+    ) {
         KnowledgeBase base = knowledgeBaseRepository.findById(baseId).orElse(null);
         if (base == null) {
             return notFound("KNOWLEDGE_BASE_NOT_FOUND", "知识库目录不存在");
@@ -114,7 +132,15 @@ public class AdminKnowledgeController {
         }
         try {
             base.update(request.category(), request.description(), request.usedBy(), request.active());
-            return ResponseEntity.ok(toKnowledgeBaseResponse(knowledgeBaseRepository.saveAndFlush(base)));
+            base = knowledgeBaseRepository.saveAndFlush(base);
+            auditLogService.record(
+                    authentication.getName(),
+                    "KNOWLEDGE_BASE_UPDATE",
+                    "KNOWLEDGE_BASE",
+                    base.getId(),
+                    "更新知识库 " + base.getCategory() + "，状态：" + (base.isActive() ? "启用" : "停用")
+            );
+            return ResponseEntity.ok(toKnowledgeBaseResponse(base));
         } catch (DataIntegrityViolationException exception) {
             return conflict("KNOWLEDGE_BASE_EXISTS", "知识库目录已存在");
         }
@@ -123,7 +149,7 @@ public class AdminKnowledgeController {
     @DeleteMapping("/knowledge-bases/{baseId}")
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
-    public ResponseEntity<?> deleteKnowledgeBase(@PathVariable String baseId) {
+    public ResponseEntity<?> deleteKnowledgeBase(Authentication authentication, @PathVariable String baseId) {
         KnowledgeBase base = knowledgeBaseRepository.findById(baseId).orElse(null);
         if (base == null) {
             return notFound("KNOWLEDGE_BASE_NOT_FOUND", "知识库目录不存在");
@@ -133,6 +159,13 @@ public class AdminKnowledgeController {
         }
         expertKnowledgeRouteRepository.deleteByCategory(base.getCategory());
         knowledgeBaseRepository.delete(base);
+        auditLogService.record(
+                authentication.getName(),
+                "KNOWLEDGE_BASE_DELETE",
+                "KNOWLEDGE_BASE",
+                baseId,
+                "删除知识库 " + base.getCategory()
+        );
         return ResponseEntity.noContent().build();
     }
 
@@ -148,7 +181,10 @@ public class AdminKnowledgeController {
     @PostMapping("/knowledge-assets")
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
-    public ResponseEntity<?> createKnowledgeAsset(@Valid @RequestBody KnowledgeAssetRequest request) {
+    public ResponseEntity<?> createKnowledgeAsset(
+            Authentication authentication,
+            @Valid @RequestBody KnowledgeAssetRequest request
+    ) {
         KnowledgeBase base = knowledgeBaseRepository.findByCategory(request.category().trim()).orElse(null);
         if (base == null) {
             return badRequest("KNOWLEDGE_BASE_NOT_FOUND", "知识库目录不存在");
@@ -164,6 +200,13 @@ public class AdminKnowledgeController {
         );
         asset.setEnabled(request.enabled());
         asset = knowledgeAssetRepository.saveAndFlush(asset);
+        auditLogService.record(
+                authentication.getName(),
+                "KNOWLEDGE_ASSET_CREATE",
+                "KNOWLEDGE_ASSET",
+                asset.getId(),
+                "创建知识资料 " + asset.getName() + "，知识库：" + base.getCategory()
+        );
         return ResponseEntity.created(URI.create("/api/admin/knowledge-assets/" + asset.getId()))
                 .body(toKnowledgeAssetResponse(asset, true));
     }
@@ -172,6 +215,7 @@ public class AdminKnowledgeController {
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> uploadKnowledgeAsset(
+            Authentication authentication,
             @RequestParam String category,
             @RequestParam String preview,
             @RequestParam(required = false) String contentText,
@@ -219,6 +263,14 @@ public class AdminKnowledgeController {
                     stored.sha256()
             );
             asset = knowledgeAssetRepository.saveAndFlush(asset);
+            auditLogService.record(
+                    authentication.getName(),
+                    "KNOWLEDGE_ASSET_UPLOAD",
+                    "KNOWLEDGE_ASSET",
+                    asset.getId(),
+                    "上传知识资料文件 " + stored.originalName() + "，知识库：" + base.getCategory()
+                            + "，大小：" + stored.size() + " 字节"
+            );
             return ResponseEntity.created(URI.create("/api/knowledge/knowledge-assets/" + asset.getId()))
                     .body(toKnowledgeAssetResponse(asset, true));
         } catch (RuntimeException exception) {
@@ -231,6 +283,7 @@ public class AdminKnowledgeController {
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
     public ResponseEntity<?> attachKnowledgeAssetFile(
+            Authentication authentication,
             @PathVariable String assetId,
             @RequestParam MultipartFile file
     ) {
@@ -248,6 +301,7 @@ public class AdminKnowledgeController {
                     .body(new ErrorResponse("KNOWLEDGE_FILE_STORE_FAILED", "知识资料文件保存失败"));
         }
         String previousStorageKey = asset.getStorageKey();
+        boolean replacingFile = asset.hasFile();
         try {
             asset.attachFile(
                     stored.storageKey(),
@@ -258,6 +312,14 @@ public class AdminKnowledgeController {
             );
             asset = knowledgeAssetRepository.saveAndFlush(asset);
             fileStorageService.delete(previousStorageKey);
+            auditLogService.record(
+                    authentication.getName(),
+                    replacingFile ? "KNOWLEDGE_ASSET_FILE_REPLACE" : "KNOWLEDGE_ASSET_FILE_ATTACH",
+                    "KNOWLEDGE_ASSET",
+                    asset.getId(),
+                    (replacingFile ? "替换" : "补充") + "知识资料文件 " + stored.originalName()
+                            + "，资料：" + asset.getName() + "，大小：" + stored.size() + " 字节"
+            );
             return ResponseEntity.ok(toKnowledgeAssetResponse(asset, true));
         } catch (RuntimeException exception) {
             fileStorageService.delete(stored.storageKey());
@@ -290,13 +352,24 @@ public class AdminKnowledgeController {
                 .header("X-Content-Type-Options", "nosniff")
                 .contentType(MediaType.parseMediaType(contentType));
         if (asset.getFileSizeBytes() != null) response.contentLength(asset.getFileSizeBytes());
+        auditLogService.record(
+                authentication.getName(),
+                "KNOWLEDGE_ASSET_DOWNLOAD",
+                "KNOWLEDGE_ASSET",
+                asset.getId(),
+                "下载知识资料文件 " + fileName + "，资料：" + asset.getName()
+        );
         return response.body(resource);
     }
 
     @PatchMapping("/knowledge-assets/{assetId}")
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
-    public ResponseEntity<?> updateKnowledgeAsset(@PathVariable String assetId, @Valid @RequestBody UpdateKnowledgeAssetRequest request) {
+    public ResponseEntity<?> updateKnowledgeAsset(
+            Authentication authentication,
+            @PathVariable String assetId,
+            @Valid @RequestBody UpdateKnowledgeAssetRequest request
+    ) {
         KnowledgeAsset asset = knowledgeAssetRepository.findById(assetId).orElse(null);
         if (asset == null) {
             return notFound("KNOWLEDGE_ASSET_NOT_FOUND", "知识库资料不存在");
@@ -309,13 +382,21 @@ public class AdminKnowledgeController {
                 request.contentText(),
                 request.enabled()
         );
-        return ResponseEntity.ok(toKnowledgeAssetResponse(knowledgeAssetRepository.saveAndFlush(asset), true));
+        asset = knowledgeAssetRepository.saveAndFlush(asset);
+        auditLogService.record(
+                authentication.getName(),
+                "KNOWLEDGE_ASSET_UPDATE",
+                "KNOWLEDGE_ASSET",
+                asset.getId(),
+                "更新知识资料 " + asset.getName() + "，状态：" + (asset.isEnabled() ? "启用" : "停用")
+        );
+        return ResponseEntity.ok(toKnowledgeAssetResponse(asset, true));
     }
 
     @DeleteMapping("/knowledge-assets/{assetId}")
     @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
     @Transactional
-    public ResponseEntity<?> deleteKnowledgeAsset(@PathVariable String assetId) {
+    public ResponseEntity<?> deleteKnowledgeAsset(Authentication authentication, @PathVariable String assetId) {
         KnowledgeAsset asset = knowledgeAssetRepository.findById(assetId).orElse(null);
         if (asset == null) {
             return notFound("KNOWLEDGE_ASSET_NOT_FOUND", "知识库资料不存在");
@@ -324,6 +405,13 @@ public class AdminKnowledgeController {
         knowledgeAssetRepository.delete(asset);
         knowledgeAssetRepository.flush();
         fileStorageService.delete(storageKey);
+        auditLogService.record(
+                authentication.getName(),
+                "KNOWLEDGE_ASSET_DELETE",
+                "KNOWLEDGE_ASSET",
+                assetId,
+                "删除知识资料 " + asset.getName()
+        );
         return ResponseEntity.noContent().build();
     }
 

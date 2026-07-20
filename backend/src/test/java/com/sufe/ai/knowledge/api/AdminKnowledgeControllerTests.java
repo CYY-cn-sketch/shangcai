@@ -9,6 +9,7 @@ import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.audit.repository.AuditLogRepository;
 import com.sufe.ai.knowledge.domain.ExpertProfile;
 import com.sufe.ai.knowledge.domain.KnowledgeAsset;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
@@ -71,6 +72,9 @@ class AdminKnowledgeControllerTests {
     private ExpertProfileRepository expertProfileRepository;
 
     @Autowired
+    private AuditLogRepository auditLogRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @BeforeEach
@@ -107,6 +111,21 @@ class AdminKnowledgeControllerTests {
                 .getResponse()
                 .getContentAsString();
         String baseId = objectMapper.readTree(baseJson).path("id").asText();
+
+        mockMvc.perform(patch("/api/admin/knowledge-bases/{baseId}", baseId)
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "行业调研",
+                                  "description": "更新后的知识库说明",
+                                  "usedBy": "项目定位、市场判断",
+                                  "active": true
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(true));
 
         String assetJson = mockMvc.perform(post("/api/admin/knowledge-assets")
                         .with(csrf())
@@ -171,6 +190,25 @@ class AdminKnowledgeControllerTests {
 
         assertThat(knowledgeBaseRepository.findById(baseId)).isEmpty();
         assertThat(knowledgeAssetRepository.findById(assetId)).isEmpty();
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(baseId) || log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactlyInAnyOrder(
+                        "KNOWLEDGE_BASE_CREATE",
+                        "KNOWLEDGE_BASE_UPDATE",
+                        "KNOWLEDGE_ASSET_CREATE",
+                        "KNOWLEDGE_ASSET_UPDATE",
+                        "KNOWLEDGE_ASSET_DELETE",
+                        "KNOWLEDGE_BASE_DELETE"
+                );
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(baseId) || log.getResourceId().equals(assetId))
+                .allSatisfy(log -> {
+                    assertThat(log.getActorAccount()).isEqualTo("knowledge-admin@test.local");
+                    assertThat(log.getSummary())
+                            .doesNotContain("不能作为程序执行")
+                            .doesNotContain("# 已更新");
+                });
     }
 
     @Test
@@ -334,6 +372,62 @@ class AdminKnowledgeControllerTests {
                         .contentType("application/json")
                         .content("{}"))
                 .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/knowledge/knowledge-bases")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "Student forbidden base",
+                                  "description": "Must not be created",
+                                  "usedBy": "Student"
+                                }
+                                """))
+                .andExpect(status().isForbidden());
+
+        MockMultipartFile forbiddenFile = new MockMultipartFile(
+                "file", "student.txt", "text/plain", "must not upload".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/files")
+                        .file(forbiddenFile)
+                        .param("category", base.getCategory())
+                        .param("preview", "Forbidden upload")
+                        .param("uploadedBy", "Student")
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(patch("/api/knowledge/knowledge-assets/{assetId}", asset.getId())
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "name": "student-change.md",
+                                  "sizeLabel": "1 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "Forbidden change",
+                                  "contentText": "Forbidden content",
+                                  "enabled": false
+                                }
+                                """))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(delete("/api/knowledge/knowledge-assets/{assetId}", asset.getId())
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(delete("/api/knowledge/knowledge-bases/{baseId}", base.getId())
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        assertThat(knowledgeBaseRepository.findByCategory("Student forbidden base")).isEmpty();
+        assertThat(knowledgeAssetRepository.findById(asset.getId())).isPresent();
+        assertThat(auditLogRepository.findAll())
+                .noneSatisfy(log -> assertThat(log.getActorAccount()).isEqualTo("knowledge-student@test.local"));
     }
 
     @Test
@@ -414,6 +508,14 @@ class AdminKnowledgeControllerTests {
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.category").value("Teacher created base"));
+
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getActorAccount().equals("knowledge-teacher@test.local"))
+                .extracting("action")
+                .contains("KNOWLEDGE_ASSET_CREATE", "KNOWLEDGE_BASE_CREATE");
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getActorAccount().equals("knowledge-teacher@test.local"))
+                .allSatisfy(log -> assertThat(log.getActorRole()).isEqualTo("TEACHER"));
     }
 
     @Test
@@ -463,6 +565,67 @@ class AdminKnowledgeControllerTests {
                         .cookie(sessionCookie))
                 .andExpect(status().isNoContent());
         assertThat(knowledgeAssetRepository.findById(assetId)).isEmpty();
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactlyInAnyOrder(
+                        "KNOWLEDGE_ASSET_UPLOAD",
+                        "KNOWLEDGE_ASSET_DOWNLOAD",
+                        "KNOWLEDGE_ASSET_DELETE"
+                );
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .allSatisfy(log -> assertThat(log.getSummary()).doesNotContain("verified knowledge file"));
+    }
+
+    @Test
+    void recordsFileAttachmentAndReplacementWithoutFileContents() throws Exception {
+        KnowledgeBase base = knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Attach resources",
+                "Metadata-first assets",
+                "Course generation"
+        ));
+        KnowledgeAsset asset = knowledgeAssetRepository.save(KnowledgeAsset.create(
+                base.getId(),
+                "attachment-target.txt",
+                "0 B",
+                "TXT",
+                "Attachment target",
+                "PRIVATE_METADATA_TEXT_DO_NOT_AUDIT",
+                "Knowledge administrator"
+        ));
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+
+        MockMultipartFile firstFile = new MockMultipartFile(
+                "file", "first.txt", "text/plain", "PRIVATE_FIRST_FILE_BODY".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/{assetId}/file", asset.getId())
+                        .file(firstFile)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.originalName").value("first.txt"));
+
+        MockMultipartFile replacementFile = new MockMultipartFile(
+                "file", "replacement.txt", "text/plain", "PRIVATE_REPLACEMENT_FILE_BODY".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/{assetId}/file", asset.getId())
+                        .file(replacementFile)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.originalName").value("replacement.txt"));
+
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(asset.getId()))
+                .extracting("action")
+                .containsExactlyInAnyOrder("KNOWLEDGE_ASSET_FILE_ATTACH", "KNOWLEDGE_ASSET_FILE_REPLACE");
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(asset.getId()))
+                .allSatisfy(log -> assertThat(log.getSummary())
+                        .doesNotContain("PRIVATE_METADATA_TEXT_DO_NOT_AUDIT")
+                        .doesNotContain("PRIVATE_FIRST_FILE_BODY")
+                        .doesNotContain("PRIVATE_REPLACEMENT_FILE_BODY"));
     }
 
     @Test
