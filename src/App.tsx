@@ -139,6 +139,12 @@ import {
   type RemoteStudentConversation,
   type RemoteStudentIdea,
 } from "./api/studentWorkspace";
+import {
+  appendPositioningHandoffPrompt,
+  createBrainstormArtifactContent,
+  findLatestBrainstormHandoff,
+  readArtifactBlocks,
+} from "./expertHandoff";
 import "./App.css";
 
 type Role = "student" | "teacher" | "admin";
@@ -1562,18 +1568,7 @@ function mapRemoteIdea(idea: RemoteStudentIdea): Idea {
 }
 
 function normalizeRemoteBlocks(value: unknown): ResultBlock[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const blocks = value.filter(
-    (item): item is ResultBlock =>
-      Boolean(
-        item &&
-          typeof item === "object" &&
-          typeof (item as ResultBlock).title === "string" &&
-          Array.isArray((item as ResultBlock).items) &&
-          (item as ResultBlock).items.every((entry) => typeof entry === "string"),
-      ),
-  );
-  return blocks.length ? blocks : undefined;
+  return readArtifactBlocks(value);
 }
 
 function mapRemoteMessage(message: RemoteConversationMessage): ChatMessage {
@@ -2396,7 +2391,11 @@ function App() {
           setModel(isModelMode(activeConversation.modelMode) ? activeConversation.modelMode : "Auto");
           setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection));
         }
-        setPrompt(getScenarioPrompt(activeConversation?.selectedExpertId || "pitch", nextActiveIdea));
+        const restoredExpertId = activeConversation?.selectedExpertId || "pitch";
+        setPrompt(appendPositioningHandoffPrompt(
+          getScenarioPrompt(restoredExpertId, nextActiveIdea),
+          restoredExpertId === "positioning" ? findLatestBrainstormHandoff(remoteArtifacts, nextActiveIdea.id) : undefined,
+        ));
         setStudentWorkspaceAccount(account);
       } catch (error) {
         if (!active) return;
@@ -2585,6 +2584,27 @@ function App() {
     block: blockPermission,
   };
 
+  function getBrainstormHandoffForIdea(idea: Idea) {
+    const persisted = findLatestBrainstormHandoff(artifactRecords, idea.id);
+    const latestMessage = messages.findLast(
+      (message) => message.ideaId === idea.id && message.artifactType === "BRAINSTORM" && Boolean(message.blocks),
+    );
+    if (!latestMessage?.blocks || latestMessage.id === persisted?.sourceMessageId) return persisted;
+    return createBrainstormArtifactContent({
+      sourceMessageId: latestMessage.id,
+      ideaId: idea.id,
+      projectTitle: idea.title,
+      projectDescription: idea.description,
+      sourceSummary: latestMessage.content,
+      blocks: latestMessage.blocks,
+    }).handoff;
+  }
+
+  function getPreparedScenarioPrompt(expertId: ExpertId, idea: Idea) {
+    const handoff = expertId === "positioning" ? getBrainstormHandoffForIdea(idea) : undefined;
+    return appendPositioningHandoffPrompt(getScenarioPrompt(expertId, idea), handoff);
+  }
+
   function applyConversationSettings(ideaId: string) {
     const conversation = studentConversations.find((item) => item.ideaId === ideaId);
     if (!conversation) {
@@ -2631,13 +2651,23 @@ function App() {
   async function saveMessageArtifact(message: ChatMessage) {
     if (!isArtifactType(message.artifactType) || !message.blocks) return null;
     const idea = ideas.find((item) => item.id === message.ideaId) || activeIdea;
+    const content = message.artifactType === "BRAINSTORM"
+      ? createBrainstormArtifactContent({
+          sourceMessageId: message.id,
+          ideaId: message.ideaId,
+          projectTitle: idea.title,
+          projectDescription: idea.description,
+          sourceSummary: message.content,
+          blocks: message.blocks,
+        })
+      : message.blocks;
     const saved = await saveStudentArtifact({
       ideaId: message.ideaId,
       sourceMessageId: message.id,
       artifactType: message.artifactType,
       title: `${idea.title} - ${artifactLabels[message.artifactType]}`,
       summary: message.content,
-      content: message.blocks,
+      content,
     });
     setArtifactRecords((current) => {
       const exists = current.some((item) => item.id === saved.id || item.sourceMessageId === saved.sourceMessageId);
@@ -2653,7 +2683,7 @@ function App() {
     if (!idea) return;
     setActiveIdeaId(ideaId);
     const expertId = applyConversationSettings(ideaId);
-    setPrompt(getScenarioPrompt(expertId, idea));
+    setPrompt(getPreparedScenarioPrompt(expertId, idea));
   }
 
   async function handleCreateIdea() {
@@ -3564,10 +3594,17 @@ function App() {
   }
 
   function handleSelectExpert(expert: Expert) {
+    const handoff = expert.id === "positioning" ? getBrainstormHandoffForIdea(activeIdea) : undefined;
     setSelectedExpertId(expert.id);
     setSelectedSkillId(expert.skills[0].id);
     setStudentView("workspace");
-    setPrompt(getScenarioPrompt(expert.id, activeIdea));
+    setPrompt(appendPositioningHandoffPrompt(getScenarioPrompt(expert.id, activeIdea), handoff));
+    if (handoff) {
+      setSystemNotice({
+        title: "已带入头脑风暴成果",
+        message: "项目定位专家已收到同一创意空间中最新的结构化交接。该内容仍标记为待学生确认，专家会先核对再收敛定位。",
+      });
+    }
   }
 
   if (!authReady) return <AuthLoadingView />;
