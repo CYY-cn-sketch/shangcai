@@ -35,12 +35,14 @@ test("管理员可按个人和小组查看真实 Token 用量", async ({ page },
 
   await expect(page.locator(".admin-console-layout")).toBeVisible();
   await page.getByRole("button", { name: "AI 用量统计" }).click();
-  await expect(page.getByRole("heading", { name: "AI Token 用量" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI 与生成服务用量" })).toBeVisible();
   if (testInfo.project.name === "desktop-chromium") {
     const navigationHeight = await page.locator(".admin-console-side").evaluate((element) => element.getBoundingClientRect().height);
     expect(navigationHeight).toBeLessThanOrEqual(90);
   }
-  await expect(page.getByText("暂无真实 Token 用量")).toBeVisible();
+  await expect(page.getByLabel("供应商调用汇总")).toContainText("DeepSeek 对话");
+  await expect(page.getByLabel("供应商调用汇总")).toContainText("乐享 PPT");
+  await expect(page.getByLabel("供应商调用汇总")).toContainText("WorkBuddy 视频");
   await expect(page.getByLabel("统计周期")).toHaveValue("LAST_30_DAYS");
 
   await page.getByRole("button", { name: "按小组" }).click();
@@ -49,12 +51,27 @@ test("管理员可按个人和小组查看真实 Token 用量", async ({ page },
   await expect(page.getByLabel("统计周期")).toHaveValue("LAST_7_DAYS");
   const groupRows = page.locator(".ai-usage-groups-table article.table-row");
   await expect.poll(async () => groupRows.count()).toBeGreaterThan(0);
-  await expect(groupRows.nth(0)).toContainText("第 1 组");
-  await expect(groupRows.nth(1)).toContainText("第 2 组");
+  await expect(page.locator(".ai-usage-groups-table")).toContainText("第 1 组");
+  await expect(page.locator(".ai-usage-groups-table")).toContainText("第 2 组");
   await expect(page.getByText("尚未创建项目小组")).toHaveCount(0);
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath(`admin-ai-usage-${testInfo.project.name}.png`), fullPage: true });
+
+  const monitorPagePromise = page.context().waitForEvent("page");
+  await page.getByRole("button", { name: "运行监控中心" }).click();
+  const monitorPage = await monitorPagePromise;
+  await monitorPage.waitForLoadState("domcontentloaded");
+  await expect(monitorPage.getByRole("heading", { name: "运行监控中心" })).toBeVisible();
+  await expect(monitorPage.locator("#dataSource")).toContainText("MYSQL / BACKEND");
+  await monitorPage.screenshot({ path: testInfo.outputPath(`admin-live-monitor-${testInfo.project.name}.png`), fullPage: true });
+  await monitorPage.close();
+
+  await page.getByRole("button", { name: "试点运营评估" }).click();
+  await expect(page.getByRole("heading", { name: "试点运营评估", exact: true })).toBeVisible();
+  await expect(page.getByText("系统数据汇总", { exact: true })).toBeVisible();
+  await expect(page.getByText("数据库实时", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath(`admin-pilot-evaluation-${testInfo.project.name}.png`), fullPage: true });
   expect(failures.httpFailures).toEqual([]);
   expect(failures.consoleErrors).toEqual([]);
 });

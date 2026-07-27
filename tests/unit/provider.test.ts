@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { requestDeepSeekExpertReply, requestLexiangPptContext } from "../../src/api/provider";
+import { getDeepSeekChatStatus, requestDeepSeekExpertReply, requestLexiangPptContext } from "../../src/api/provider";
 
 describe("requestDeepSeekExpertReply", () => {
   afterEach(() => {
@@ -82,5 +82,19 @@ describe("requestDeepSeekExpertReply", () => {
     });
     expect(JSON.stringify(fetchMock.mock.calls[1])).not.toContain("appKey");
     expect(JSON.stringify(fetchMock.mock.calls[1])).not.toContain("appSecret");
+  });
+
+  it("reads the persisted request status after a page refresh", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ status: "COMPLETED", assistantMessageId: "ai-001" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getDeepSeekChatStatus("idea-001", "message-001")).resolves.toEqual({
+      status: "COMPLETED",
+      assistantMessageId: "ai-001",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/provider/deepseek/chat-status?ideaId=idea-001&clientMessageId=message-001",
+      { credentials: "include", headers: { Accept: "application/json" } },
+    );
   });
 });

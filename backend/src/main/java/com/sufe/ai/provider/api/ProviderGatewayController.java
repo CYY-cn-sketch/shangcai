@@ -17,6 +17,7 @@ import com.sufe.ai.usage.service.AiUsageService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -26,12 +27,14 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/provider")
@@ -99,7 +102,11 @@ public class ProviderGatewayController {
                         ? List.of()
                         : request.targets().stream().map(target -> new LexiangTarget(target.type(), target.id())).toList()
         ));
-        recordVerifiedUsage(userId, GenerationProvider.LEXIANG, "EXPERT_CHAT", result.verifiedUsage());
+        if (result.verifiedUsage().isPresent()) {
+            recordVerifiedUsage(userId, GenerationProvider.LEXIANG, "PPT_KNOWLEDGE_GENERATION", result.verifiedUsage());
+        } else {
+            recordSuccessfulCall(userId, GenerationProvider.LEXIANG, "PPT_KNOWLEDGE_GENERATION");
+        }
         return ResponseEntity.ok(new LexiangQaResponse(result.content(), result.sessionId(), result.referenceDocs()));
     }
 
@@ -126,14 +133,32 @@ public class ProviderGatewayController {
                     userId,
                     request.ideaId(),
                     request.expertId(),
-                    request.clientMessageId()
+                    request.clientMessageId(),
+                    request.skillName(),
+                    request.artifactType()
             );
             recordVerifiedUsage(userId, GenerationProvider.DEEPSEEK, "EXPERT_CHAT", result.verifiedUsage());
-            return ResponseEntity.ok(new DeepSeekChatResponse(result.content(), result.model()));
+            return ResponseEntity.ok(new DeepSeekChatResponse(result.content(), result.model(), result.assistantMessageId()));
         } catch (DeepSeekClientException exception) {
             return ResponseEntity.status(exception.getResponseStatus())
                     .body(new ErrorResponse(exception.getErrorCode(), exception.getMessage()));
         }
+    }
+
+    @GetMapping("/deepseek/chat-status")
+    public ResponseEntity<DeepSeekChatStatusResponse> getDeepSeekChatStatus(
+            Authentication authentication,
+            @RequestParam @Size(max = 36) String ideaId,
+            @RequestParam @Size(max = 64) String clientMessageId
+    ) {
+        String userId = resolveUserId(authentication);
+        return deepSeekExpertChatService.findRequest(userId, ideaId, clientMessageId)
+                .map(request -> ResponseEntity.ok(new DeepSeekChatStatusResponse(
+                        request.getStatus(),
+                        request.getAssistantMessageId(),
+                        request.getErrorMessage()
+                )))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     private void recordVerifiedUsage(
@@ -162,6 +187,22 @@ public class ProviderGatewayController {
                 );
             }
         });
+    }
+
+    private void recordSuccessfulCall(String userId, GenerationProvider provider, String operation) {
+        try {
+            usageService.recordReportedUsage(new AiUsageService.ReportedUsage(
+                    userId,
+                    provider,
+                    null,
+                    operation,
+                    provider.name().toLowerCase() + "-" + UUID.randomUUID(),
+                    0,
+                    0
+            ));
+        } catch (RuntimeException exception) {
+            LOGGER.error("供应商调用次数落库失败: provider={}, errorType={}", provider, exception.getClass().getSimpleName());
+        }
     }
 
     private String resolveUserId(Authentication authentication) {
@@ -209,11 +250,16 @@ public class ProviderGatewayController {
     public record DeepSeekChatRequest(
             @NotBlank @Size(max = 36) String ideaId,
             @NotBlank @Size(max = 64) String expertId,
-            @NotBlank @Size(max = 64) String clientMessageId
+            @NotBlank @Size(max = 64) String clientMessageId,
+            @Size(max = 100) String skillName,
+            @Pattern(regexp = "BRAINSTORM|POSITIONING|MARKET|BP|PPT|SCRIPT|DEFENSE|MEDIA") String artifactType
     ) {
     }
 
-    public record DeepSeekChatResponse(String content, String model) {
+    public record DeepSeekChatResponse(String content, String model, String assistantMessageId) {
+    }
+
+    public record DeepSeekChatStatusResponse(String status, String assistantMessageId, String errorMessage) {
     }
 
     public record DeepSeekStatusResponse(boolean configured, String flashModel, String proModel) {

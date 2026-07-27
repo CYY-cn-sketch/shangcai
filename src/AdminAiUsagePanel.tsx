@@ -18,6 +18,7 @@ const ranges: Array<{ value: AiUsageRange; label: string }> = [
 ];
 
 const providerLabels: Record<AiUsageProvider, string> = {
+  DEEPSEEK: "DeepSeek",
   LEXIANG: "乐享",
   WORKBUDDY: "WorkBuddy",
 };
@@ -84,8 +85,8 @@ export function AdminAiUsagePanel() {
       <section className="admin-resource-section ai-usage-section" aria-labelledby="ai-usage-title">
         <div className="ai-usage-toolbar">
           <div>
-            <h4 id="ai-usage-title">AI Token 用量</h4>
-            <p>仅统计供应商返回的可核验 Token，不使用字符数估算，也不展示账号权限调整记录。</p>
+            <h4 id="ai-usage-title">AI 与生成服务用量</h4>
+            <p>Token 仅采用供应商返回值；乐享 PPT 和 WorkBuddy 视频按真实请求任务计数，不使用前端点击或字符数估算。</p>
           </div>
           <div className="ai-usage-controls">
             <div className="ai-usage-segmented" role="group" aria-label="统计维度">
@@ -145,6 +146,22 @@ export function AdminAiUsagePanel() {
           <div>
             <dt>涉及小组</dt>
             <dd>{formatNumber(summary?.activeGroupCount ?? 0)}</dd>
+          </div>
+        </dl>
+
+        <dl className="provider-usage-summary" aria-label="供应商调用汇总">
+          <div>
+            <dt>DeepSeek 对话</dt>
+            <dd>{formatNumber(summary?.deepSeekCalls ?? 0)} 次</dd>
+          </div>
+          <div>
+            <dt>乐享 PPT</dt>
+            <dd>{formatNumber(summary?.lexiangPptCalls ?? 0)} 次</dd>
+          </div>
+          <div>
+            <dt>WorkBuddy 视频</dt>
+            <dd>{formatNumber(summary?.workBuddyVideoJobs ?? 0)} 个任务</dd>
+            <small>已完成 {formatNumber(summary?.workBuddyVideoCompleted ?? 0)} 个</small>
           </div>
         </dl>
 

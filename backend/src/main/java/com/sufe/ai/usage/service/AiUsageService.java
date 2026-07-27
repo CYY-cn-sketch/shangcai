@@ -7,6 +7,10 @@ import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.generation.domain.GenerationProvider;
+import com.sufe.ai.generation.domain.ArtifactType;
+import com.sufe.ai.generation.domain.GenerationJob;
+import com.sufe.ai.generation.domain.GenerationJobStatus;
+import com.sufe.ai.generation.repository.GenerationJobRepository;
 import com.sufe.ai.usage.domain.AiUsageRecord;
 import com.sufe.ai.usage.repository.AiUsageRecordRepository;
 import org.springframework.stereotype.Service;
@@ -34,17 +38,20 @@ public class AiUsageService {
     private final UserAccountRepository userAccountRepository;
     private final GroupMembershipRepository membershipRepository;
     private final ProjectGroupRepository groupRepository;
+    private final GenerationJobRepository generationJobRepository;
 
     public AiUsageService(
             AiUsageRecordRepository usageRepository,
             UserAccountRepository userAccountRepository,
             GroupMembershipRepository membershipRepository,
-            ProjectGroupRepository groupRepository
+            ProjectGroupRepository groupRepository,
+            GenerationJobRepository generationJobRepository
     ) {
         this.usageRepository = usageRepository;
         this.userAccountRepository = userAccountRepository;
         this.membershipRepository = membershipRepository;
         this.groupRepository = groupRepository;
+        this.generationJobRepository = generationJobRepository;
     }
 
     public AiUsageRecord recordReportedUsage(ReportedUsage command) {
@@ -96,10 +103,14 @@ public class AiUsageService {
         );
         long inputTokens = 0;
         long outputTokens = 0;
+        long deepSeekCalls = 0;
+        long lexiangPptCalls = 0;
 
         for (AiUsageRecord record : records) {
             inputTokens += record.getInputTokens();
             outputTokens += record.getOutputTokens();
+            if (record.getProvider() == GenerationProvider.DEEPSEEK) deepSeekCalls++;
+            if (record.getProvider() == GenerationProvider.LEXIANG) lexiangPptCalls++;
             userTotals.computeIfAbsent(record.getUserId(), ignored -> UsageAccumulator.forUser(record)).add(record);
             if (record.getGroupId() != null) {
                 groupTotals.computeIfAbsent(record.getGroupId(), ignored -> UsageAccumulator.forGroup(record)).add(record);
@@ -117,12 +128,37 @@ public class AiUsageService {
                         .thenComparing(GroupUsage::groupLabel))
                 .toList();
         long activeGroupCount = groups.stream().filter(group -> group.callCount() > 0).count();
+        List<GenerationJob> generationJobs = generationJobRepository.findAll().stream()
+                .filter(job -> periodStart == null || !job.getCreatedAt().isBefore(periodStart))
+                .toList();
+        long lexiangGenerationJobs = generationJobs.stream()
+                .filter(job -> job.getProvider() == GenerationProvider.LEXIANG && job.getArtifactType() == ArtifactType.PPT)
+                .count();
+        long workBuddyVideoJobs = generationJobs.stream()
+                .filter(job -> job.getProvider() == GenerationProvider.WORKBUDDY && job.getArtifactType() == ArtifactType.VIDEO)
+                .count();
+        long workBuddyVideoCompleted = generationJobs.stream()
+                .filter(job -> job.getProvider() == GenerationProvider.WORKBUDDY
+                        && job.getArtifactType() == ArtifactType.VIDEO
+                        && job.getStatus() == GenerationJobStatus.SUCCEEDED)
+                .count();
 
         return new UsageReport(
                 range,
                 periodStart,
                 generatedAt,
-                new UsageSummary(records.size(), inputTokens, outputTokens, inputTokens + outputTokens, users.size(), activeGroupCount),
+                new UsageSummary(
+                        records.size(),
+                        inputTokens,
+                        outputTokens,
+                        inputTokens + outputTokens,
+                        users.size(),
+                        activeGroupCount,
+                        deepSeekCalls,
+                        lexiangPptCalls + lexiangGenerationJobs,
+                        workBuddyVideoJobs,
+                        workBuddyVideoCompleted
+                ),
                 users,
                 groups
         );
@@ -196,7 +232,11 @@ public class AiUsageService {
             long outputTokens,
             long totalTokens,
             long activeUserCount,
-            long activeGroupCount
+            long activeGroupCount,
+            long deepSeekCalls,
+            long lexiangPptCalls,
+            long workBuddyVideoJobs,
+            long workBuddyVideoCompleted
     ) {
     }
 

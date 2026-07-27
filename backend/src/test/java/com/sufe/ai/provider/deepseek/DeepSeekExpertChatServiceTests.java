@@ -31,6 +31,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -47,6 +48,7 @@ class DeepSeekExpertChatServiceTests {
     private ExpertKnowledgeRouteRepository routeRepository;
     private KnowledgeBaseRepository knowledgeBaseRepository;
     private KnowledgeAssetRepository knowledgeAssetRepository;
+    private AiChatRequestRepository chatRequestRepository;
     private DeepSeekExpertChatService service;
 
     @BeforeEach
@@ -61,6 +63,11 @@ class DeepSeekExpertChatServiceTests {
         routeRepository = mock(ExpertKnowledgeRouteRepository.class);
         knowledgeBaseRepository = mock(KnowledgeBaseRepository.class);
         knowledgeAssetRepository = mock(KnowledgeAssetRepository.class);
+        chatRequestRepository = mock(AiChatRequestRepository.class);
+        when(chatRequestRepository.findByUserIdAndClientMessageId(any(), any())).thenReturn(Optional.empty());
+        when(chatRequestRepository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(chatRequestRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(messageRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         service = new DeepSeekExpertChatService(
                 new DeepSeekProperties(
                         true,
@@ -82,6 +89,7 @@ class DeepSeekExpertChatServiceTests {
                 routeRepository,
                 knowledgeBaseRepository,
                 knowledgeAssetRepository,
+                chatRequestRepository,
                 new ObjectMapper()
         );
     }

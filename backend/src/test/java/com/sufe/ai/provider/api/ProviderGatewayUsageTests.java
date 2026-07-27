@@ -97,7 +97,7 @@ class ProviderGatewayUsageTests {
                                 "lexiang-request-001", "lexiang-confirmed-model", 200, 80
                         ))
                 ));
-        when(deepSeekExpertChatService.chat(anyString(), anyString(), anyString(), anyString()))
+        when(deepSeekExpertChatService.chat(anyString(), anyString(), anyString(), anyString(), any(), any()))
                 .thenReturn(new DeepSeekChatResult(
                         "专家分析内容",
                         "deepseek-v4-flash",
@@ -157,7 +157,7 @@ class ProviderGatewayUsageTests {
     }
 
     @Test
-    void doesNotPersistUsageWhenProviderDoesNotReportIt() throws Exception {
+    void persistsSuccessfulSupplierCallWithZeroTokensWhenProviderDoesNotReportUsage() throws Exception {
         when(lexiangAiQaClient.ask(any()))
                 .thenReturn(new LexiangQaResult("生成内容", "session-without-usage", List.of()));
 
@@ -176,7 +176,14 @@ class ProviderGatewayUsageTests {
                                 """))
                 .andExpect(status().isOk());
 
-        assertThat(usageRepository.count()).isZero();
+        assertThat(usageRepository.findAllByOrderByRecordedAtDesc())
+                .singleElement()
+                .satisfies(record -> {
+                    assertThat(record.getProvider()).isEqualTo(GenerationProvider.LEXIANG);
+                    assertThat(record.getOperation()).isEqualTo("PPT_KNOWLEDGE_GENERATION");
+                    assertThat(record.getInputTokens()).isZero();
+                    assertThat(record.getOutputTokens()).isZero();
+                });
     }
 
     private Cookie login() throws Exception {

@@ -27,11 +27,20 @@ export type DeepSeekExpertReplyInput = {
   ideaId: string;
   expertId: string;
   clientMessageId: string;
+  skillName?: string;
+  artifactType?: string;
 };
 
 export type DeepSeekExpertReply = {
   content: string;
   model?: string;
+  assistantMessageId?: string;
+};
+
+export type DeepSeekChatStatus = {
+  status: "RUNNING" | "COMPLETED" | "FAILED";
+  assistantMessageId?: string;
+  errorMessage?: string;
 };
 
 type CsrfResponse = {
@@ -110,5 +119,20 @@ export async function requestDeepSeekExpertReply(
   if (!result.content?.trim()) {
     throw new Error("AI 服务未返回可用内容，请稍后重试");
   }
-  return { content: result.content.trim(), model: result.model };
+  return {
+    content: result.content.trim(),
+    model: result.model,
+    ...(result.assistantMessageId ? { assistantMessageId: result.assistantMessageId } : {}),
+  };
+}
+
+export async function getDeepSeekChatStatus(ideaId: string, clientMessageId: string) {
+  const params = new URLSearchParams({ ideaId, clientMessageId });
+  const response = await fetch(`/api/provider/deepseek/chat-status?${params.toString()}`, {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await parseError(response));
+  return (await response.json()) as DeepSeekChatStatus;
 }

@@ -52,6 +52,12 @@ public class ArtifactSubmission {
     @Column(name = "reviewed_at")
     private Instant reviewedAt;
 
+    @Column(name = "ai_diagnosis_json", columnDefinition = "TEXT")
+    private String aiDiagnosisJson;
+
+    @Column(name = "ai_diagnosed_at")
+    private Instant aiDiagnosedAt;
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -92,6 +98,8 @@ public class ArtifactSubmission {
         this.groupName = requireText(groupName, "groupName");
         this.status = SubmissionStatus.PENDING;
         this.teacherComment = null;
+        this.aiDiagnosisJson = null;
+        this.aiDiagnosedAt = null;
         this.reviewerUserId = null;
         this.submittedAt = now;
         this.reviewedAt = null;
@@ -108,6 +116,12 @@ public class ArtifactSubmission {
         this.reviewerUserId = requireText(reviewerUserId, "reviewerUserId");
         this.reviewedAt = Instant.now();
         this.updatedAt = this.reviewedAt;
+    }
+
+    public void recordAiDiagnosis(String diagnosisJson) {
+        this.aiDiagnosisJson = requireText(diagnosisJson, "diagnosisJson");
+        this.aiDiagnosedAt = Instant.now();
+        this.updatedAt = this.aiDiagnosedAt;
     }
 
     public void withdraw() {
@@ -138,5 +152,7 @@ public class ArtifactSubmission {
     public boolean isExcellent() { return excellent; }
     public Instant getSubmittedAt() { return submittedAt; }
     public Instant getReviewedAt() { return reviewedAt; }
+    public String getAiDiagnosisJson() { return aiDiagnosisJson; }
+    public Instant getAiDiagnosedAt() { return aiDiagnosedAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

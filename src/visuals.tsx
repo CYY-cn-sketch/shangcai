@@ -32,7 +32,7 @@ function useDeferredThreeVisuals() {
     let frame = 0;
     const timer = window.setTimeout(() => {
       frame = window.requestAnimationFrame(() => setEnabled(true));
-    }, 2_500);
+    }, 120);
 
     return () => {
       window.clearTimeout(timer);

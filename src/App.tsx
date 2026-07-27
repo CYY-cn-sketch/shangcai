@@ -34,18 +34,21 @@ import {
   createAdminGroup,
   deleteAdminAccount,
   deleteAdminGroup,
+  getAdminOperations,
   listAdminAccounts,
   listAdminGroups,
   updateAdminAccount,
   updateAdminGroup,
   type AdminAccount,
   type AdminGroup,
+  type AdminOperationsReport,
 } from "./api/admin";
 import { AdminAiUsagePanel } from "./AdminAiUsagePanel";
 import { ExpertSkillManager } from "./ExpertSkillManager";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
 import {
   artifactDownloadUrl,
+  diagnoseTeacherSubmission,
   deleteStudentSubmission,
   listStudentArtifacts,
   listStudentSubmissions,
@@ -82,7 +85,7 @@ import {
   type SaveKnowledgeExpertInput,
 } from "./api/knowledge";
 import { listDefensePractices, saveDefensePractice, type RemoteDefensePractice } from "./api/defense";
-import { requestDeepSeekExpertReply, requestLexiangPptContext } from "./api/provider";
+import { getDeepSeekChatStatus, requestDeepSeekExpertReply, requestLexiangPptContext } from "./api/provider";
 import { loadGenerationJob, submitGenerationJob, type GenerationJobStatus } from "./api/generation";
 import { nextVideoGenerationRevision, videoGenerationIdempotencyKey } from "./workBuddyVideoGeneration";
 import {
@@ -152,6 +155,7 @@ import {
   normalizeAnswerMode,
   type AnswerMode,
 } from "./answerModes";
+import { StructuredAiResponse } from "./StructuredAiResponse";
 import "./App.css";
 
 type Role = "student" | "teacher" | "admin";
@@ -186,10 +190,13 @@ type RubricScore = {
   teacherScore: number;
 };
 type DiagnosisResult = {
+  summary?: string;
   problems: string[];
   risks: string[];
   questions: string[];
   tasks: string[];
+  scores?: Array<{ name: string; score: number; reason?: string }>;
+  feedbackDraft?: string;
 };
 type DefenseTurn = { id: string; sender: "student" | "ai"; content: string; createdAt: string };
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
@@ -335,6 +342,7 @@ type ResultBlock = {
 
 type ChatMessage = {
   id: string;
+  clientMessageId?: string;
   ideaId: string;
   sender: "user" | "ai";
   mode?: "文本" | "录音" | "语音" | "文件";
@@ -399,6 +407,7 @@ type Submission = {
   teacherComment?: string;
   sourceMessageId?: string;
   isExcellent?: boolean;
+  aiDiagnosis?: DiagnosisResult;
 };
 
 type DefensePractice = {
@@ -1772,6 +1781,7 @@ function mergeManageableExperts(activeExperts: Expert[], records: CustomExpertRe
 function mapRemoteMessage(message: RemoteConversationMessage): ChatMessage {
   return {
     id: message.id,
+    clientMessageId: message.clientMessageId,
     ideaId: message.ideaId,
     sender: message.sender === "AI" ? "ai" : "user",
     mode:
@@ -1828,6 +1838,7 @@ function mapRemoteSubmission(submission: RemoteSubmission): Submission {
     teacherComment: submission.teacherComment,
     sourceMessageId: submission.sourceMessageId,
     isExcellent: submission.excellent,
+    aiDiagnosis: submission.aiDiagnosis,
   };
 }
 
@@ -1853,65 +1864,17 @@ function matchesTeacherReviewSearch(submission: Submission, search: TeacherRevie
   );
 }
 
-function stableNumber(seed: string, min: number, max: number) {
-  const total = Array.from(seed).reduce((sum, char, index) => sum + char.charCodeAt(0) * (index + 3), 0);
-  return min + (total % (max - min + 1));
-}
-
 function getSubmissionStageIndex(submission: Submission) {
   return artifactStageIndex[submission.artifactType] ?? 0;
 }
 
-function buildRubricScores(submission: Submission): RubricScore[] {
-  const base = submission.isExcellent
-    ? 0.88
-    : submission.status === "approved"
-      ? 0.82
-      : submission.status === "revision"
-        ? 0.68
-        : 0.76;
-  return rubricDimensions.map(([name, description, weight], index) => {
-    const jitter = (stableNumber(`${submission.id}-${name}`, -6, 6) / 100);
-    const ratio = Math.min(0.95, Math.max(0.52, base + jitter - index * 0.006));
-    const aiScore = Math.round(ratio * weight * 10) / 10;
+function buildRubricScores(_submission: Submission, diagnosis?: DiagnosisResult): RubricScore[] {
+  const diagnosisScores = new Map((diagnosis?.scores || []).map((score) => [score.name, score.score]));
+  return rubricDimensions.map(([name, description, weight]) => {
+    const reported = diagnosisScores.get(name);
+    const aiScore = typeof reported === "number" ? Math.min(weight, Math.max(0, Math.round(reported * 10) / 10)) : 0;
     return { name, description, weight, aiScore, teacherScore: aiScore };
   });
-}
-
-function buildDiagnosisResult(submission: Submission): DiagnosisResult {
-  const projectName = submission.groupName || submission.group || "当前项目";
-  const typeLabel = artifactLabels[submission.artifactType];
-  const isBusinessLike = ["BP", "PPT", "SCRIPT", "DEFENSE"].includes(submission.artifactType);
-  const statusHint =
-    submission.status === "revision"
-      ? "本次成果已被退回，说明核心假设还需要补证据。"
-      : submission.status === "approved"
-        ? "本次成果已通过，后续重点是提升说服力和可复用性。"
-        : "本次成果仍在待审核状态，适合先做 AI 预诊断后再人工点评。";
-  return {
-    problems: [
-      `${typeLabel} 已形成基本结构，但“谁付费、为什么现在付费、如何验证”三件事还需要更明确。`,
-      isBusinessLike
-        ? "收入模型和成本结构有初步描述，但客单价、转化率、获客成本仍偏估算。"
-        : "用户痛点和场景描述较清楚，但验证样本、访谈原话和替代方案比较还不够。",
-      `${projectName} 的价值表述容易停留在功能层，建议改成可被教师审核的证据链。`,
-    ],
-    risks: [
-      statusHint,
-      "如果 PPT、BP 和答辩口径不一致，路演时容易被追问市场规模和商业可持续性。",
-      "现有材料对合规、隐私或运营成本的边界说明不足，正式试点前需补一页风险控制。",
-    ],
-    questions: [
-      "如果第一批 100 个真实用户明天就来，最先卡住的是获客、交付还是售后？",
-      "客单价下调 30% 后，项目是否仍成立？哪个成本项最需要重新测算？",
-      "为什么是这个学生团队适合做，而不是已有平台顺手扩展这个功能？",
-    ],
-    tasks: [
-      "补充至少 8-10 条目标用户访谈或问卷证据，标明样本来源和关键结论。",
-      "把收入、成本、转化率、留存四个指标做成一页假设表，并给出验证方式。",
-      "统一 BP、PPT、路演稿中的项目定位句，避免三个材料各讲一套。",
-    ],
-  };
 }
 
 function makeId(prefix: string) {
@@ -2469,6 +2432,7 @@ function App() {
   const [model, setModel] = useState<AnswerMode>("Auto");
   const [prompt, setPrompt] = useState(getScenarioPrompt("pitch", initialIdeas[0]));
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isRecoveringAi, setIsRecoveringAi] = useState(false);
   const [studentView, setStudentView] = useState<StudentViewMode>("workspace");
   const [teacherFilter, setTeacherFilter] = useState<ArtifactType | "ALL">("ALL");
   const [activeSubmissionId, setActiveSubmissionId] = useState("");
@@ -2644,6 +2608,63 @@ function App() {
       active = false;
     };
   }, [auth]);
+
+  useEffect(() => {
+    if (
+      !auth ||
+      auth.role !== "student" ||
+      studentWorkspaceAccount !== auth.account ||
+      !activeIdeaId ||
+      isGenerating
+    ) return undefined;
+    const ideaMessages = messages.filter((message) => message.ideaId === activeIdeaId);
+    const pendingMessage = ideaMessages.at(-1);
+    if (!pendingMessage || pendingMessage.sender !== "user" || !pendingMessage.clientMessageId) return undefined;
+
+    let active = true;
+    let timer = 0;
+    const poll = async () => {
+      if (!active) return;
+      setIsRecoveringAi(true);
+      try {
+        const status = await getDeepSeekChatStatus(activeIdeaId, pendingMessage.clientMessageId || "");
+        if (!active) return;
+        if (!status) {
+          setIsRecoveringAi(false);
+          return;
+        }
+        if (status.status === "FAILED") {
+          setIsRecoveringAi(false);
+          setSystemNotice({
+            title: "上次 AI 回复未完成",
+            message: status.errorMessage || "AI 服务未完成该请求，请重新发送。",
+          });
+          return;
+        }
+        if (status.status === "COMPLETED") {
+          const workspace = await loadStudentWorkspace();
+          if (!active) return;
+          setStudentConversations(workspace.conversations);
+          setMessages(workspace.conversations.flatMap((conversation) => conversation.messages.map(mapRemoteMessage)));
+          setIsRecoveringAi(false);
+          return;
+        }
+        timer = window.setTimeout(poll, 1_500);
+      } catch (error) {
+        if (!active) return;
+        setIsRecoveringAi(false);
+        setSystemNotice({
+          title: "AI 回复恢复失败",
+          message: error instanceof Error ? error.message : "暂时无法读取上次 AI 请求状态。",
+        });
+      }
+    };
+    void poll();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeIdeaId, auth, isGenerating, messages, studentWorkspaceAccount]);
 
   useEffect(() => {
     if (!auth) return undefined;
@@ -2836,7 +2857,7 @@ function App() {
     if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account) return null;
     try {
       const saved = await appendStudentMessage(message.ideaId, {
-        clientMessageId: message.id,
+        clientMessageId: message.clientMessageId || message.id,
         sender: message.sender === "ai" ? "AI" : "USER",
         inputMode: message.mode,
         expertId: message.expertId,
@@ -3357,6 +3378,7 @@ function App() {
           : typedPrompt || getScenarioPrompt(selectedExpert.id, activeIdea);
     const userMessage: ChatMessage = {
       id: clientMessageId,
+      clientMessageId,
       ideaId: activeIdea.id,
       sender: "user",
       mode,
@@ -3400,6 +3422,8 @@ function App() {
         ideaId: activeIdea.id,
         expertId: selectedExpert.id,
         clientMessageId: userMessage.id,
+        skillName: selectedSkill.name,
+        artifactType: shouldOutput ? artifactType : undefined,
       });
       const blocks: ResultBlock[] | undefined = shouldOutput
         ? [
@@ -3423,7 +3447,7 @@ function App() {
           ]
         : undefined;
       const aiMessage: ChatMessage = {
-        id: makeId("M"),
+        id: reply.assistantMessageId || makeId("M"),
         ideaId: activeIdea.id,
         sender: "ai",
         expertId: selectedExpert.id,
@@ -3435,15 +3459,14 @@ function App() {
         createdAt: nowTime(),
       };
       setMessages((current) => [...current, aiMessage]);
-      void persistStudentMessage(aiMessage).then((persisted) => {
-        if (!persisted?.artifactType || !persisted.blocks) return;
-        saveMessageArtifact(persisted).catch((error) => {
+      if (aiMessage.artifactType && aiMessage.blocks) {
+        void saveMessageArtifact(aiMessage).catch((error) => {
           setSystemNotice({
             title: "成果记录保存失败",
             message: error instanceof Error ? error.message : "生成结果已保留，但成果记录暂未写入后端。",
           });
         });
-      });
+      }
       setIdeas((current) =>
         current.map((idea) =>
           idea.id === activeIdea.id ? { ...idea, stage: selectedSkill.stage, updatedAt: aiMessage.createdAt } : idea,
@@ -3937,7 +3960,7 @@ function App() {
             selectedKnowledgeSelection={selectedKnowledgeSelection}
             defensePractices={defensePractices}
             generatedAssets={generatedAssets}
-            isGenerating={isGenerating}
+            isGenerating={isGenerating || isRecoveringAi}
             studentView={studentView}
             studentAvatarId={activeStudentAvatarId}
             permissionAccess={permissionAccess}
@@ -4627,7 +4650,7 @@ function ChatWorkspace(props: {
                       {message.blocks ? (
                         <ResultPanel result={message.blocks} expertId={messageExpert.id} />
                       ) : (
-                        <p>{message.content}</p>
+                        <StructuredAiResponse content={message.content} />
                       )}
                       {artifactType && (
                         <div className="context-actions">
@@ -5218,11 +5241,15 @@ function ResultPanel(props: { result: ResultBlock[]; expertId: ExpertId }) {
         {props.result.map((block) => (
           <article className="result-block" key={block.title}>
             <h4>{block.title}</h4>
-            <ul>
-              {block.items.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
+            {block.items.length === 1 && (block.items[0].length > 220 || /\n|#{1,6}\s|【正式回复】/.test(block.items[0])) ? (
+              <StructuredAiResponse content={block.items[0]} compact />
+            ) : (
+              <ul>
+                {block.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            )}
           </article>
         ))}
       </div>
@@ -6296,11 +6323,15 @@ function StudentSubmissionDetailModal(props: { submission: Submission; generated
               {blocks.map((block) => (
                 <article key={block.title}>
                   <strong>{block.title}</strong>
-                  <ul>
-                    {block.items.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  {block.items.length === 1 && (block.items[0].length > 220 || /\n|#{1,6}\s|【正式回复】/.test(block.items[0])) ? (
+                    <StructuredAiResponse content={block.items[0]} compact />
+                  ) : (
+                    <ul>
+                      {block.items.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
                 </article>
               ))}
             </div>
@@ -6782,6 +6813,97 @@ function getIssuePlaybook(label: string | null) {
   }
 }
 
+type TeacherIssueDetail = {
+  value: string;
+  level: string;
+  trend: string;
+  affectedGroups: string;
+  evidence: string[];
+  guidance: string[];
+  relatedTypes: ArtifactType[];
+  relatedSamples: Array<{ title: string; meta: string; summary: string }>;
+};
+
+const teacherIssueDefinitions: Array<{
+  label: string;
+  keywords: string[];
+  relatedTypes: ArtifactType[];
+  guidance: string[];
+}> = [
+  {
+    label: "商业模式不清",
+    keywords: ["商业模式", "付费", "收入", "成本", "定价", "采购"],
+    relatedTypes: ["BP", "POSITIONING"],
+    guidance: ["要求学生拆清使用者、付费方、受益者和决策链。", "把收入项逐一对应到交付内容与验收指标。"],
+  },
+  {
+    label: "竞品维度不足",
+    keywords: ["竞品", "竞争", "替代方案", "差异化"],
+    relatedTypes: ["MARKET", "POSITIONING", "PPT"],
+    guidance: ["至少比较三类替代方案，并说明比较维度。", "要求差异化结论能支撑渠道、定价或产品取舍。"],
+  },
+  {
+    label: "答辩证据薄弱",
+    keywords: ["证据", "访谈", "数据", "依据", "证明"],
+    relatedTypes: ["DEFENSE", "PPT", "BP"],
+    guidance: ["每个关键结论绑定一项可追溯材料。", "答辩回答采用“结论—证据—指标—风险应对”结构。"],
+  },
+  {
+    label: "用户画像泛化",
+    keywords: ["用户画像", "目标用户", "客群", "第一用户", "使用场景"],
+    relatedTypes: ["BRAINSTORM", "POSITIONING"],
+    guidance: ["用“一类人、一个场景、一个高频任务”收窄首批用户。", "区分购买者、使用者与受益者。"],
+  },
+  {
+    label: "试点指标缺失",
+    keywords: ["试点", "指标", "验收", "里程碑", "验证"],
+    relatedTypes: ["BP", "PPT", "POSITIONING"],
+    guidance: ["补充过程指标、结果指标、数据来源和复盘时间。", "确保 BP、PPT 与实施计划使用同一指标口径。"],
+  },
+];
+
+function buildTeacherIssueDetails(submissions: Submission[]): Record<string, TeacherIssueDetail> {
+  const result: Record<string, TeacherIssueDetail> = {};
+  teacherIssueDefinitions.forEach((definition) => {
+    const matches = submissions.filter((submission) => {
+      const diagnosisText = [
+        submission.aiDiagnosis?.summary,
+        ...(submission.aiDiagnosis?.problems || []),
+        ...(submission.aiDiagnosis?.risks || []),
+        submission.teacherComment,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return diagnosisText && definition.keywords.some((keyword) => diagnosisText.includes(keyword));
+    });
+    if (!matches.length) return;
+    const groups = new Set(matches.map((submission) => submission.groupName || submission.group).filter(Boolean));
+    const affectedStudents = new Set(matches.map((submission) => submission.student).filter(Boolean));
+    const ratio = Math.round((matches.length / Math.max(1, submissions.length)) * 100);
+    result[definition.label] = {
+      value: `${ratio}%`,
+      level: ratio >= 50 ? "高" : ratio >= 25 ? "中" : "低",
+      trend: `当前 ${matches.length} 项成果`,
+      affectedGroups: `${groups.size} 个小组 / ${affectedStudents.size} 名学生`,
+      evidence: matches.slice(0, 5).map((submission) => {
+        const diagnosisEvidence = [
+          ...(submission.aiDiagnosis?.problems || []),
+          ...(submission.aiDiagnosis?.risks || []),
+        ].find((item) => definition.keywords.some((keyword) => item.includes(keyword)));
+        return `${submission.artifactTitle}：${diagnosisEvidence || submission.teacherComment || "已在诊断中标记该问题"}`;
+      }),
+      guidance: definition.guidance,
+      relatedTypes: definition.relatedTypes,
+      relatedSamples: matches.slice(0, 3).map((submission) => ({
+        title: submission.artifactTitle,
+        meta: `${submission.student} / ${submission.groupName || submission.group} / ${artifactLabels[submission.artifactType]}`,
+        summary: submission.teacherComment || submission.aiDiagnosis?.summary || submission.artifactSummary,
+      })),
+    };
+  });
+  return result;
+}
+
 function TeacherView(props: {
   submissions: Submission[];
   allSubmissions: Submission[];
@@ -6873,6 +6995,13 @@ function TeacherView(props: {
   const [confirmedRubricSubmissionIds, setConfirmedRubricSubmissionIds] = useState<string[]>([]);
   const [reviewActionMessage, setReviewActionMessage] = useState<string | null>(null);
   const [rubricDrafts, setRubricDrafts] = useState<Record<string, RubricScore[]>>({});
+  const [diagnosisResults, setDiagnosisResults] = useState<Record<string, DiagnosisResult>>(() =>
+    Object.fromEntries(
+      props.allSubmissions
+        .filter((submission) => submission.aiDiagnosis)
+        .map((submission) => [submission.id, submission.aiDiagnosis as DiagnosisResult]),
+    ),
+  );
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const selectedUpload = props.knowledgeUploads.find((asset) => asset.id === selectedUploadId) || null;
   const knowledgePreviewAsset = knowledgePreviewId ? props.knowledgeUploads.find((asset) => asset.id === knowledgePreviewId) || null : null;
@@ -6890,6 +7019,14 @@ function TeacherView(props: {
     props.knowledgeBaseStates,
     teacherPromptKnowledgeCategories,
   );
+
+  function getDiagnosis(submission: Submission) {
+    return diagnosisResults[submission.id] || submission.aiDiagnosis;
+  }
+
+  function isSubmissionDiagnosed(submission: Submission) {
+    return diagnosedSubmissionIds.includes(submission.id) || Boolean(getDiagnosis(submission));
+  }
 
   const issueDetails: Record<
     string,
@@ -7087,67 +7224,68 @@ function TeacherView(props: {
       ],
     },
   };
-  const issueEntries = Object.entries(issueDetails);
+  void issueDetails;
+  const realIssueDetails = buildTeacherIssueDetails(props.allSubmissions);
+  const issueEntries = Object.entries(realIssueDetails);
   const focusedIssueLabel = selectedIssue || issueEntries[0]?.[0] || null;
-  const activeIssue = focusedIssueLabel ? issueDetails[focusedIssueLabel] : null;
+  const activeIssue = focusedIssueLabel ? realIssueDetails[focusedIssueLabel] : null;
   const activeIssuePlaybook = getIssuePlaybook(focusedIssueLabel);
+  const issueAffectedStudents = new Set(
+    props.allSubmissions
+      .filter((submission) => {
+        const text = [
+          submission.aiDiagnosis?.summary,
+          ...(submission.aiDiagnosis?.problems || []),
+          ...(submission.aiDiagnosis?.risks || []),
+          submission.teacherComment,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return teacherIssueDefinitions.some((definition) => definition.keywords.some((keyword) => text.includes(keyword)));
+      })
+      .map((submission) => submission.student),
+  ).size;
+  const issueEvidenceCount = issueEntries.reduce((sum, [, detail]) => sum + detail.evidence.length, 0);
   const issueOverviewCards: IssueOverviewMetric[] = [
     {
-      value: "5 类",
+      value: `${issueEntries.length} 类`,
       label: "高频共性问题",
-      note: "覆盖定位、BP、PPT、答辩",
+      note: issueEntries.length ? "来自已保存诊断与教师反馈" : "暂无可核验问题数据",
       detailTitle: "高频共性问题分布",
-      summary: "系统从学生提交成果、答辩模拟记录和教师反馈中提取共性卡点，用于判断下一节课要集中讲什么。",
-      items: [
-        "商业模式不清：集中在 BP 和路演 PPT，主要缺少付费方、交付包、验收指标。",
-        "竞品维度不足：集中在市场竞品和项目定位，问题不是竞品少，而是维度不能支撑商业判断。",
-        "答辩证据薄弱：集中在答辩模拟和 PPT，学生容易讲价值但指不出证据。",
-        "用户画像泛化：集中在头脑风暴和项目定位，第一用户不清会影响后续定价、渠道和功能优先级。",
-        "试点指标缺失：集中在 BP 和实施计划，缺少 8 周内可验收的数据口径。",
-      ],
-      action: "建议教师先处理商业模式和答辩证据两个高风险问题，再把用户画像和试点指标作为小组回改任务。",
+      summary: "系统仅从已保存的 AI 诊断和教师反馈中归类问题，不根据演示样例推算。",
+      items: issueEntries.length
+        ? issueEntries.map(([label, detail]) => `${label}：${detail.trend}，涉及 ${detail.affectedGroups}。`)
+        : ["尚未产生 AI 诊断或教师反馈，暂不能形成常见问题统计。"],
+      action: issueEntries.length ? "建议先处理覆盖面最高的问题，并回到对应成果核对证据。" : "请先在审核详情中对真实提交执行 AI 诊断或填写教师反馈。",
     },
     {
-      value: "45",
+      value: `${issueAffectedStudents}`,
       label: "名学生出现过卡点",
-      note: "商业模式和证据链最集中",
+      note: "按当前有证据的成果去重",
       detailTitle: "学生卡点覆盖情况",
-      summary: "45 名学生并非都出现同一问题，而是在不同阶段暴露出类似表达和材料缺口。",
-      items: [
-        "35 名学生在商业模式表述中没有拆清使用者、付费方和受益者。",
-        "31 名学生的竞品分析只写竞品名称，没有形成可比较维度。",
-        "26 名学生在答辩模拟中无法把关键结论指向具体材料。",
-        "22 名学生的第一用户仍写得过宽，影响项目定位和试点设计。",
-      ],
-      action: "建议以小组为单位布置回改，要求每组只改当前最高风险节点，避免所有问题同时改导致效率下降。",
+      summary: "学生人数来自问题命中的成果记录，已按学生姓名去重。",
+      items: issueEntries.length ? issueEntries.map(([label, detail]) => `${label}：${detail.affectedGroups}`) : ["暂无可统计学生。"],
+      action: "建议以小组为单位处理当前最高优先级问题。",
     },
     {
-      value: "18 条",
+      value: `${issueEvidenceCount} 条`,
       label: "可追踪证据",
-      note: "来自阶段成果、答辩和教师反馈",
+      note: "来自 AI 诊断与教师反馈原文",
       detailTitle: "证据来源追踪",
-      summary: "证据主要来自阶段成果文本、答辩问答、教师退回意见和学生修改后的版本对比。",
-      items: [
-        "阶段成果：BP、PPT、定位说明中可直接看到概念混用、指标缺失和证据不足。",
-        "答辩记录：评委追问后，学生回答是否能引用页面、访谈或数据。",
-        "教师反馈：退回修改意见中高频出现的关键词会进入课堂问题统计。",
-        "版本对比：同一成果修改前后是否补齐用户、竞品、商业模式和试点指标。",
-      ],
+      summary: "每条证据均可回到具体成果或教师反馈核对。",
+      items: issueEntries.flatMap(([, detail]) => detail.evidence).slice(0, 8).length
+        ? issueEntries.flatMap(([, detail]) => detail.evidence).slice(0, 8)
+        : ["暂无可追踪证据。"],
       action: "建议教师在审核详情里优先查看“提交材料”和“AI 项目诊断”，用证据定位问题，不只凭印象判断。",
     },
     {
-      value: "15 分钟",
+      value: issueEntries.length ? `${Math.min(20, Math.max(10, issueEntries.length * 5))} 分钟` : "--",
       label: "建议集中讲评",
-      note: "优先处理付费方和试点指标",
+      note: issueEntries.length ? `优先处理 ${issueEntries[0]?.[0]}` : "等待形成问题样本",
       detailTitle: "课堂集中讲评建议",
-      summary: "当前问题适合做短讲评，不建议展开成长课。目标是让学生带着模板回到自己的 BP 和 PPT 里修改。",
-      items: [
-        "前 5 分钟：用一张表讲清付费方、采购理由、交付包、验收指标。",
-        "中间 5 分钟：展示一个优秀组如何把商业模式写成试点包、课程包、学院续费。",
-        "后 3 分钟：要求每组补一条可验证证据，绑定到 PPT 页码或访谈材料。",
-        "最后 2 分钟：明确下一轮提交标准和老师审核重点。",
-      ],
-      action: "建议课堂结束前让每组提交一版“商业模式修订说明”，教师端可直接按 BP 类型筛选审核。",
+      summary: issueEntries.length ? "讲评时长按当前问题类别数量估算，最终由教师安排。" : "尚无问题样本，暂不生成讲评建议。",
+      items: issueEntries.length ? activeIssuePlaybook.questions : ["请先积累真实诊断或教师反馈。"],
+      action: issueEntries.length ? activeIssuePlaybook.teacherMove : "暂无建议。",
     },
   ];
   const selectedIssueMetric = selectedIssueMetricLabel
@@ -7280,11 +7418,15 @@ function TeacherView(props: {
     props.onSelectSubmission(submission);
     setReviewDetailId(submission.id);
     setReviewDetailTab(tab);
-    setRubricDrafts((current) => (current[submission.id] ? current : { ...current, [submission.id]: buildRubricScores(submission) }));
+    setRubricDrafts((current) =>
+      current[submission.id]
+        ? current
+        : { ...current, [submission.id]: buildRubricScores(submission, getDiagnosis(submission)) },
+    );
   }
 
   function openReviewTab(submission: Submission, tab: TeacherReviewTab) {
-    if (tab === "rubric" && !diagnosedSubmissionIds.includes(submission.id)) {
+    if (tab === "rubric" && !isSubmissionDiagnosed(submission)) {
       setReviewActionMessage("请先完成 AI 诊断，再进行评分。");
       setReviewDetailTab("diagnosis");
       return;
@@ -7297,19 +7439,28 @@ function TeacherView(props: {
     setReviewDetailTab(tab);
   }
 
-  function startDiagnosis(submission: Submission) {
+  async function startDiagnosis(submission: Submission) {
     setReviewDetailTab("diagnosis");
     setDiagnosingSubmissionId(submission.id);
-    window.setTimeout(() => {
-      setDiagnosingSubmissionId((current) => (current === submission.id ? null : current));
+    setReviewActionMessage(null);
+    try {
+      const diagnosis = await diagnoseTeacherSubmission(submission.id);
+      setDiagnosisResults((current) => ({ ...current, [submission.id]: diagnosis }));
       setDiagnosedSubmissionIds((current) => (current.includes(submission.id) ? current : [...current, submission.id]));
-    }, 2800);
+      setRubricDrafts((current) => ({ ...current, [submission.id]: buildRubricScores(submission, diagnosis) }));
+      if (diagnosis.feedbackDraft?.trim()) props.onTeacherCommentChange(diagnosis.feedbackDraft.trim());
+      setReviewActionMessage("AI 参考诊断已生成，请教师核对材料依据并确认评分。");
+    } catch (error) {
+      setReviewActionMessage(error instanceof Error ? error.message : "AI 诊断失败，请稍后重试。");
+    } finally {
+      setDiagnosingSubmissionId((current) => (current === submission.id ? null : current));
+    }
   }
 
   function updateRubricScore(submission: Submission, index: number, value: string) {
     const numeric = Math.max(0, Number.parseFloat(value) || 0);
     setRubricDrafts((current) => {
-      const rows = current[submission.id] || buildRubricScores(submission);
+      const rows = current[submission.id] || buildRubricScores(submission, getDiagnosis(submission));
       const nextRows = rows.map((row, rowIndex) =>
         rowIndex === index ? { ...row, teacherScore: Math.min(row.weight, Math.round(numeric * 10) / 10) } : row,
       );
@@ -7318,20 +7469,20 @@ function TeacherView(props: {
   }
 
   function confirmRubric(submission: Submission) {
-    const rows = rubricDrafts[submission.id] || buildRubricScores(submission);
+    const diagnosis = getDiagnosis(submission);
+    const rows = rubricDrafts[submission.id] || buildRubricScores(submission, diagnosis);
     const total = rows.reduce((sum, row) => sum + row.teacherScore, 0).toFixed(1);
     const weakRows = [...rows].sort((a, b) => a.teacherScore / a.weight - b.teacherScore / b.weight).slice(0, 2);
     const advantageRows = rows.filter((row) => row.teacherScore / row.weight >= 0.8).slice(0, 2);
-    props.onTeacherCommentChange(
-      `【Rubric 综合评分已确认】综合得分 ${total}/100。优势维度：${advantageRows.map((row) => row.name).join("、") || "结构完整度"}。建议重点修改：${weakRows.map((row) => row.name).join("、")}。请补充对应证据后再提交终稿。`,
-    );
+    const scoreSummary = `【教师确认评分】综合得分 ${total}/100。优势维度：${advantageRows.map((row) => row.name).join("、") || "暂无明显优势"}。建议重点修改：${weakRows.map((row) => row.name).join("、")}。`;
+    props.onTeacherCommentChange([diagnosis?.feedbackDraft?.trim(), scoreSummary].filter(Boolean).join("\n\n"));
     setConfirmedRubricSubmissionIds((current) => (current.includes(submission.id) ? current : [...current, submission.id]));
     setReviewActionMessage(`已确认评分，系统已生成修改建议。`);
     setReviewDetailTab("feedback");
   }
 
   function handleSubmitRubric(submission: Submission) {
-    if (!diagnosedSubmissionIds.includes(submission.id)) {
+    if (!isSubmissionDiagnosed(submission)) {
       setReviewActionMessage("请先完成 AI 诊断，再提交评分。");
       setReviewDetailTab("diagnosis");
       return;
@@ -7985,7 +8136,7 @@ function TeacherView(props: {
                 <h3>监控学生讨论中的常见问题</h3>
               </div>
             </div>
-            <p className="teacher-module-copy">聚合不同小组在定位、商业模式、竞品、答辩中的高频卡点，帮助教师判断课堂共性问题。</p>
+            <p className="teacher-module-copy">仅聚合已保存的 AI 参考诊断和教师反馈；没有可追踪证据时不生成问题比例。</p>
             <div className="issue-overview-grid">
               {issueOverviewCards.map((card) => (
                 <button
@@ -8008,6 +8159,9 @@ function TeacherView(props: {
                   <span>点击查看证据和处理建议</span>
                 </div>
                 <div className="issue-bars teacher-issue-bars">
+                  {issueEntries.length === 0 && (
+                    <div className="submission-empty-row">暂无可核验的共性问题。请先在审核详情中生成 AI 参考诊断或保存教师反馈。</div>
+                  )}
                   {issueEntries.map(([label, detail]) => (
                     <button
                       className={focusedIssueLabel === label ? "active" : ""}
@@ -8161,11 +8315,15 @@ function TeacherView(props: {
                   {reviewDetailSubmission.blocks.map((block) => (
                     <article key={block.title}>
                       <strong>{block.title}</strong>
-                      <ul>
-                        {block.items.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
+                      {block.items.length === 1 && (block.items[0].length > 220 || /\n|#{1,6}\s|【正式回复】/.test(block.items[0])) ? (
+                        <StructuredAiResponse content={block.items[0]} compact />
+                      ) : (
+                        <ul>
+                          {block.items.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
                     </article>
                   ))}
                 </div>
@@ -8175,34 +8333,34 @@ function TeacherView(props: {
               <section className="detail-card review-ai-panel">
                 <div className="review-ai-heading">
                   <div>
-                    <span className="eyebrow">AI 项目诊断</span>
-                    <h4>基于提交材料生成诊断、追问和下一轮任务</h4>
+                    <span className="eyebrow">AI 参考诊断 · 教师确认</span>
+                    <h4>基于真实提交材料生成诊断、追问和下一轮任务</h4>
                   </div>
                   <button
                     className="primary-button"
                     type="button"
                     disabled={diagnosingSubmissionId === reviewDetailSubmission.id}
                     onClick={() => {
-                      if (diagnosedSubmissionIds.includes(reviewDetailSubmission.id)) {
+                      if (isSubmissionDiagnosed(reviewDetailSubmission)) {
                         openReviewTab(reviewDetailSubmission, "rubric");
                         return;
                       }
-                      startDiagnosis(reviewDetailSubmission);
+                      void startDiagnosis(reviewDetailSubmission);
                     }}
                   >
-                    {diagnosedSubmissionIds.includes(reviewDetailSubmission.id) && diagnosingSubmissionId !== reviewDetailSubmission.id ? (
+                    {isSubmissionDiagnosed(reviewDetailSubmission) && diagnosingSubmissionId !== reviewDetailSubmission.id ? (
                       <CheckCircle2 size={16} />
                     ) : (
                       <Sparkles size={16} />
                     )}
                     {diagnosingSubmissionId === reviewDetailSubmission.id
                       ? "诊断中"
-                      : diagnosedSubmissionIds.includes(reviewDetailSubmission.id)
+                      : isSubmissionDiagnosed(reviewDetailSubmission)
                         ? "查看综合评分"
                         : "开始 AI 项目诊断"}
                   </button>
                 </div>
-                {(diagnosingSubmissionId === reviewDetailSubmission.id || !diagnosedSubmissionIds.includes(reviewDetailSubmission.id)) && (
+                {(diagnosingSubmissionId === reviewDetailSubmission.id || !isSubmissionDiagnosed(reviewDetailSubmission)) && (
                   <div className="diagnosis-process">
                     {[
                       ["读取项目材料", "BP/PPT/访谈记录/答辩日志"],
@@ -8220,21 +8378,36 @@ function TeacherView(props: {
                     ))}
                   </div>
                 )}
-                {diagnosedSubmissionIds.includes(reviewDetailSubmission.id) && diagnosingSubmissionId !== reviewDetailSubmission.id && (
-                  <div className="diagnosis-result-grid">
-                    {Object.entries(buildDiagnosisResult(reviewDetailSubmission)).map(([key, items]) => (
-                      <article key={key}>
-                        <strong>
-                          {key === "problems" ? "项目问题" : key === "risks" ? "风险提示" : key === "questions" ? "课堂追问建议" : "下一轮任务建议"}
-                        </strong>
-                        <ul>
-                          {items.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
-                      </article>
-                    ))}
-                  </div>
+                {isSubmissionDiagnosed(reviewDetailSubmission) && diagnosingSubmissionId !== reviewDetailSubmission.id && (
+                  <>
+                    {getDiagnosis(reviewDetailSubmission)?.summary && (
+                      <div className="diagnosis-summary">
+                        <strong>诊断摘要</strong>
+                        <p>{getDiagnosis(reviewDetailSubmission)?.summary}</p>
+                      </div>
+                    )}
+                    <div className="diagnosis-result-grid">
+                      {(["problems", "risks", "questions", "tasks"] as const).map((key) => {
+                        const items = getDiagnosis(reviewDetailSubmission)?.[key] || [];
+                        return (
+                          <article key={key}>
+                            <strong>
+                              {key === "problems" ? "项目问题" : key === "risks" ? "风险提示" : key === "questions" ? "课堂追问建议" : "下一轮任务建议"}
+                            </strong>
+                            {items.length ? (
+                              <ul>
+                                {items.map((item) => (
+                                  <li key={item}>{item}</li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p>本次未识别到可核验内容。</p>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
               </section>
             )}
@@ -8246,14 +8419,14 @@ function TeacherView(props: {
                     <h4>系统给出参考分，教师可调整终评</h4>
                   </div>
                   <strong className="rubric-total">
-                    {((rubricDrafts[reviewDetailSubmission.id] || buildRubricScores(reviewDetailSubmission)).reduce(
+                    {((rubricDrafts[reviewDetailSubmission.id] || buildRubricScores(reviewDetailSubmission, getDiagnosis(reviewDetailSubmission))).reduce(
                       (sum, row) => sum + row.teacherScore,
                       0,
                     )).toFixed(1)}
                   </strong>
                 </div>
                 <div className="rubric-table">
-                  {(rubricDrafts[reviewDetailSubmission.id] || buildRubricScores(reviewDetailSubmission)).map((row, index) => (
+                  {(rubricDrafts[reviewDetailSubmission.id] || buildRubricScores(reviewDetailSubmission, getDiagnosis(reviewDetailSubmission))).map((row, index) => (
                     <article key={row.name}>
                       <div>
                         <strong>{row.name}</strong>
@@ -8272,11 +8445,11 @@ function TeacherView(props: {
                   ))}
                 </div>
                 <div className="rubric-confirm-bar">
-                  <p>{diagnosedSubmissionIds.includes(reviewDetailSubmission.id) ? "系统参考评分只作为教师审核参考，确认后会写入教师反馈草稿。" : "请先完成项目诊断，再确认评分。"}</p>
+                  <p>{isSubmissionDiagnosed(reviewDetailSubmission) ? "系统参考评分只作为教师审核参考，确认后会写入教师反馈草稿。" : "请先完成项目诊断，再确认评分。"}</p>
                   <button
                     className="primary-button"
                     type="button"
-                    disabled={!diagnosedSubmissionIds.includes(reviewDetailSubmission.id)}
+                    disabled={!isSubmissionDiagnosed(reviewDetailSubmission)}
                     onClick={() => confirmRubric(reviewDetailSubmission)}
                   >
                     <CheckCircle2 size={16} />
@@ -8516,19 +8689,27 @@ function AdminView(props: {
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
   const [accountSaveMessage, setAccountSaveMessage] = useState<string | null>(null);
   const [adminDataLoading, setAdminDataLoading] = useState(true);
+  const [operationsReport, setOperationsReport] = useState<AdminOperationsReport | null>(null);
+  const [operationsError, setOperationsError] = useState("");
   const adminUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let active = true;
-    Promise.all([listAdminGroups(), listAdminAccounts()])
-      .then(([remoteGroups, remoteAccounts]) => {
+    Promise.all([listAdminGroups(), listAdminAccounts(), getAdminOperations()])
+      .then(([remoteGroups, remoteAccounts, report]) => {
         if (!active) return;
         const groups = remoteGroups.map(mapAdminGroup);
         onStudentGroupsChange(groups);
         onAccountRecordsChange(remoteAccounts.map((account) => mapAdminAccount(account, groups)));
+        setOperationsReport(report);
+        setOperationsError("");
       })
       .catch((error) => {
-        if (active) setAccountSaveMessage(error instanceof Error ? error.message : "管理端数据加载失败");
+        if (active) {
+          const message = error instanceof Error ? error.message : "管理端数据加载失败";
+          setAccountSaveMessage(message);
+          setOperationsError(message);
+        }
       })
       .finally(() => {
         if (active) setAdminDataLoading(false);
@@ -8537,6 +8718,28 @@ function AdminView(props: {
       active = false;
     };
   }, [onAccountRecordsChange, onStudentGroupsChange]);
+
+  useEffect(() => {
+    if (adminTab !== "monitor" && adminTab !== "evaluation") return;
+    let active = true;
+    const refresh = () => {
+      getAdminOperations()
+        .then((report) => {
+          if (!active) return;
+          setOperationsReport(report);
+          setOperationsError("");
+        })
+        .catch((error) => {
+          if (active) setOperationsError(error instanceof Error ? error.message : "运行数据加载失败");
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [adminTab]);
 
   function openAccountDetail(account: AccountRecord) {
     setAccountEditDraft({
@@ -8552,16 +8755,14 @@ function AdminView(props: {
   const approvedCount = props.submissions.filter((item) => item.status === "approved").length;
   const revisionCount = props.submissions.filter((item) => item.status === "revision").length;
   const excellentCount = props.submissions.filter((item) => item.isExcellent).length;
-  const generatedVideoCount = props.generatedAssets.filter((asset) => asset.type === "VIDEO").length;
-  const generatedPptCount = props.generatedAssets.filter((asset) => asset.type === "PPT").length;
   const processedRate = Math.min(100, Math.round(((approvedCount + revisionCount) / Math.max(1, props.submissions.length)) * 100));
   const passRate = Math.round((approvedCount / Math.max(1, props.submissions.length)) * 100);
-  const evaluationSubmissionCount = Math.max(props.submissions.length, 28);
-  const evaluationApprovedCount = Math.max(approvedCount, 19);
-  const evaluationRevisionCount = Math.max(revisionCount, 6);
-  const evaluationExcellentCount = Math.max(excellentCount, 8);
-  const evaluationProcessedRate = Math.max(processedRate, 89);
-  const evaluationPassRate = Math.max(passRate, 68);
+  const evaluationSubmissionCount = operationsReport?.submissions.total ?? props.submissions.length;
+  const evaluationApprovedCount = operationsReport?.submissions.approved ?? approvedCount;
+  const evaluationRevisionCount = operationsReport?.submissions.revision ?? revisionCount;
+  const evaluationExcellentCount = operationsReport?.submissions.excellent ?? excellentCount;
+  const evaluationProcessedRate = operationsReport?.submissions.processedRate ?? processedRate;
+  const evaluationPassRate = operationsReport?.submissions.passRate ?? passRate;
   const tabs = [
     ["resources", "账号与权限管理", Settings2],
     ["audit", "AI 用量统计", BarChart3],
@@ -8570,13 +8771,12 @@ function AdminView(props: {
               ["prompts", "专家配置与 Skill 管理", Sparkles],
     ["evaluation", "试点运营评估", LineChart],
   ] as const;
-  const kanbanProjects = props.studentGroups.map((group, index) => {
+  const kanbanProjects = props.studentGroups.map((group) => {
     const groupSubmissions = props.submissions.filter(
       (submission) => submission.group === group.label || submission.groupName === group.projectName || submission.group === group.projectName,
     );
     const latestSubmission = [...groupSubmissions].sort((a, b) => getSubmissionStageIndex(b) - getSubmissionStageIndex(a))[0];
-    const fallbackStageIndex = Math.min(projectKanbanStages.length - 1, Math.max(0, 1 + (index % 5)));
-    const stageIndex = latestSubmission ? getSubmissionStageIndex(latestSubmission) : fallbackStageIndex;
+    const stageIndex = latestSubmission ? getSubmissionStageIndex(latestSubmission) : 0;
     const pending = groupSubmissions.filter((submission) => submission.status === "pending").length;
     const excellent = groupSubmissions.filter((submission) => submission.isExcellent).length;
     const members = accountRecords.filter((account) => account.role === "student" && resolveAccountGroup(account, props.studentGroups).groupId === group.id);
@@ -8584,7 +8784,7 @@ function AdminView(props: {
       group,
       stageIndex,
       stageLabel: projectKanbanStages[stageIndex]?.label || projectKanbanStages[0].label,
-      progress: Math.min(98, Math.max(8, Math.round(((stageIndex + 1) / projectKanbanStages.length) * 100))),
+      progress: latestSubmission ? Math.min(100, Math.round(((stageIndex + 1) / projectKanbanStages.length) * 100)) : 0,
       latestSubmission,
       pending,
       excellent,
@@ -8633,37 +8833,56 @@ function AdminView(props: {
     ["总调用配额", accountRecords.reduce((sum, account) => sum + account.quota, 0), "按账号分配，可人工调整"],
   ] as const;
   const monitorRows = [
-    ["模型调用", "1,284 次", "稳定", "Auto 模式占比 61%，深度分析占比 24%"],
-    ["系统负载", "37%", "正常", "普通笔记本演示环境运行稳定"],
-    ["审核队列", `${pendingCount} 项`, pendingCount > 0 ? "待处理" : "清空", "教师端提交审核中心实时同步"],
-    ["生成资产", `${generatedPptCount} 个 PPT / ${generatedVideoCount} 个视频`, "已缓存", "预生成文件已接入演示系统"],
+    [
+      "DeepSeek 调用",
+      `${operationsReport?.providers.deepSeekCalls ?? 0} 次`,
+      "近 30 天",
+      `可核验 Token ${(operationsReport?.totalTokensLast30Days ?? 0).toLocaleString("zh-CN")}`,
+    ],
+    [
+      "乐享 PPT",
+      `${operationsReport?.providers.lexiangPptCalls ?? 0} 次`,
+      "真实记录",
+      "只统计已写入用量或生成任务的数据",
+    ],
+    [
+      "WorkBuddy 视频",
+      `${operationsReport?.providers.workBuddyVideoCompleted ?? 0}/${operationsReport?.providers.workBuddyVideoJobs ?? 0}`,
+      "完成/提交",
+      "仅在用户点击生成后创建一次任务",
+    ],
+    [
+      "任务队列",
+      `${operationsReport?.providers.runningJobs ?? 0} 运行 / ${operationsReport?.providers.queuedJobs ?? 0} 排队`,
+      (operationsReport?.providers.failedJobs ?? 0) > 0 ? "有失败" : "正常",
+      `${operationsReport?.providers.failedJobs ?? 0} 个失败任务；审核队列 ${operationsReport?.submissions.pending ?? pendingCount} 项`,
+    ],
   ];
   const enabledKnowledgeCatalogCount = getActiveKnowledgeCatalog(props.knowledgeCatalog).filter(
     (base) => props.knowledgeBaseStates[base.category] !== false,
   ).length;
   const enabledKnowledgeAssetCount = props.knowledgeUploads.filter((asset) => asset.enabled !== false).length;
-  const dashboardStudentCount = accountRecords.filter((account) => account.role === "student").length;
-  const dashboardTeacherCount = accountRecords.filter((account) => account.role === "teacher").length;
-  const dashboardArtifactCount = props.submissions.length + props.generatedAssets.length;
+  const dashboardStudentCount = operationsReport?.accounts.students ?? accountRecords.filter((account) => account.role === "student").length;
+  const dashboardArtifactCount = operationsReport?.artifactCount ?? props.submissions.length;
   const dashboardKpis = [
     ["学生账号", dashboardStudentCount, "人", Users],
-    ["项目小组", kanbanProjects.length, "组", Layers3],
-    ["待审核成果", pendingCount, "项", ClipboardCheck],
+    ["项目小组", operationsReport?.groupCount ?? kanbanProjects.length, "组", Layers3],
+    ["待审核成果", operationsReport?.submissions.pending ?? pendingCount, "项", ClipboardCheck],
     ["生成成果", dashboardArtifactCount, "份", FileText],
-    ["启用知识库", enabledKnowledgeCatalogCount, "类", BookOpen],
-    ["审核处理率", processedRate, "%", LineChart],
+    ["启用知识库", operationsReport?.knowledge.activeBases ?? enabledKnowledgeCatalogCount, "类", BookOpen],
+    ["审核处理率", operationsReport?.submissions.processedRate ?? processedRate, "%", LineChart],
   ] as const;
   const dashboardModelBaseRows = [
-    ["文本专家", Math.max(1, props.submissions.length + dashboardArtifactCount + dashboardTeacherCount * 2)],
-    ["知识库检索", Math.max(1, enabledKnowledgeAssetCount + enabledKnowledgeCatalogCount)],
-    ["PPT 生成", Math.max(0, generatedPptCount)],
-    ["视频生成", Math.max(0, generatedVideoCount)],
+    ["DeepSeek", operationsReport?.providers.deepSeekCalls ?? 0],
+    ["启用知识资料", operationsReport?.knowledge.activeAssets ?? enabledKnowledgeAssetCount],
+    ["乐享 PPT", operationsReport?.providers.lexiangPptCalls ?? 0],
+    ["WorkBuddy 视频", operationsReport?.providers.workBuddyVideoJobs ?? 0],
   ] as const;
   const dashboardModelTotal = dashboardModelBaseRows.reduce((sum, [, value]) => sum + value, 0) || 1;
   const dashboardModelRows = dashboardModelBaseRows.map(([name, value]) => ({
     name,
     value,
-    percent: Math.max(6, Math.round((value / dashboardModelTotal) * 100)),
+    percent: value === 0 ? 0 : Math.max(6, Math.round((value / dashboardModelTotal) * 100)),
   }));
   const dashboardExpertRows = experts
     .map((expert) => {
@@ -8681,9 +8900,10 @@ function AdminView(props: {
       return {
         id: expert.id,
         name: expert.name.replace("专家", ""),
-        count: matchedCount * 6 + stableNumber(expert.id, 10, 26),
+        count: matchedCount,
       };
     })
+    .filter((row) => row.count > 0)
     .sort((a, b) => b.count - a.count)
     .slice(0, 6);
   const dashboardExpertMax = Math.max(...dashboardExpertRows.map((row) => row.count), 1);
@@ -8734,81 +8954,91 @@ function AdminView(props: {
   function openBigscreen() {
     window.open("/bigscreen/index.html", "_blank", "noopener,noreferrer");
   }
+  const evaluationIssueEntries = Object.entries(buildTeacherIssueDetails(props.submissions));
+  const groupsWithSubmission = kanbanProjects.filter((project) => project.submissions.length > 0).length;
+  const groupsAtBpOrLater = kanbanProjects.filter((project) => project.latestSubmission && project.stageIndex >= 4).length;
+  const diagnosedSubmissionCount = props.submissions.filter((submission) => submission.aiDiagnosis).length;
+  const teacherFeedbackCount = props.submissions.filter((submission) => submission.teacherComment?.trim()).length;
   const effectRows = [
-    ["任务完成率", "86%", "目标 80%", "10 个项目组中已有 8 组完成 BP 初稿与 PPT 框架"],
-    ["成果通过率", `${evaluationPassRate}%`, "目标 60%", `已通过 ${evaluationApprovedCount} 项，主要集中在产品定位、BP 初稿和路演稿`],
-    ["退回修改数", `${evaluationRevisionCount} 项`, "本周新增 3 项", "集中在商业模式、证据链、竞品对比和试点指标"],
-    ["优秀案例数", `${evaluationExcellentCount} 项`, "目标 10 项", "4 项进入课堂展示，4 项进入后续案例库候选"],
+    [
+      "小组阶段参与率",
+      `${kanbanProjects.length ? Math.round((groupsWithSubmission / kanbanProjects.length) * 100) : 0}%`,
+      `${groupsWithSubmission}/${kanbanProjects.length} 组`,
+      "按至少提交过一项阶段成果的小组统计",
+    ],
+    ["成果通过率", `${evaluationPassRate}%`, `${evaluationApprovedCount}/${evaluationSubmissionCount} 项`, "按当前未撤回成果与审核状态统计"],
+    ["退回修改数", `${evaluationRevisionCount} 项`, "当前记录", "退回原因以教师反馈和 AI 参考诊断为准"],
+    ["优秀案例数", `${evaluationExcellentCount} 项`, "教师标记", "只统计教师已标记的优秀成果"],
   ];
   const aiEvaluationBlocks = [
     {
-      title: "AI 综合评估结论",
+      title: "系统数据汇总",
       items: [
-        `当前试点覆盖 50 名学生、10 个项目组，已累计提交阶段成果 ${evaluationSubmissionCount} 项，审核处理率 ${evaluationProcessedRate}%。`,
-        `成果通过率达到 ${evaluationPassRate}%，说明学生端生成链路和教师端审核闭环已经可以支撑课程试点汇报。`,
-        `优秀成果沉淀 ${evaluationExcellentCount} 项，其中“AI 就业教练”“银发陪诊助手”“校园二手循环平台”已具备课堂展示和案例库沉淀价值。`,
+        `当前数据库有 ${operationsReport?.accounts.students ?? dashboardStudentCount} 个学生账号、${operationsReport?.groupCount ?? kanbanProjects.length} 个项目小组。`,
+        `累计保存 ${evaluationSubmissionCount} 项未撤回成果，审核处理率 ${evaluationProcessedRate}%，通过率 ${evaluationPassRate}%。`,
+        `${groupsAtBpOrLater} 个小组已提交 BP 或更后阶段成果；教师标记优秀成果 ${evaluationExcellentCount} 项。`,
       ],
     },
     {
-      title: "建设成效判断",
+      title: "当前可验证成效",
       items: [
-        "教学价值：教师能在创意、定位、BP、PPT、答辩前看到学生阶段成果，点评从期末结果批改前移到过程指导。",
-        "运营价值：管理员可追踪账号使用、知识库命中、成果审核和优秀案例沉淀，便于向学院汇报试点运行情况。",
-        "扩展价值：平台已接入账号、资料、提示词、数据库和导出链路，可在授权后继续扩展真实模型与供应商能力。",
+        `教师反馈已保存 ${teacherFeedbackCount} 项，AI 参考诊断已保存 ${diagnosedSubmissionCount} 项。`,
+        `启用知识库 ${operationsReport?.knowledge.activeBases ?? enabledKnowledgeCatalogCount} 个，启用知识资料 ${operationsReport?.knowledge.activeAssets ?? enabledKnowledgeAssetCount} 份。`,
+        `近 30 天 DeepSeek ${operationsReport?.providers.deepSeekCalls ?? 0} 次、乐享 PPT ${operationsReport?.providers.lexiangPptCalls ?? 0} 次、WorkBuddy 视频任务 ${operationsReport?.providers.workBuddyVideoJobs ?? 0} 次。`,
       ],
     },
     {
-      title: "AI 改进建议",
+      title: "下一步建议",
       items: [
-        "优先把产品定位说明、BP、PPT 和答辩模拟结果统一到同一套评分 Rubric，减少教师二次解释成本。",
-        "针对商业模式、竞品维度、证据链薄弱的项目组建立专项提示词，让系统先引导学生补材料再生成成果。",
-        "管理员端后续可加入班级、教师、项目组和成果类型筛选，支持正式试点按周复盘。",
+        evaluationIssueEntries.length
+          ? `当前有证据的首要共性问题是“${evaluationIssueEntries[0][0]}”，建议回到对应成果逐项核验。`
+          : "当前缺少已保存的诊断或教师反馈，暂不生成共性问题判断。",
+        `当前仍有 ${operationsReport?.submissions.pending ?? pendingCount} 项待审核，应先完成教师确认再形成试点评估结论。`,
+        "供应商能力只按真实成功记录计数，未调用时不能据此判断 PPT 或视频生成质量。",
       ],
     },
   ];
   const evaluationReviewBlocks = [
     {
       title: "阶段进展",
-      tag: "第 5 周",
+      tag: "数据库实时",
       items: [
-        "10 个项目组已完成创意风暴和产品定位，8 组提交 BP 初稿，6 组进入 PPT 和路演稿打磨。",
-        "教师端本周完成 25 条批注，其中 11 条聚焦商业模式，8 条聚焦目标用户，6 条聚焦竞品证据。",
-        "管理端已能查看账号使用、资料启用、提示词维护、审核队列和试点运营评估。",
+        `${groupsWithSubmission} 个小组有阶段成果记录，${groupsAtBpOrLater} 个小组进入 BP 或更后阶段。`,
+        `当前 ${evaluationApprovedCount} 项通过、${evaluationRevisionCount} 项退回修改、${operationsReport?.submissions.pending ?? pendingCount} 项待审核。`,
+        `知识库已有 ${operationsReport?.knowledge.assets ?? props.knowledgeUploads.length} 份资料，其中 ${operationsReport?.knowledge.activeAssets ?? enabledKnowledgeAssetCount} 份启用。`,
       ],
     },
     {
       title: "关键发现",
-      tag: "高频问题",
-      items: [
-        "退回修改主要集中在“谁付费、为什么现在付费、如何验证需求”三类问题。",
-        "质量较高的小组通常会引用访谈、竞品截图、问卷结果和课程案例，内容更容易通过审核。",
-        "PPT 页面最常缺少证据页，答辩模拟中最常被追问市场规模、转化路径和可持续收入。",
-      ],
+      tag: `${evaluationIssueEntries.length} 类有证据问题`,
+      items: evaluationIssueEntries.length
+        ? evaluationIssueEntries.slice(0, 3).map(([label, detail]) => `${label}：${detail.trend}，${detail.affectedGroups}。`)
+        : ["尚无足够的 AI 诊断或教师反馈，不能判断高频问题。"],
     },
     {
       title: "风险跟踪",
       tag: "需干预",
       items: [
-        "2 个项目组仍停留在功能罗列，缺少真实用户画像和使用场景。",
-        "3 份 BP 的收入模型偏弱，需要补充定价、获客成本和试点转化指标。",
-        "知识库还需补齐优秀 BP 样例、答辩追问题库、评分 Rubric 和竞品分析模板。",
+        `${kanbanProjects.length - groupsWithSubmission} 个小组尚无阶段成果记录。`,
+        `${operationsReport?.submissions.pending ?? pendingCount} 项成果等待教师审核，未确认前不应计入通过结论。`,
+        `${operationsReport?.providers.failedJobs ?? 0} 个生成任务失败；需要从运行记录继续排查。`,
       ],
     },
     {
       title: "下阶段动作",
-      tag: "下周安排",
+      tag: "按当前数据",
       items: [
-        "组织一次 BP 付费方拆解课，要求每组写清楚购买者、使用者、影响者和决策链。",
-        "要求每组补充一页证据页，并在答辩模拟中验证表达是否能回应追问。",
-        "从 8 项优秀候选中筛选 3-5 份，沉淀为下一轮班级可复用的案例库样例。",
+        evaluationIssueEntries[0]?.[1].guidance[0] || "先积累真实诊断和教师反馈，再制定集中讲评主题。",
+        "优先处理待审核成果，并由教师确认 AI 参考评分和反馈草稿。",
+        evaluationExcellentCount ? `复核 ${evaluationExcellentCount} 项优秀成果是否具备进入课程案例库的条件。` : "当前暂无优秀成果标记，暂不进入案例沉淀。",
       ],
     },
   ];
   const evaluationEvidenceRows = [
-    ["课堂讨论记录", "183 轮", "创意风暴、商业模式和答辩追问三类对话最多"],
-    ["教师有效批注", "25 条", "已同步到学生成果修改建议和优秀案例筛选"],
-    ["知识库命中", "76 次", "BP 模板、评分 Rubric、竞品分析资料命中最高"],
-    ["待重点跟进", "3 组", "需要补充收入模型、用户证据和试点指标"],
+    ["阶段成果", `${evaluationSubmissionCount} 项`, "来自 MySQL 中未撤回的成果提交"],
+    ["教师反馈", `${teacherFeedbackCount} 条`, "来自教师已保存的审核意见"],
+    ["AI 参考诊断", `${diagnosedSubmissionCount} 项`, "由教师主动触发并持久化"],
+    ["待重点跟进", `${operationsReport?.submissions.pending ?? pendingCount} 项`, "当前仍处于待审核状态"],
   ];
 
   function applyAdminKnowledgeSearch(event: FormEvent<HTMLFormElement>) {
@@ -9416,6 +9646,16 @@ function AdminView(props: {
 
       {adminTab === "monitor" && (
         <div className="admin-page admin-dashboard-page" key="admin-monitor">
+          <div className={`admin-live-source ${operationsError ? "error" : ""}`}>
+            <span>
+              {operationsError
+                ? `后端运行数据暂不可用：${operationsError}`
+                : `数据来源：MySQL 与后端运行记录${operationsReport ? ` · 更新于 ${formatSubmittedAt(operationsReport.generatedAt)}` : " · 加载中"}`}
+            </span>
+            <button type="button" onClick={() => void getAdminOperations().then(setOperationsReport).catch((error) => setOperationsError(error instanceof Error ? error.message : "刷新失败"))}>
+              <RotateCcw size={14} /> 刷新
+            </button>
+          </div>
           <div className="admin-dashboard-kpis">
             {dashboardKpis.map(([label, value, unit, Icon]) => (
               <article key={label}>
@@ -9474,10 +9714,11 @@ function AdminView(props: {
                 <div className="dashboard-panel-head">
                   <div>
                     <span className="eyebrow">EXPERT CALLS</span>
-                    <h4>专家调用排行</h4>
+                    <h4>专家成果分布</h4>
                   </div>
                 </div>
                 <div className="dashboard-expert-rank">
+                  {dashboardExpertRows.length === 0 && <p className="dashboard-empty">暂无可统计的专家成果</p>}
                   {dashboardExpertRows.map((row) => (
                     <article key={row.id}>
                       <span>{row.name}</span>
@@ -9540,7 +9781,7 @@ function AdminView(props: {
                                 <em style={{ width: `${project.progress}%` }} />
                               </div>
                               <footer>
-                                <small>{project.members.length || stableNumber(project.group.id, 4, 5)} 名学生</small>
+                                <small>{project.members.length} 名学生</small>
                                 <small>{project.pending} 待审 · {project.excellent} 优秀</small>
                               </footer>
                               <span className="kanban-card-action">查看详情</span>
@@ -9866,11 +10107,6 @@ function AdminView(props: {
 
       {adminTab === "evaluation" && (
         <div className="admin-page" key="admin-evaluation">
-          <div className="panel-title compact">
-            <div>
-              <h3>试点运营评估</h3>
-            </div>
-          </div>
           <div className="effect-grid">
             {effectRows.map(([name, value, target, detail]) => (
               <article key={name}>
@@ -10016,7 +10252,7 @@ function AdminView(props: {
             <div className="kanban-detail-body">
               <section className="kanban-detail-summary">
                 {[
-                  ["成员数", `${selectedKanbanProject.members.length || stableNumber(selectedKanbanProject.group.id, 4, 5)} 人`],
+                  ["成员数", `${selectedKanbanProject.members.length} 人`],
                   ["提交成果", `${selectedKanbanProject.submissions.length} 项`],
                   ["待审核", `${selectedKanbanProject.pending} 项`],
                   ["优秀成果", `${selectedKanbanProject.excellent} 项`],
@@ -10135,7 +10371,7 @@ function AdminView(props: {
             <div className="group-detail-body">
               <section className="group-detail-summary">
                 {[
-                  ["成员数", `${selectedGroupDetail.members.length || stableNumber(selectedGroupDetail.group.id, 4, 5)} 人`],
+                  ["成员数", `${selectedGroupDetail.members.length} 人`],
                   ["提交成果", `${selectedGroupDetail.submissions.length} 项`],
                   ["待审核", `${selectedGroupDetail.pending} 项`],
                   ["优秀成果", `${selectedGroupDetail.excellent} 项`],

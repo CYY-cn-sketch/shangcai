@@ -85,64 +85,57 @@
   let theme = localStorage.getItem("bs-theme") || document.documentElement.dataset.theme || "dark";
   let data = createDashboardData();
 
-  function readJSON(key, fallback) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
   function groupLabelFromAccount(account) {
     return account.groupLabel || account.groupName || account.groupOrScope || "";
   }
 
-  function createDashboardData() {
-    const accountRecords = readJSON("sufe-admin-account-records", []);
-    const studentGroups = readJSON("sufe-student-groups", []);
-    const submissions = readJSON("sufe-submissions", []);
-    const generatedAssets = readJSON("sufe-generated-assets", []);
-    const knowledgeUploads = readJSON("sufe-knowledge-uploads", []);
-    const knowledgeCatalog = readJSON("sufe-knowledge-base-catalog", []);
-    const knowledgeStates = readJSON("sufe-knowledge-base-states", {});
-    const messages = readJSON("sufe-messages", []);
-    const defensePractices = readJSON("sufe-defense-practices", []);
-    const ideas = readJSON("sufe-ideas", []);
+  function createDashboardData(source = {}) {
+    const accountRecords = source.accountRecords || [];
+    const studentGroups = source.studentGroups || [];
+    const submissions = source.submissions || [];
+    const generatedAssets = source.generatedAssets || [];
+    const knowledgeUploads = source.knowledgeUploads || [];
+    const knowledgeCatalog = source.knowledgeCatalog || [];
+    const knowledgeStates = source.knowledgeStates || {};
+    const messages = source.messages || [];
+    const defensePractices = source.defensePractices || [];
+    const ideas = source.ideas || [];
+    const operations = source.operations || null;
 
-    const studentAccounts = accountRecords.filter((item) => item.role === "student").length || 10;
-    const teacherAccounts = accountRecords.filter((item) => item.role === "teacher").length || 1;
-    const adminAccounts = accountRecords.filter((item) => item.role === "admin").length || 1;
-    const groups = studentGroups.length || 10;
+    const studentAccounts = operations?.accounts?.students ?? accountRecords.filter((item) => item.role === "student").length;
+    const teacherAccounts = operations?.accounts?.teachers ?? accountRecords.filter((item) => item.role === "teacher").length;
+    const adminAccounts = operations?.accounts?.admins ?? accountRecords.filter((item) => item.role === "admin").length;
+    const groups = operations?.groupCount ?? studentGroups.length;
     const pending = submissions.filter((item) => item.status === "pending").length;
     const approved = submissions.filter((item) => item.status === "approved").length;
     const revision = submissions.filter((item) => item.status === "revision").length;
     const excellent = submissions.filter((item) => item.isExcellent).length;
     const pptCount = generatedAssets.filter((item) => item.type === "PPT").length;
     const videoCount = generatedAssets.filter((item) => item.type === "VIDEO").length;
-    const enabledKnowledge = knowledgeUploads.filter((item) => item.enabled !== false).length || knowledgeCatalog.length || 6;
+    const artifactCount = operations?.artifactCount ?? submissions.length;
+    const enabledKnowledge = operations?.knowledge?.activeBases ?? knowledgeCatalog.filter((item) => item.active !== false).length;
     const processedRate = submissions.length ? Math.min(100, Math.round(((approved + revision) / submissions.length) * 100)) : 0;
     const passRate = submissions.length ? Math.round((approved / submissions.length) * 100) : 0;
 
-    const activityDays = buildActivityDays(messages, submissions, generatedAssets);
-    const tokenDays = buildTokenDays(messages, submissions, generatedAssets, defensePractices);
+    const activityDays = buildActivityDays(submissions, operations?.recentActivity || []);
+    const tokenDays = buildTokenDays(operations?.totalTokensLast30Days || 0);
 
-    const projects = (studentGroups.length ? studentGroups : buildFallbackGroups()).map((group, index) => {
+    const projects = studentGroups.map((group, index) => {
       const groupName = group.projectName || group.name || group.label || `第 ${index + 1} 组`;
       const groupSubmissions = submissions.filter((item) => item.group === group.label || item.groupName === groupName || item.group === groupName);
       const latest = [...groupSubmissions].sort((a, b) => getSubmissionStageIndex(b) - getSubmissionStageIndex(a))[0];
-      const stageIndex = latest ? getSubmissionStageIndex(latest) : Math.min(stageLabels.length - 1, Math.max(0, 1 + (index % 5)));
+      const stageIndex = latest ? getSubmissionStageIndex(latest) : 0;
       const members = accountRecords.filter((item) => item.role === "student" && groupLabelFromAccount(item).includes(group.label || ""));
       return {
         id: group.id || `G-${index + 1}`,
         label: group.label || `第 ${index + 1} 组`,
         name: groupName,
         stageIndex,
-        progress: Math.min(98, Math.max(8, Math.round(((stageIndex + 1) / stageLabels.length) * 100))),
+        progress: latest ? Math.min(100, Math.round(((stageIndex + 1) / stageLabels.length) * 100)) : 0,
         latest,
         pending: groupSubmissions.filter((item) => item.status === "pending").length,
         excellent: groupSubmissions.filter((item) => item.isExcellent).length,
-        members: members.length || 1,
+        members: group.memberCount ?? members.length,
         submissions: groupSubmissions,
       };
     });
@@ -172,9 +165,17 @@
     ]
       .filter(Boolean)
       .sort((a, b) => toTimeValue(b.time) - toTimeValue(a.time));
-    const normalizedFeedItems = feedItems.length ? feedItems : buildFallbackFeedItems();
+    const normalizedFeedItems = feedItems.length
+      ? feedItems
+      : (operations?.recentActivity || []).map((item) => ({
+          id: item.id,
+          time: formatTime(item.occurredAt),
+          tag: item.resourceType,
+          title: item.summary,
+          detail: `${item.actor} · ${item.action}`,
+        }));
 
-    const knowledgeRows = (knowledgeCatalog.length ? knowledgeCatalog : buildFallbackKnowledgeCatalog()).map((item) => ({
+    const knowledgeRows = knowledgeCatalog.map((item) => ({
       name: item.category,
       desc: item.description,
       usedBy: item.usedBy || "多专家调用",
@@ -192,7 +193,7 @@
         student: item.student || "",
         time: formatTime(item.submittedAt),
       }));
-    const normalizedTeacherQueue = teacherQueue.length ? teacherQueue : buildFallbackTeacherQueue();
+    const normalizedTeacherQueue = teacherQueue;
 
     const submittedByType = ["BRAINSTORM", "POSITIONING", "BP", "PPT", "SCRIPT", "DEFENSE", "MEDIA"].map((type) => ({
       name: artifactLabel(type),
@@ -207,35 +208,12 @@
       value: submissions.filter((item) => item.artifactType === type && item.status === "revision").length,
     }));
     const assetStats = {
-      submitted: submittedByType.some((item) => item.value) ? submittedByType : [
-        { name: "头脑风暴", value: 3 },
-        { name: "项目定位", value: 2 },
-        { name: "商业计划书 BP", value: 2 },
-        { name: "路演 PPT", value: 2 },
-        { name: "答辩模拟", value: 1 },
-      ],
-      excellent: excellentByType.some((item) => item.value) ? excellentByType : [
-        { name: "项目定位", value: 1 },
-        { name: "商业计划书 BP", value: 1 },
-        { name: "路演 PPT", value: 2 },
-        { name: "答辩模拟", value: 1 },
-      ],
-      revision: revisionByType.some((item) => item.value) ? revisionByType : [
-        { name: "商业计划书 BP", value: 2 },
-        { name: "路演 PPT", value: 1 },
-        { name: "答辩模拟", value: 1 },
-        { name: "多媒体物料", value: 1 },
-      ],
+      submitted: submittedByType,
+      excellent: excellentByType,
+      revision: revisionByType,
     };
 
-    const qualityRows = [
-      { name: "创新性", value: clamp(Math.round((passRate || 72) + 4), 60, 96) },
-      { name: "市场洞察", value: clamp(Math.round((processedRate || 74) + 3), 60, 96) },
-      { name: "商业逻辑", value: clamp(Math.round((pending ? 68 : 77)), 58, 95) },
-      { name: "财务合理性", value: clamp(Math.round((approved ? 70 : 66)), 55, 93) },
-      { name: "表达呈现", value: clamp(Math.round((excellent ? 84 : 73)), 62, 97) },
-      { name: "团队协作", value: clamp(Math.round((groups ? 78 : 71)), 60, 95) },
-    ];
+    const qualityRows = ["创新性", "市场洞察", "商业逻辑", "财务合理性", "表达呈现", "团队协作"].map((name) => ({ name, value: 0 }));
 
     return {
       accountRecords,
@@ -251,12 +229,14 @@
       messages,
       defensePractices,
       ideas,
+      operations,
       pending,
       approved,
       revision,
       excellent,
       pptCount,
       videoCount,
+      artifactCount,
       enabledKnowledge,
       processedRate,
       passRate,
@@ -270,62 +250,20 @@
     };
   }
 
-  function buildFallbackGroups() {
-    return Array.from({ length: 10 }, (_, index) => ({
-      id: `G-${String(index + 1).padStart(2, "0")}`,
-      label: `第 ${index + 1} 组`,
-      projectName: ["校园二手循环平台", "智能简历诊所", "AI 就业教练", "商科案例共创库", "银发陪诊助手", "低碳积分校园平台", "实习岗位雷达", "校园餐饮排队预测", "创业案例智能检索", "商学院活动助手"][index] || `项目 ${index + 1}`,
-    }));
-  }
-
-  function buildFallbackKnowledgeCatalog() {
-    return [
-      { category: "教学大纲", description: "课程阶段、教学目标和阶段成果要求。", usedBy: "头脑风暴、项目定位、BP、PPT" },
-      { category: "BP 模板", description: "商业计划书章节结构与商业模式说明。", usedBy: "BP、答辩" },
-      { category: "PPT 模板", description: "路演页序、页面观点和演讲提示。", usedBy: "PPT、答辩" },
-      { category: "评分标准", description: "Rubric、审核维度和优秀成果判断标准。", usedBy: "审核、预评分" },
-      { category: "创业案例", description: "优秀项目案例和课堂可复用素材。", usedBy: "头脑风暴、项目定位" },
-      { category: "答辩题库", description: "高频追问、压力测试问题和回答结构。", usedBy: "答辩模拟" },
-    ];
-  }
-
-  function buildFallbackFeedItems() {
-    return [
-      { id: "demo-feed-1", time: "09:12", tag: "第 3 组", title: "提交商业计划书 BP", detail: "AI 就业教练 · 待审核 · 已同步教师端" },
-      { id: "demo-feed-2", time: "09:26", tag: "PPT 生成", title: "生成 15 页路演 PPT", detail: "引用 PPT 模板、BP 模板、评分标准知识库" },
-      { id: "demo-feed-3", time: "10:08", tag: "教师端", title: "完成 Rubric 预评分", detail: "商业逻辑 82 · 表达呈现 86 · 建议补证据页" },
-      { id: "demo-feed-4", time: "10:31", tag: "知识库", title: "上传优秀 BP 案例", detail: "周老师 · 创业案例知识库 · 已启用" },
-      { id: "demo-feed-5", time: "11:05", tag: "答辩", title: "生成评委追问建议", detail: "围绕市场规模、获客成本、试点验证继续追问" },
-      { id: "demo-feed-6", time: "11:42", tag: "视频", title: "生成 15 秒项目介绍视频", detail: "即梦能力输出 · 已进入多媒体成果区" },
-      { id: "demo-feed-7", time: "13:18", tag: "第 5 组", title: "退回修改银发陪诊助手 BP", detail: "需补充服务边界、付费方和合规风险" },
-      { id: "demo-feed-8", time: "14:06", tag: "管理端", title: "更新专家提示词模板", detail: "同步到学生端、教师端与运行监控中心" },
-    ];
-  }
-
-  function buildFallbackTeacherQueue() {
-    return [
-      { group: "第 3 组", title: "AI 就业教练 BP 初稿", status: "待审核", student: "陈思源", time: "09:12" },
-      { group: "第 5 组", title: "银发陪诊助手商业模式", status: "退回修改", student: "赵子涵", time: "13:18" },
-      { group: "第 7 组", title: "实习岗位雷达 PPT", status: "待审核", student: "王泽宇", time: "14:22" },
-    ];
-  }
-
-  function buildActivityDays(messages, submissions, generatedAssets) {
-    const base = messages.length + submissions.length + generatedAssets.length;
+  function buildActivityDays(submissions, auditActivities) {
     return Array.from({ length: 14 }, (_, index) => {
-      const active = clamp(base + ((index * 7) % 9) - 4, 12, 132);
-      const convs = clamp(Math.round(active * 1.4 + index * 2), 16, 220);
       const date = addDays(index - 13);
-      return { date, active, convs };
+      const fullDate = new Date(Date.now() + (index - 13) * 86400000).toISOString().slice(0, 10);
+      const submitted = submissions.filter((item) => String(item.submittedAt || "").slice(0, 10) === fullDate).length;
+      const audited = auditActivities.filter((item) => String(item.occurredAt || "").slice(0, 10) === fullDate).length;
+      return { date, active: audited, convs: submitted };
     });
   }
 
-  function buildTokenDays(messages, submissions, generatedAssets, defensePractices) {
-    const base = messages.length * 1200 + submissions.length * 3400 + generatedAssets.length * 2400 + defensePractices.length * 1500;
+  function buildTokenDays(totalTokens) {
     return Array.from({ length: 14 }, (_, index) => {
-      const wan = clamp(Math.round((base / 10000) * 0.65 + index * 0.8 + (index % 3) * 1.4), 8, 110);
       const date = addDays(index - 13);
-      return { date, wan };
+      return { date, wan: index === 13 ? Math.round((totalTokens / 10000) * 10) / 10 : 0 };
     });
   }
 
@@ -372,12 +310,7 @@
   function knowledgeNamesForProject(project) {
     const currentStage = stageLabels[project.stageIndex] || "";
     const latestType = project.latest ? artifactLabel(project.latest.artifactType) : "";
-    const rows = data.knowledgeCatalog.length ? data.knowledgeCatalog : buildFallbackKnowledgeCatalog().map((item) => ({
-      name: item.category,
-      desc: item.description,
-      usedBy: item.usedBy,
-      enabled: true,
-    }));
+    const rows = data.knowledgeCatalog;
     const matched = rows.filter((item) => {
       if (item.enabled === false) return false;
       const scope = `${item.name || ""}${item.desc || ""}${item.usedBy || ""}`;
@@ -485,8 +418,8 @@
         stats: [
           { value: data.studentAccounts, label: "学生账号" },
           { value: data.groups, label: "项目小组" },
-          { value: data.messages.length || 42, label: "对话记录" },
-          { value: data.defensePractices.length || 6, label: "答辩记录" },
+          { value: data.operations?.providers?.deepSeekCalls || 0, label: "DeepSeek 调用" },
+          { value: data.operations?.totalTokensLast30Days || 0, label: "近30日 Token" },
         ],
         rowsTitle: "学生账号明细",
         rows: studentRows,
@@ -540,14 +473,14 @@
       {
         id: "assets",
         label: "生成成果",
-        value: data.pptCount + data.videoCount,
+        value: data.artifactCount,
         unit: "份",
         subtitle: "PPT、视频与提交成果沉淀",
         stats: [
-          { value: data.submissions.length || 24, label: "提交成果" },
-          { value: data.pptCount || 12, label: "PPT 生成" },
-          { value: data.videoCount || 3, label: "视频生成" },
-          { value: data.excellent || 8, label: "优秀沉淀" },
+          { value: data.submissions.length, label: "提交成果" },
+          { value: data.operations?.providers?.lexiangPptCalls || 0, label: "乐享 PPT" },
+          { value: data.operations?.providers?.workBuddyVideoJobs || 0, label: "视频任务" },
+          { value: data.excellent, label: "优秀沉淀" },
         ],
         rowsTitle: "生成成果与提交成果明细",
         rows: assetRows,
@@ -562,7 +495,7 @@
           { value: data.processedRate, label: "处理率%" },
           { value: data.passRate, label: "通过率%" },
           { value: data.approved + data.revision, label: "已处理" },
-          { value: data.submissions.length || 24, label: "总提交" },
+          { value: data.submissions.length, label: "总提交" },
         ],
         rowsTitle: "审核处理明细",
         rows: reviewRows,
@@ -892,7 +825,7 @@
         yAxis: [{ type: "value", ...ax }, { type: "value", ...ax, splitLine: { show: false } }],
         series: [
           {
-            name: "活跃人数",
+            name: "审计活动",
             type: "line",
             smooth: 0.45,
             symbol: "none",
@@ -901,7 +834,7 @@
             areaStyle: { color: p.area },
           },
           {
-            name: "AI 对话",
+            name: "成果提交",
             type: "line",
             yAxisIndex: 1,
             smooth: 0.45,
@@ -938,10 +871,10 @@
             itemStyle: { borderRadius: 5, borderColor: "transparent", borderWidth: 0 },
             color: [p.blue, p.gold, p.blueDeep, p.gray],
             data: [
-              { name: "文本生成", value: clamp(data.messages.length * 4 + data.submissions.length * 2, 20, 68) },
-              { name: "PPT 生成", value: clamp(data.pptCount * 9 + 12, 10, 40) },
-              { name: "视频生成", value: clamp(data.videoCount * 18 + 8, 8, 28) },
-              { name: "知识库调用", value: clamp(data.enabledKnowledge * 6 + 10, 12, 36) },
+              { name: "DeepSeek", value: data.operations?.providers?.deepSeekCalls || 0 },
+              { name: "乐享 PPT", value: data.operations?.providers?.lexiangPptCalls || 0 },
+              { name: "WorkBuddy 视频", value: data.operations?.providers?.workBuddyVideoJobs || 0 },
+              { name: "启用知识库", value: data.enabledKnowledge },
             ],
           },
         ],
@@ -1025,16 +958,60 @@
   }
 
   function bindStorageRefresh() {
-    window.addEventListener("storage", () => {
-      data = createDashboardData();
-      buildKpis();
-      buildMatrix();
-      buildFeed();
-      buildQueue();
-      buildKnowledge();
-      buildAssets();
-      renderCharts();
-    });
+    window.addEventListener("storage", () => void loadServerData());
+  }
+
+  async function fetchJson(url) {
+    const response = await fetch(url, { credentials: "include", headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }
+
+  function renderDashboard() {
+    buildKpis();
+    buildMatrix();
+    buildFeed();
+    buildQueue();
+    buildKnowledge();
+    buildAssets();
+    renderCharts();
+  }
+
+  async function loadServerData() {
+    try {
+      const [operations, accounts, groups, submissions, knowledgeCatalog, knowledgeUploads] = await Promise.all([
+        fetchJson("/api/admin/operations"),
+        fetchJson("/api/admin/accounts"),
+        fetchJson("/api/admin/groups"),
+        fetchJson("/api/teacher/submissions"),
+        fetchJson("/api/admin/knowledge-bases"),
+        fetchJson("/api/admin/knowledge-assets"),
+      ]);
+      data = createDashboardData({
+        operations,
+        accountRecords: accounts.map((item) => ({
+          ...item,
+          role: String(item.role || "").toLowerCase(),
+          name: item.displayName,
+          groupLabel: item.groupLabel,
+          groupName: item.groupName,
+        })),
+        studentGroups: groups.map((item) => ({ ...item, label: item.groupLabel, name: item.projectName })),
+        submissions: submissions.map((item) => ({
+          ...item,
+          status: String(item.status || "").toLowerCase(),
+          isExcellent: Boolean(item.excellent),
+        })),
+        knowledgeCatalog,
+        knowledgeUploads,
+        knowledgeStates: Object.fromEntries(knowledgeCatalog.map((item) => [item.category, item.active !== false])),
+      });
+      renderDashboard();
+      dataSource.textContent = "DATA SOURCE: MYSQL / BACKEND";
+      updatedAt.textContent = `UPDATED: ${new Date(operations.generatedAt).toLocaleTimeString("zh-CN", { hour12: false })}`;
+    } catch (error) {
+      dataSource.textContent = `DATA SOURCE ERROR: ${error instanceof Error ? error.message : "UNKNOWN"}`;
+    }
   }
 
   function bindProjectDetail() {
@@ -1051,20 +1028,16 @@
     fitStage();
     window.addEventListener("resize", fitStage);
     window.addEventListener("resize", () => charts.forEach((chart) => chart.resize()));
-    buildKpis();
-    buildMatrix();
-    buildFeed();
-    buildQueue();
-    buildKnowledge();
-    buildAssets();
-    renderCharts();
+    renderDashboard();
     bindModal();
     bindProjectDetail();
     bindAssetTabs();
     bindFullscreen();
     bindStorageRefresh();
     themeToggle.addEventListener("click", () => applyTheme(theme === "dark" ? "light" : "dark"));
-    dataSource.textContent = `DATA SOURCE: ${data.accountRecords.length ? "LOCAL STORAGE" : "DEMO FALLBACK"}`;
+    dataSource.textContent = "DATA SOURCE: LOADING BACKEND";
+    void loadServerData();
+    setInterval(() => void loadServerData(), 60_000);
   }
 
   boot();

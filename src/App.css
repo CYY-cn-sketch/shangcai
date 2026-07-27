@@ -597,6 +597,28 @@ button.account-chip {
   mix-blend-mode: normal;
 }
 
+.login-three-scene::before {
+  content: "";
+  position: absolute;
+  left: 45%;
+  top: 50%;
+  width: min(28vw, 430px);
+  aspect-ratio: 1;
+  border: 1px solid rgba(108, 193, 244, 0.38);
+  border-radius: 50%;
+  background:
+    repeating-radial-gradient(circle, transparent 0 13%, rgba(78, 176, 236, 0.13) 13.3% 13.8%, transparent 14.1% 20%),
+    repeating-linear-gradient(90deg, transparent 0 12%, rgba(92, 184, 238, 0.10) 12.4% 12.9%, transparent 13.2% 24%),
+    radial-gradient(circle at 42% 38%, rgba(255, 255, 255, 0.56), rgba(81, 184, 240, 0.16) 48%, rgba(18, 99, 165, 0.08) 70%, transparent 72%);
+  box-shadow: 0 0 64px rgba(61, 171, 236, 0.18), inset 0 0 38px rgba(102, 196, 247, 0.12);
+  transform: translate(-50%, -50%);
+}
+
+.login-three-scene:has(canvas)::before {
+  opacity: 0;
+  transition: opacity 180ms ease-out;
+}
+
 .login-three-scene canvas {
   display: block;
   width: 100%;
@@ -13334,6 +13356,62 @@ select:focus {
 
   .defense-turn.ai .buddy-bubble {
     min-width: min(260px, calc(100vw - 104px));
+  }
+}
+
+.admin-live-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border: 1px solid #cfe0ee;
+  border-radius: 8px;
+  color: #49647e;
+  background: rgba(248, 252, 255, 0.9);
+  font-size: 13px;
+}
+
+.admin-live-source.error {
+  border-color: #edc7c7;
+  color: #9d3737;
+  background: #fff8f8;
+}
+
+.admin-live-source button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid #c8d9e9;
+  border-radius: 6px;
+  color: var(--blue);
+  background: #fff;
+}
+
+.diagnosis-summary {
+  margin: 14px 0;
+  padding: 13px 15px;
+  border-left: 3px solid var(--gold);
+  border-radius: 6px;
+  background: #fffaf0;
+}
+
+.diagnosis-summary strong {
+  color: #7f5a10;
+}
+
+.diagnosis-summary p {
+  margin: 6px 0 0;
+  line-height: 1.7;
+}
+
+@media (max-width: 720px) {
+  .admin-live-source {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

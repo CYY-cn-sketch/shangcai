@@ -126,6 +126,34 @@
   font-weight: 850;
 }
 
+.provider-usage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.provider-usage-summary > div {
+  padding: 13px 15px;
+  border: 1px solid #d7e2ee;
+  border-left: 3px solid var(--blue);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.provider-usage-summary dt,
+.provider-usage-summary small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.provider-usage-summary dd {
+  margin: 5px 0 2px;
+  color: var(--text-strong);
+  font-size: 18px;
+  font-weight: 850;
+}
+
 .ai-usage-table {
   max-height: 500px;
 }
@@ -229,6 +257,9 @@
 }
 
 @media (max-width: 720px) {
+  .provider-usage-summary {
+    grid-template-columns: 1fr;
+  }
   .ai-usage-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

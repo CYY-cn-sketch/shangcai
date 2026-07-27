@@ -25,10 +25,21 @@ export type RemoteSubmission = {
   content: unknown;
   status: "PENDING" | "APPROVED" | "REVISION" | "WITHDRAWN";
   teacherComment?: string;
+  aiDiagnosis?: TeacherAiDiagnosis;
   excellent: boolean;
   submittedAt: string;
   reviewedAt?: string;
   updatedAt: string;
+};
+
+export type TeacherAiDiagnosis = {
+  summary?: string;
+  problems: string[];
+  risks: string[];
+  questions: string[];
+  tasks: string[];
+  scores?: Array<{ name: string; score: number; reason?: string }>;
+  feedbackDraft?: string;
 };
 
 export type SaveArtifactInput = {
@@ -146,6 +157,13 @@ export function listTeacherSubmissions() {
 
 export function reviewTeacherSubmission(submissionId: string, input: ReviewSubmissionInput) {
   return mutateJson<RemoteSubmission>(`/api/teacher/submissions/${encodeURIComponent(submissionId)}`, "PATCH", input);
+}
+
+export function diagnoseTeacherSubmission(submissionId: string) {
+  return mutateJson<TeacherAiDiagnosis>(
+    `/api/teacher/submissions/${encodeURIComponent(submissionId)}/ai-diagnosis`,
+    "POST",
+  );
 }
 
 export function artifactDownloadUrl(artifactId: string) {

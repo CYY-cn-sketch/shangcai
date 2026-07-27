@@ -22,7 +22,7 @@ export type AdminGroup = {
 
 export type AiUsageRange = "LAST_7_DAYS" | "LAST_30_DAYS" | "LAST_90_DAYS" | "ALL";
 
-export type AiUsageProvider = "LEXIANG" | "WORKBUDDY";
+export type AiUsageProvider = "DEEPSEEK" | "LEXIANG" | "WORKBUDDY";
 
 export type AdminAiUsageSummary = {
   callCount: number;
@@ -31,6 +31,10 @@ export type AdminAiUsageSummary = {
   totalTokens: number;
   activeUserCount: number;
   activeGroupCount: number;
+  deepSeekCalls: number;
+  lexiangPptCalls: number;
+  workBuddyVideoJobs: number;
+  workBuddyVideoCompleted: number;
 };
 
 export type AdminUserAiUsage = {
@@ -67,6 +71,51 @@ export type AdminAiUsageReport = {
   summary: AdminAiUsageSummary;
   users: AdminUserAiUsage[];
   groups: AdminGroupAiUsage[];
+};
+
+export type AdminOperationsReport = {
+  generatedAt: string;
+  accounts: { students: number; teachers: number; admins: number };
+  groupCount: number;
+  artifactCount: number;
+  submissions: {
+    total: number;
+    pending: number;
+    approved: number;
+    revision: number;
+    excellent: number;
+    processedRate: number;
+    passRate: number;
+  };
+  knowledge: { bases: number; activeBases: number; assets: number; activeAssets: number };
+  providers: {
+    deepSeekCalls: number;
+    lexiangPptCalls: number;
+    workBuddyVideoJobs: number;
+    workBuddyVideoCompleted: number;
+    queuedJobs: number;
+    runningJobs: number;
+    failedJobs: number;
+  };
+  totalTokensLast30Days: number;
+  groups: Array<{
+    id: string;
+    label: string;
+    projectName: string;
+    memberCount: number;
+    submissionCount: number;
+    latestArtifactType?: string;
+    pendingCount: number;
+    excellentCount: number;
+  }>;
+  recentActivity: Array<{
+    id: string;
+    occurredAt: string;
+    action: string;
+    resourceType: string;
+    summary: string;
+    actor: string;
+  }>;
 };
 
 export type CreateAdminAccount = {
@@ -185,4 +234,8 @@ export function deleteAdminGroup(groupId: string) {
 
 export function getAdminAiUsage(range: AiUsageRange) {
   return readJson<AdminAiUsageReport>(`/api/admin/ai-usage?range=${encodeURIComponent(range)}`);
+}
+
+export function getAdminOperations() {
+  return readJson<AdminOperationsReport>("/api/admin/operations");
 }

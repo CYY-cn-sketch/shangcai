@@ -23,11 +23,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 @Service
 public class DeepSeekExpertChatService {
@@ -43,6 +46,7 @@ public class DeepSeekExpertChatService {
     private final ExpertKnowledgeRouteRepository routeRepository;
     private final KnowledgeBaseRepository knowledgeBaseRepository;
     private final KnowledgeAssetRepository knowledgeAssetRepository;
+    private final AiChatRequestRepository chatRequestRepository;
     private final ObjectMapper objectMapper;
 
     public DeepSeekExpertChatService(
@@ -57,6 +61,7 @@ public class DeepSeekExpertChatService {
             ExpertKnowledgeRouteRepository routeRepository,
             KnowledgeBaseRepository knowledgeBaseRepository,
             KnowledgeAssetRepository knowledgeAssetRepository,
+            AiChatRequestRepository chatRequestRepository,
             ObjectMapper objectMapper
     ) {
         this.properties = properties;
@@ -70,10 +75,22 @@ public class DeepSeekExpertChatService {
         this.routeRepository = routeRepository;
         this.knowledgeBaseRepository = knowledgeBaseRepository;
         this.knowledgeAssetRepository = knowledgeAssetRepository;
+        this.chatRequestRepository = chatRequestRepository;
         this.objectMapper = objectMapper;
     }
 
     public DeepSeekChatResult chat(String userId, String ideaId, String expertId, String clientMessageId) {
+        return chat(userId, ideaId, expertId, clientMessageId, null, null);
+    }
+
+    public DeepSeekChatResult chat(
+            String userId,
+            String ideaId,
+            String expertId,
+            String clientMessageId,
+            String skillName,
+            String artifactType
+    ) {
         if (!properties.configured()) {
             throw error("DEEPSEEK_DISABLED", "DeepSeek 网关未启用或凭据未配置", HttpStatus.SERVICE_UNAVAILABLE);
         }
@@ -87,6 +104,21 @@ public class DeepSeekExpertChatService {
             throw error("MESSAGE_CONTEXT_MISMATCH", "待生成消息不属于当前对话", HttpStatus.CONFLICT);
         }
 
+        Optional<AiChatRequest> existingRequest = chatRequestRepository.findByUserIdAndClientMessageId(userId, clientMessageId);
+        if (existingRequest.isPresent()) {
+            AiChatRequest request = existingRequest.get();
+            if ("COMPLETED".equals(request.getStatus()) && request.getAssistantMessageId() != null) {
+                ConversationMessage existingReply = messageRepository.findById(request.getAssistantMessageId())
+                        .filter(message -> userId.equals(message.getUserId()) && "AI".equals(message.getSender()))
+                        .orElseThrow(() -> error("AI_REPLY_MISSING", "已完成的 AI 回复记录不存在", HttpStatus.CONFLICT));
+                return new DeepSeekChatResult(existingReply.getContent(), null, Optional.empty(), existingReply.getId());
+            }
+            if ("RUNNING".equals(request.getStatus())) {
+                throw error("AI_REPLY_IN_PROGRESS", "AI 正在生成本次回复，请稍候", HttpStatus.CONFLICT);
+            }
+            throw error("AI_REPLY_FAILED", request.getErrorMessage(), HttpStatus.CONFLICT);
+        }
+
         ExpertProfile expert = expertRepository.findById(expertId)
                 .filter(ExpertProfile::isActive)
                 .orElseThrow(() -> error("EXPERT_NOT_AVAILABLE", "当前专家未启用或不存在", HttpStatus.NOT_FOUND));
@@ -97,12 +129,16 @@ public class DeepSeekExpertChatService {
             throw error("AI_PERMISSION_DENIED", "当前账号没有调用该专家的权限", HttpStatus.FORBIDDEN);
         }
 
+        AiChatRequest chatRequest = chatRequestRepository.saveAndFlush(
+                AiChatRequest.running(userId, ideaId, clientMessageId, expertId)
+        );
+
         String model = resolveModel(conversation.getModelMode());
         boolean thinkingEnabled = !"快速生成".equals(conversation.getModelMode());
         List<DeepSeekMessage> messages = new ArrayList<>();
         messages.add(new DeepSeekMessage(
                 "system",
-                buildSystemPrompt(idea, conversation, expert, !deniedPermissions.contains("调用课程知识库"))
+                buildSystemPrompt(idea, conversation, expert, !deniedPermissions.contains("调用课程知识库"), artifactType)
         ));
 
         List<ConversationMessage> history = messageRepository
@@ -120,20 +156,58 @@ public class DeepSeekExpertChatService {
             messages.add(new DeepSeekMessage("USER".equals(message.getSender()) ? "user" : "assistant", content));
         }
 
-        return chatClient.chat(new DeepSeekChatCommand(
-                userId,
-                model,
-                thinkingEnabled,
-                "high",
-                messages
-        ));
+        try {
+            DeepSeekChatResult result = chatClient.chat(new DeepSeekChatCommand(
+                    userId,
+                    model,
+                    thinkingEnabled,
+                    "high",
+                    messages
+            ));
+            ConversationMessage assistantMessage = messageRepository.save(ConversationMessage.create(
+                    userId,
+                    conversation.getId(),
+                    assistantClientMessageId(clientMessageId),
+                    "AI",
+                    "文本",
+                    expert.getId(),
+                    expert.getName(),
+                    skillName,
+                    artifactType,
+                    result.content(),
+                    null
+            ));
+            chatRequest.complete(assistantMessage.getId());
+            chatRequestRepository.save(chatRequest);
+            return new DeepSeekChatResult(
+                    result.content(),
+                    result.model(),
+                    result.verifiedUsage(),
+                    assistantMessage.getId()
+            );
+        } catch (RuntimeException exception) {
+            chatRequest.fail(exception.getMessage());
+            chatRequestRepository.save(chatRequest);
+            throw exception;
+        }
+    }
+
+    public Optional<AiChatRequest> findRequest(String userId, String ideaId, String clientMessageId) {
+        return chatRequestRepository.findByUserIdAndClientMessageId(userId, clientMessageId)
+                .filter(request -> ideaId.equals(request.getIdeaId()));
+    }
+
+    private static String assistantClientMessageId(String clientMessageId) {
+        UUID stableId = UUID.nameUUIDFromBytes(("assistant:" + clientMessageId).getBytes(StandardCharsets.UTF_8));
+        return "ai-" + stableId;
     }
 
     private String buildSystemPrompt(
             StudentIdea idea,
             StudentConversation conversation,
             ExpertProfile expert,
-            boolean canUseKnowledge
+            boolean canUseKnowledge,
+            String artifactType
     ) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你正在上海财经大学商学院 AI 赋能创业实践教学平台中工作。\n")
@@ -152,6 +226,7 @@ public class DeepSeekExpertChatService {
             prompt.append("用户输入组装规则：\n").append(expert.getUserPrompt()).append("\n\n");
         }
         prompt.append(answerModeInstruction(conversation.getModelMode())).append("\n\n");
+        prompt.append(expertOutputInstruction(expert.getId(), artifactType)).append("\n\n");
 
         String knowledgeContext = canUseKnowledge
                 ? buildKnowledgeContext(expert.getId(), conversation.getKnowledgeSelectionJson())
@@ -163,7 +238,12 @@ public class DeepSeekExpertChatService {
                     .append(knowledgeContext)
                     .append("\n\n");
         }
-        prompt.append("只输出给学生看的最终回答，不输出思维链、供应商名称、模型名称、Token 或内部配置。")
+        prompt.append("回答必须简洁、可执行，并严格使用以下两段结构：\n")
+                .append("【处理摘要】\n用 1-3 句话说明采用了哪些已知材料、当前判断和关键缺口；这是面向学生的摘要，不是思维链。\n")
+                .append("【正式回复】\n使用 2-5 个短标题，每个标题下最多 5 个要点；最后给出一条明确的下一步任务。\n")
+                .append("Auto 模式原则上不超过 900 个汉字，快速生成不超过 450 个汉字，深度分析不超过 1400 个汉字。")
+                .append("不要输出 Markdown 表格、连续分隔线或一整段超长文字。")
+                .append("不输出思维链、供应商名称、模型名称、Token 或内部配置。")
                 .append("不要声称已经生成实际 Word、PPTX、图片、音频或视频文件；文件成果必须由平台独立流程生成。");
         return prompt.toString();
     }
@@ -264,6 +344,23 @@ public class DeepSeekExpertChatService {
             case "深度分析" -> "回答方式：深度分析。补充证据链、风险边界、教师审核口径和下一轮验证任务。";
             default -> "回答方式：Auto。根据输入完整度自动选择简版或深度版，优先保证结论完整且可继续推进。";
         };
+    }
+
+    private static String expertOutputInstruction(String expertId, String artifactType) {
+        String instruction = switch (expertId) {
+            case "brainstorm" -> "本专家输出：先判断创意所处状态，再给 3-5 个彼此有差异的候选方向；每个方向包含目标用户、真实痛点和最低成本验证动作；最后只推荐 1-2 个方向。不得提前代写完整 BP。";
+            case "positioning" -> "本专家输出：给出一句话定位，并分别说明第一目标用户、核心场景、关键痛点、价值主张、差异化、MVP 边界、证据缺口和下一步验证任务。必须紧接头脑风暴结论，不重新发散大量方向。";
+            case "market" -> "本专家输出：界定市场边界，按替代方案类别比较竞品，给出可核验的比较维度、进入策略和尚缺证据；没有来源的数据不得编造。";
+            case "business" -> "本专家输出：围绕价值主张、客户、渠道、收入、成本、关键资源、试点包和验收指标组织 BP 内容；先指出缺失信息，再产出可继续修改的版本。";
+            case "pitch" -> "本专家只生成路演 PPT 的内容结构与逐页大纲，包括每页核心观点、证据和讲述目标；真实 PPTX 由平台调用乐享知识库并组装，不得声称已经生成文件。";
+            case "script" -> "本专家基于已确认的 BP 与 PPT 生成 1/3/5 分钟路演稿，标明开场、问题、方案、证据、商业模式、进展和收尾；不要加入材料中不存在的数据。";
+            case "defense" -> "本专家按评委视角输出高价值追问、建议回答结构、必须引用的证据和当前回答风险；每轮聚焦 1-3 个问题，不一次堆出整套题库。";
+            case "media" -> "本专家生成视频创意简报、脚本、分镜、画面提示词和参考图要求；真实视频只能在用户点击生成视频后由平台创建一次 WorkBuddy 任务，完成后不得自动再次调用。";
+            default -> "本专家只围绕自身定位提供可执行结论、证据缺口和下一步任务，不越权代替其他专家或声称已生成文件。";
+        };
+        return artifactType == null || artifactType.isBlank()
+                ? instruction
+                : instruction + " 本轮需要形成可保存的 " + artifactType + " 阶段成果，结构必须便于教师审核和后续编辑。";
     }
 
     private static DeepSeekClientException error(String code, String message, HttpStatus status) {
