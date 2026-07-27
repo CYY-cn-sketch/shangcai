@@ -23,8 +23,15 @@ export type LexiangPptContext = {
   references: LexiangReferenceDoc[];
 };
 
-export type WorkBuddyRun = {
-  runId: string;
+export type DeepSeekExpertReplyInput = {
+  ideaId: string;
+  expertId: string;
+  clientMessageId: string;
+};
+
+export type DeepSeekExpertReply = {
+  content: string;
+  model?: string;
 };
 
 type CsrfResponse = {
@@ -82,9 +89,11 @@ export async function requestLexiangPptContext(input: LexiangPptContextInput): P
   };
 }
 
-export async function submitWorkBuddyRun(text: string): Promise<WorkBuddyRun> {
+export async function requestDeepSeekExpertReply(
+  input: DeepSeekExpertReplyInput,
+): Promise<DeepSeekExpertReply> {
   const csrf = await getCsrfToken();
-  const response = await fetch("/api/provider/workbuddy/runs", {
+  const response = await fetch("/api/provider/deepseek/chat", {
     method: "POST",
     credentials: "include",
     headers: {
@@ -92,10 +101,14 @@ export async function submitWorkBuddyRun(text: string): Promise<WorkBuddyRun> {
       "Content-Type": "application/json",
       [csrf.headerName]: csrf.token,
     },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(input),
   });
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
-  return (await response.json()) as WorkBuddyRun;
+  const result = (await response.json()) as DeepSeekExpertReply;
+  if (!result.content?.trim()) {
+    throw new Error("AI 服务未返回可用内容，请稍后重试");
+  }
+  return { content: result.content.trim(), model: result.model };
 }

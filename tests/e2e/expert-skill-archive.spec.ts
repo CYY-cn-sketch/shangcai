@@ -21,7 +21,26 @@ test.beforeEach(() => {
   test.skip(!password, "需要通过 SUFE_E2E_PASSWORD 提供专用测试密码");
 });
 
-test("专家 Skill 使用统一五步向导且不触发文件夹确认", async ({ page }, testInfo) => {
+test("专家 Skill 支持 ZIP 拖放和文件夹选择的统一五步向导", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "showDirectoryPicker", {
+      configurable: true,
+      value: async () => ({
+        kind: "directory",
+        name: "e2e-skill",
+        async *values() {
+          yield {
+            kind: "file",
+            name: "SKILL.md",
+            async getFile() {
+              return new File(["# E2E Skill"], "SKILL.md", { type: "text/markdown" });
+            },
+          };
+        },
+      }),
+    });
+  });
   const failures = collectUnexpectedFailures(page);
   const uploadRecord = {
     id: "upload-e2e",
@@ -50,8 +69,14 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
     ],
   };
   let confirmationBody: Record<string, unknown> | null = null;
+  let folderUploadSeen = false;
   await page.route("**/api/knowledge/expert-skill-uploads/archive", async (route) => {
     if (route.request().method() !== "POST") return route.fallback();
+    await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(uploadRecord) });
+  });
+  await page.route("**/api/knowledge/expert-skill-uploads", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    folderUploadSeen = true;
     await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(uploadRecord) });
   });
   await page.route("**/api/knowledge/expert-skill-uploads/upload-e2e/confirm", async (route) => {
@@ -78,6 +103,10 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
       }),
     });
   });
+  await page.route("**/api/knowledge/expert-skill-uploads/upload-e2e", async (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    await route.fulfill({ status: 204 });
+  });
   await page.goto("/");
 
   await page.getByRole("button", { name: "教师端" }).click();
@@ -85,14 +114,24 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
   await page.getByLabel("密码").fill(password);
   await page.getByRole("button", { name: "登录进入系统" }).click();
 
-  await expect(page.locator(".admin-console-layout")).toBeVisible();
+  await expect(page.locator(".admin-console-layout")).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "专家配置与 Skill 管理" }).click();
   await page.getByRole("button", { name: "上传并配置 Skill" }).click();
 
   const dialog = page.getByRole("dialog", { name: "专家配置与 Skill 管理" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("第 1 步")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "选择完整 Skill 文件夹的 ZIP 压缩包" })).toBeVisible();
+  await expect(dialog.getByText("将 Skill ZIP 拖到这里")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "选择 ZIP" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "选择文件夹" })).toBeVisible();
+  const stepOneLabel = dialog.locator(".skill-wizard-steps li").first().locator("small");
+  const stepOneConnector = dialog.locator(".skill-wizard-step-connector").first();
+  const labelBox = await stepOneLabel.boundingBox();
+  const connectorBox = await stepOneConnector.boundingBox();
+  expect(labelBox).not.toBeNull();
+  expect(connectorBox).not.toBeNull();
+  expect(connectorBox!.x).toBeGreaterThanOrEqual(labelBox!.x + labelBox!.width);
+  await page.screenshot({ path: testInfo.outputPath("expert-skill-upload-step.png") });
 
   const archiveInput = dialog.locator('input[type="file"][accept*=".zip"]');
   await expect(archiveInput).toHaveCount(1);
@@ -100,7 +139,17 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
   await expect(archiveInput).not.toHaveAttribute("directory", /.*/);
   await expect(archiveInput).not.toHaveAttribute("multiple", /.*/);
 
-  await archiveInput.setInputFiles({ name: "e2e-skill.zip", mimeType: "application/zip", buffer: Buffer.from("safe-e2e-fixture") });
+  const folderInput = dialog.locator('input[type="file"][webkitdirectory]');
+  await expect(folderInput).toHaveCount(1);
+  await expect(folderInput).toHaveAttribute("directory", "");
+  await expect(folderInput).toHaveAttribute("multiple", "");
+
+  const dataTransfer = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["safe-e2e-fixture"], "e2e-skill.zip", { type: "application/zip" }));
+    return transfer;
+  });
+  await dialog.locator(".skill-wizard-dropzone").dispatchEvent("drop", { dataTransfer });
   await expect(dialog.getByRole("heading", { name: "确认专家信息" })).toBeVisible();
   await dialog.getByRole("button", { name: /上一步/ }).click();
   await expect(dialog.getByText("源码档案（不执行）")).toBeVisible();
@@ -117,9 +166,19 @@ test("专家 Skill 使用统一五步向导且不触发文件夹确认", async (
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath(`expert-skill-archive-${testInfo.project.name}.png`), fullPage: true });
   await dialog.getByRole("button", { name: /确认保存并启用/ }).click();
-  await expect(dialog).toBeHidden();
+  await expect(dialog).toBeHidden({ timeout: 15_000 });
   expect(confirmationBody).not.toBeNull();
   expect(confirmationBody?.importFileIds).toEqual(["knowledge-e2e"]);
+
+  const successDialog = page.getByRole("dialog", { name: "保存成功" });
+  await expect(successDialog).toBeVisible();
+  await successDialog.getByRole("button", { name: "确定" }).click();
+  await page.getByRole("button", { name: "上传并配置 Skill" }).click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "选择文件夹" }).click();
+  await expect(dialog.getByRole("heading", { name: "确认专家信息" })).toBeVisible({ timeout: 15_000 });
+  expect(folderUploadSeen).toBe(true);
+  await dialog.getByRole("button", { name: "关闭专家 Skill 配置" }).click();
   expect(failures.httpFailures).toEqual([]);
   expect(failures.consoleErrors).toEqual([]);
 });

@@ -82,7 +82,9 @@ import {
   type SaveKnowledgeExpertInput,
 } from "./api/knowledge";
 import { listDefensePractices, saveDefensePractice, type RemoteDefensePractice } from "./api/defense";
-import { requestLexiangPptContext, submitWorkBuddyRun } from "./api/provider";
+import { requestDeepSeekExpertReply, requestLexiangPptContext } from "./api/provider";
+import { loadGenerationJob, submitGenerationJob, type GenerationJobStatus } from "./api/generation";
+import { nextVideoGenerationRevision, videoGenerationIdempotencyKey } from "./workBuddyVideoGeneration";
 import {
   AuthLoadingView,
   LoginView,
@@ -100,15 +102,12 @@ import {
   defenseBlocks,
   formatDefenseEvaluationForChat,
   getArtifactType,
-  getChatGenerationDelay,
   getChatStarterPrompts,
   getDefenseSuggestedAnswer,
   getExpertDialogueRound,
   getGenerationLoadingCopy,
   getNextRoundPrompt,
   getScenarioPrompt,
-  guidedConversationBlocks,
-  guidedConversationText,
   isArtifactType,
   shouldOutputStageResult,
 } from "./expertGeneration";
@@ -134,10 +133,12 @@ import {
   deleteStudentIdea,
   loadStudentWorkspace,
   saveStudentConversation,
+  uploadStudentAttachment,
   updateStudentIdea,
   type RemoteConversationMessage,
   type RemoteStudentConversation,
   type RemoteStudentIdea,
+  type StudentAttachmentRecord,
 } from "./api/studentWorkspace";
 import {
   appendPositioningHandoffPrompt,
@@ -145,10 +146,15 @@ import {
   findLatestBrainstormHandoff,
   readArtifactBlocks,
 } from "./expertHandoff";
+import {
+  answerModeLabels,
+  answerModes,
+  normalizeAnswerMode,
+  type AnswerMode,
+} from "./answerModes";
 import "./App.css";
 
 type Role = "student" | "teacher" | "admin";
-type ModelMode = "Auto" | "快速生成" | "深度分析" | "多模态增强";
 type ExpertId = string;
 type ArtifactType = "BRAINSTORM" | "POSITIONING" | "MARKET" | "BP" | "PPT" | "SCRIPT" | "DEFENSE" | "MEDIA";
 type SubmissionStatus = "pending" | "approved" | "revision" | "withdrawn";
@@ -293,6 +299,7 @@ type Expert = {
   sourceSkillUploadedAt?: string;
   systemPrompt?: string;
   userPrompt?: string;
+  active?: boolean;
 };
 
 type CustomExpertRecord = {
@@ -330,7 +337,7 @@ type ChatMessage = {
   id: string;
   ideaId: string;
   sender: "user" | "ai";
-  mode?: "文本" | "录音" | "语音";
+  mode?: "文本" | "录音" | "语音" | "文件";
   expertId?: ExpertId;
   expertName?: string;
   skillName?: string;
@@ -362,6 +369,10 @@ type GeneratedAsset = {
   visualPrompt?: string;
   videoUrl?: string;
   videoGeneratedAt?: string;
+  videoGenerationJobId?: string;
+  videoGenerationRevision?: number;
+  videoGenerationStatus?: GenerationJobStatus;
+  referenceImageAssetIds?: string[];
   pptKnowledgeContent?: string;
   pptKnowledgeReferences?: PptKnowledgeReference[];
   pptGeneratedAt?: string;
@@ -417,6 +428,8 @@ type KnowledgeUpload = {
   uploadedBy?: string;
   preview: string;
   contentText?: string;
+  extractionStatus?: KnowledgeAssetRecord["extractionStatus"];
+  extractionMessage?: string;
   category?: KnowledgeCategory;
   enabled?: boolean;
 };
@@ -532,6 +545,8 @@ function mapKnowledgeAssetRecord(record: KnowledgeAssetRecord): KnowledgeUpload 
     enabled: record.enabled,
     downloadUrl: record.downloadUrl || (record.fileAvailable ? knowledgeAssetDownloadUrl(record.id) : undefined),
     fileAvailable: record.fileAvailable,
+    extractionStatus: record.extractionStatus,
+    extractionMessage: record.extractionMessage || undefined,
   };
 }
 
@@ -602,7 +617,7 @@ function toCustomExpertRecord(expert: Expert): CustomExpertRecord {
     sourceSkillUploadedBy: expert.sourceSkillUploadedBy,
     systemPrompt: expert.systemPrompt,
     userPrompt: expert.userPrompt,
-    active: true,
+    active: expert.active !== false,
   };
 }
 
@@ -665,8 +680,6 @@ function syncKnowledgeCatalogDeletion(
   return { nextCatalog, nextStates, nextRoutes };
 }
 
-const modelModes: ModelMode[] = ["Auto", "快速生成", "深度分析", "多模态增强"];
-
 const artifactLabels: Record<ArtifactType, string> = {
   BRAINSTORM: "头脑风暴",
   POSITIONING: "项目定位",
@@ -677,6 +690,187 @@ const artifactLabels: Record<ArtifactType, string> = {
   DEFENSE: "答辩模拟",
   MEDIA: "多媒体物料",
 };
+
+function getStudentOutcomeFlow(expertId: ExpertId) {
+  if (expertId === "pitch") {
+    return "平台知识库生成逐页内容，平台组装并保存 PPTX；无需切换特殊模式。";
+  }
+  if (expertId === "media") {
+    return "本专家先生成脚本、分镜和视觉提示词；真实视频需另行启用视频生成服务并确认消耗。";
+  }
+  return "回答方式只控制内容深度；阶段成果可导出 Word，不需要单独的 Word 模式。";
+}
+
+function ExpertDetailModal(props: {
+  expert: Expert;
+  knowledgeCatalog: KnowledgeBaseCatalogItem[];
+  knowledgeBaseStates: KnowledgeBaseStates;
+  selectedCategories: KnowledgeCategory[];
+  enabledKnowledgeCount: number;
+  systemPrompt: string;
+  userPrompt: string;
+  active: boolean;
+  canDelete: boolean;
+  onKnowledgeToggle: (category: KnowledgeCategory) => void;
+  onSystemPromptChange: (value: string) => void;
+  onUserPromptChange: (value: string) => void;
+  onActiveChange: (active: boolean) => void;
+  onSave: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const titleId = `expert-detail-title-${props.expert.id}`;
+  const expertId = props.expert.id;
+  const closeDetail = props.onClose;
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeDetail();
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [closeDetail]);
+
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [expertId]);
+
+  return createPortal(
+    <div
+      className="modal-backdrop expert-detail-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) props.onClose();
+      }}
+    >
+      <section className="expert-detail-modal" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header className="expert-detail-header">
+          <div className="expert-detail-identity">
+            <span className="expert-detail-accent" style={{ background: props.expert.accent }} aria-hidden="true" />
+            <div>
+              <span className="eyebrow">专家详情</span>
+              <h2 id={titleId}>{props.expert.name}</h2>
+              <p>{props.expert.role}</p>
+            </div>
+          </div>
+          <div className="expert-detail-header-actions">
+            <label className={`expert-status-control ${props.active ? "active" : "inactive"}`}>
+              <span className="expert-status-copy">
+                <strong>学生端启用</strong>
+                <small>{props.active ? "已启用，学生可以选择该专家" : "已停用，仅教师和管理员可配置"}</small>
+              </span>
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="学生端启用"
+                checked={props.active}
+                onChange={(event) => props.onActiveChange(event.target.checked)}
+              />
+              <span className="expert-status-track" aria-hidden="true"><span /></span>
+            </label>
+            <button className="icon-button" type="button" aria-label="关闭专家详情" onClick={props.onClose} autoFocus>
+              <X size={20} />
+            </button>
+          </div>
+        </header>
+
+        <div className="expert-detail-body" ref={bodyRef}>
+          <dl className="expert-detail-summary">
+            <div>
+              <dt>适用场景</dt>
+              <dd>{props.expert.scenario}</dd>
+            </div>
+            <div>
+              <dt>来源 Skill</dt>
+              <dd>{props.expert.sourceSkillName || "平台预置专家"}</dd>
+            </div>
+            <div>
+              <dt>知识库目录</dt>
+              <dd>{props.selectedCategories.length} 个</dd>
+            </div>
+            <div>
+              <dt>启用资料</dt>
+              <dd>{props.enabledKnowledgeCount} 个</dd>
+            </div>
+          </dl>
+
+          <section className="prompt-knowledge-route expert-detail-knowledge">
+            <div>
+              <strong>专家调用知识库目录</strong>
+              <span>仅勾选的知识库会参与该专家的检索与提示词组装。</span>
+            </div>
+            <div className="prompt-knowledge-options">
+              {props.knowledgeCatalog.map((base) => {
+                const selected = props.selectedCategories.includes(base.category);
+                const enabled = props.knowledgeBaseStates[base.category];
+                return (
+                  <label className={`${selected ? "selected" : ""} ${enabled ? "" : "disabled"}`} key={base.category}>
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => props.onKnowledgeToggle(base.category)}
+                    />
+                    <span>{base.category}知识库</span>
+                    <em>{enabled ? "目录开放" : "目录停用"}</em>
+                    <small>{base.usedBy}</small>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="prompt-content-grid expert-detail-prompts">
+            <article>
+              <span className="eyebrow">System</span>
+              <h3>系统提示词</h3>
+              <p>定义专家角色、知识库引用规则、输出要求和能力边界。</p>
+              <textarea
+                className="teacher-prompt-textarea"
+                value={props.systemPrompt}
+                onChange={(event) => props.onSystemPromptChange(event.target.value)}
+              />
+            </article>
+            <article>
+              <span className="eyebrow">User</span>
+              <h3>用户输入组装规则</h3>
+              <p>定义学生输入、历史上下文、上传资料和本轮任务如何组装。</p>
+              <textarea
+                className="teacher-prompt-textarea"
+                value={props.userPrompt}
+                onChange={(event) => props.onUserPromptChange(event.target.value)}
+              />
+            </article>
+          </section>
+        </div>
+
+        <footer className="expert-detail-footer">
+          <div>
+            {props.canDelete && (
+              <button className="ghost-button danger" type="button" onClick={props.onDelete}>
+                <Trash2 size={15} />
+                删除专家
+              </button>
+            )}
+          </div>
+          <div>
+            <button className="ghost-button" type="button" onClick={props.onClose}>取消</button>
+            <button className="primary-button" type="button" onClick={props.onSave}>
+              <Save size={15} />
+              保存专家配置
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
 
 const statusLabels: Record<SubmissionStatus, string> = {
   pending: "待审核",
@@ -1146,8 +1340,8 @@ function getStudentExpertPermissionNames() {
 }
 
 const studentFeaturePermissionSet = new Set(studentFeaturePermissionNames);
-function getWorkBuddyRunResultUrl(runId: string) {
-  return `/api/provider/workbuddy/runs/${encodeURIComponent(runId)}/result`;
+function getGenerationJobArtifactUrl(jobId: string) {
+  return `/api/generation/jobs/${encodeURIComponent(jobId)}/artifact`;
 }
 const artifactExpertMap: Record<ArtifactType, ExpertId> = {
   BRAINSTORM: "brainstorm",
@@ -1245,6 +1439,7 @@ function resolveSelectedKnowledgeSources(
     return (
       selection.uploadIds.includes(asset.id) &&
       asset.enabled !== false &&
+      (asset.extractionStatus === undefined || asset.extractionStatus === "READY") &&
       states[category] !== false &&
       (!allowedSet || allowedSet.has(category)) &&
       !categorySet.has(category)
@@ -1253,7 +1448,10 @@ function resolveSelectedKnowledgeSources(
   const categories = Array.from(categorySet);
   const categoryUploads = uploads.filter((asset) => {
     const category = asset.category || inferKnowledgeCategory(asset.name);
-    return asset.enabled !== false && categorySet.has(category) && (!allowedSet || allowedSet.has(category));
+    return asset.enabled !== false &&
+      (asset.extractionStatus === undefined || asset.extractionStatus === "READY") &&
+      categorySet.has(category) &&
+      (!allowedSet || allowedSet.has(category));
   });
   const uploadMap = new Map<string, KnowledgeUpload>();
   [...selectedUploads, ...categoryUploads].forEach((asset) => uploadMap.set(asset.id, asset));
@@ -1424,7 +1622,6 @@ function getKnowledgeSpecificBlocks(
 
 function buildPromptTemplateParts(
   expert: Expert,
-  mode: ModelMode,
   uploads: KnowledgeUpload[],
   states: KnowledgeBaseStates,
   selectedCategories: KnowledgeCategory[] = getExpertKnowledgeCategories(expert.id),
@@ -1437,12 +1634,6 @@ function buildPromptTemplateParts(
       states[asset.category || inferKnowledgeCategory(asset.name)] &&
       activeCategories.includes(asset.category || inferKnowledgeCategory(asset.name)),
   ).length;
-  const modeInstructions: Record<ModelMode, string> = {
-    Auto: "自动判断输出深度，优先保证课堂演示节奏和结果完整性。",
-    快速生成: "压缩分析过程，优先给出可直接复制的结构化结论。",
-    深度分析: "增加商业判断、证据链、风险提示和教师审核口径。",
-    多模态增强: "在文本结果之外补充 PPT、视频、海报或视觉素材的生成建议。",
-  };
   const uploadedSkillBlock = expert.sourceSkillContent
     ? `
 
@@ -1467,8 +1658,8 @@ ${expert.sourceSkillContent}`
 ${promptKnowledgeBases.map((base) => `- ${base.category}知识库：${base.description}`).join("\n")}
 引用方式：优先使用已启用资料；如果某个知识库暂无教师上传资料，则使用平台预置教学口径生成，但需要在结果中保持“知识来源标签”。
 
-模式策略：${mode}
-${modeInstructions[mode]}
+回答方式策略：Auto、快速生成和深度分析由平台在每次调用时统一叠加，不写死在专家基础提示词中。
+成果类型策略：Word、PPTX 和视频是独立成果流程，不是回答方式。
 
 输出要求：
 1. 结合上海财经大学商学院创业实践课程场景，保持正式、教学导向、可审核。
@@ -1478,18 +1669,18 @@ ${modeInstructions[mode]}
     user: userPrompt || `学生输入变量：
 - 当前创意：项目名称、目标用户、问题场景、已验证/待验证假设
 - 历史上下文：同一创意下最近 5 轮对话、已生成的阶段成果、教师反馈意见
-- 本轮输入：学生在聊天框提出的问题、上传文件摘要、语音转写摘要
+- 本轮输入：学生文本，以及平台预处理后的可读资料摘要；图片需 OCR/视觉摘要，音频需 ASR 转写，视频需音轨转写与关键帧摘要
 - 当前专家字段：${expert.name} / ${expert.scenario}
 - 可引用知识库：${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}
 - 已启用资料数量：${enabledKnowledgeCount} 个；如为 0，则使用平台预置教学口径并保留知识来源标签
 
 生成任务：
-请基于以上上下文，调用“${expert.name}”，由系统自动匹配技能，并按照“${mode}”模式输出结果。
+请基于以上上下文调用“${expert.name}”，由系统自动匹配技能；平台会在运行时追加学生选择的回答方式。
 
 组装规则：
 1. 先判断学生当前处于哪个阶段节点，优先读取同一创意下与该节点相关的历史成果。
 2. 从${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}中检索已启用资料，并把命中的资料转成“知识来源标签”。
-3. ${mode === "快速生成" ? "只保留最关键的 3-4 条建议，避免长篇解释。" : mode === "深度分析" ? "补充证据链、风险边界、教师审核口径和下一轮修改任务。" : mode === "多模态增强" ? "除文本建议外，额外输出 PPT/视频/海报等多媒体承接建议。" : "根据输入完整度自动选择简版或深度版输出。"}
+3. 按专家能力边界输出内容；Word、PPTX 和视频由独立成果流程承接，不能因为回答方式不同而虚构已生成文件。
 4. 输出必须能被学生直接复制到阶段成果中，并标明是否建议提交老师审核。
 5. 如学生输入与当前技能不匹配，需要先温和纠偏，再给出可继续推进的结果。`,
     knowledgeBases: promptKnowledgeBases,
@@ -1572,12 +1763,23 @@ function normalizeRemoteBlocks(value: unknown): ResultBlock[] | undefined {
   return readArtifactBlocks(value);
 }
 
+function mergeManageableExperts(activeExperts: Expert[], records: CustomExpertRecord[]) {
+  const merged = new Map(activeExperts.map((expert) => [expert.id, expert]));
+  records.forEach((record) => merged.set(record.id, buildCustomExpert(record)));
+  return Array.from(merged.values());
+}
+
 function mapRemoteMessage(message: RemoteConversationMessage): ChatMessage {
   return {
     id: message.id,
     ideaId: message.ideaId,
     sender: message.sender === "AI" ? "ai" : "user",
-    mode: message.inputMode === "录音" || message.inputMode === "语音" ? message.inputMode : message.inputMode === "文本" ? "文本" : undefined,
+    mode:
+      message.inputMode === "录音" || message.inputMode === "语音" || message.inputMode === "文件"
+        ? message.inputMode
+        : message.inputMode === "文本"
+          ? "文本"
+          : undefined,
     expertId: message.expertId,
     expertName: message.expertName,
     skillName: message.skillName,
@@ -1627,10 +1829,6 @@ function mapRemoteSubmission(submission: RemoteSubmission): Submission {
     sourceMessageId: submission.sourceMessageId,
     isExcellent: submission.excellent,
   };
-}
-
-function isModelMode(value: string): value is ModelMode {
-  return modelModes.includes(value as ModelMode);
 }
 
 function matchesTeacherReviewSearch(submission: Submission, search: TeacherReviewSearch) {
@@ -2076,12 +2274,22 @@ function buildWorkBuddyVideoPrompt(asset: GeneratedAsset) {
   ].join("\n");
 }
 
-async function submitWorkBuddyVideoRun(asset: GeneratedAsset) {
-  const result = await submitWorkBuddyRun(buildWorkBuddyVideoPrompt(asset));
-  if (!result.runId) {
-    throw new Error("WorkBuddy 已响应，但没有返回 runId。");
-  }
-  return result.runId;
+async function submitWorkBuddyVideoRun(asset: GeneratedAsset, revision: number) {
+  return submitGenerationJob({
+    artifactType: "VIDEO",
+    projectId: asset.ideaId,
+    conversationId: asset.sourceMessageId || asset.ideaId,
+    ideaId: asset.ideaId,
+    expertId: "media",
+    contextSnapshot: {
+      assetId: asset.id,
+      revision,
+      businessPrompt: buildWorkBuddyVideoPrompt(asset),
+      referenceImageAssetIds: asset.referenceImageAssetIds || [],
+    },
+    idempotencyKey: videoGenerationIdempotencyKey(asset.id, revision),
+    costConfirmed: true,
+  });
 }
 
 async function checkWorkBuddyConnection() {
@@ -2090,15 +2298,8 @@ async function checkWorkBuddyConnection() {
   return;
 }
 
-async function checkGeneratedWorkBuddyVideo(runId: string) {
-  const response = await fetch(`${getWorkBuddyRunResultUrl(runId)}?t=${Date.now()}`, {
-    method: "HEAD",
-    credentials: "include",
-    cache: "no-store",
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const contentLength = Number(response.headers.get("content-length") || "0");
-  return response.ok && contentType.startsWith("video/") && contentLength > 1024;
+async function checkGeneratedWorkBuddyVideo(jobId: string) {
+  return loadGenerationJob(jobId);
 }
 
 function getDefaultTeacherComment(submission?: Pick<Submission, "artifactType" | "artifactTitle">) {
@@ -2206,6 +2407,14 @@ function buildKnowledgeAssetPreviewBlocks(asset: KnowledgeUpload): ResultBlock[]
       ],
     },
     {
+      title: "正文识别",
+      items: [
+        asset.extractionStatus === "READY"
+          ? `已识别可读正文${asset.contentText ? `（${asset.contentText.length} 个字符）` : ""}。`
+          : asset.extractionMessage || "该资料尚未完成正文识别，不会进入 AI 上下文。",
+      ],
+    },
+    {
       title: "课堂调用说明",
       items: [
         "学生端专家会根据当前选择的知识库和资料摘要生成阶段成果。",
@@ -2257,7 +2466,7 @@ function App() {
   const [activeIdeaId, setActiveIdeaId] = useState(initialIdeas[0].id);
   const [selectedExpertId, setSelectedExpertId] = useState<ExpertId>("pitch");
   const [selectedSkillId, setSelectedSkillId] = useState("deck");
-  const [model, setModel] = useState<ModelMode>("Auto");
+  const [model, setModel] = useState<AnswerMode>("Auto");
   const [prompt, setPrompt] = useState(getScenarioPrompt("pitch", initialIdeas[0]));
   const [isGenerating, setIsGenerating] = useState(false);
   const [studentView, setStudentView] = useState<StudentViewMode>("workspace");
@@ -2389,7 +2598,7 @@ function App() {
         if (activeConversation) {
           setSelectedExpertId(activeConversation.selectedExpertId);
           setSelectedSkillId(activeConversation.selectedSkillId);
-          setModel(isModelMode(activeConversation.modelMode) ? activeConversation.modelMode : "Auto");
+          setModel(normalizeAnswerMode(activeConversation.modelMode));
           setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection));
         }
         const restoredExpertId = activeConversation?.selectedExpertId || "pitch";
@@ -2618,7 +2827,7 @@ function App() {
     }
     setSelectedExpertId(conversation.selectedExpertId);
     setSelectedSkillId(conversation.selectedSkillId);
-    setModel(isModelMode(conversation.modelMode) ? conversation.modelMode : "Auto");
+    setModel(normalizeAnswerMode(conversation.modelMode));
     setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(conversation.knowledgeSelection));
     return conversation.selectedExpertId;
   }
@@ -2898,6 +3107,7 @@ function App() {
   function handleExpertSkillConfirmed(result: ExpertSkillConfirmationRecord) {
     const mapped = mapKnowledgeExpertRecord(result.expert);
     setCustomExperts((current) => [...current.filter((expert) => expert.id !== mapped.id), mapped]);
+    if (mapped.active !== false) setDeletedExpertIds((current) => current.filter((id) => id !== mapped.id));
     setPromptKnowledgeRoutes((current) => ({ ...current, [mapped.id]: result.expert.knowledgeCategories }));
     if (result.knowledgeBase) {
       const confirmedBase = result.knowledgeBase;
@@ -2947,17 +3157,20 @@ function App() {
     systemPrompt: string,
     userPrompt: string,
     categories: KnowledgeCategory[],
+    active: boolean,
   ) {
-    const expert = experts.find((item) => item.id === expertId);
+    const expert = mergeManageableExperts(experts, customExperts).find((item) => item.id === expertId);
     if (!expert) throw new Error("专家不存在");
     const saved = await saveKnowledgeExpert(
       toKnowledgeExpertInput(
         { ...toCustomExpertRecord(expert), systemPrompt, userPrompt },
         categories,
+        active,
       ),
     );
     const mapped = mapKnowledgeExpertRecord(saved);
     setCustomExperts((current) => [...current.filter((item) => item.id !== mapped.id), mapped]);
+    if (mapped.active !== false) setDeletedExpertIds((current) => current.filter((id) => id !== mapped.id));
     setPromptKnowledgeRoutes((current) => ({ ...current, [mapped.id]: saved.knowledgeCategories }));
   }
 
@@ -3055,12 +3268,13 @@ function App() {
   }
 
   function handleDeleteExpert(expertId: ExpertId) {
-    if (experts.length <= 1) {
+    const manageableExperts = mergeManageableExperts(experts, customExperts);
+    if (manageableExperts.length <= 1) {
       return false;
     }
-    const target = experts.find((expert) => expert.id === expertId);
+    const target = manageableExperts.find((expert) => expert.id === expertId);
     if (!target) return false;
-    const fallbackExpert = experts.find((expert) => expert.id !== expertId) || baseExperts[0];
+    const fallbackExpert = experts.find((expert) => expert.id !== expertId) || manageableExperts.find((expert) => expert.id !== expertId) || baseExperts[0];
     const isBaseExpert = baseExperts.some((expert) => expert.id === expertId);
     const categories = promptKnowledgeRoutes[expertId] || getExpertKnowledgeCategories(expertId);
     void (async () => {
@@ -3103,7 +3317,7 @@ function App() {
     return true;
   }
 
-  function handleGenerate(mode: "文本" | "录音" | "语音" = "文本", uploadedFiles: string[] = [], promptOverride = "") {
+  async function handleGenerate(mode: "文本" | "录音" | "语音" | "文件" = "文本", uploadedFiles: File[] = [], promptOverride = "") {
     if (!canUsePermission("AI 创意工作台")) {
       blockPermission("AI 创意工作台");
       return;
@@ -3113,16 +3327,36 @@ function App() {
       return;
     }
     setIsGenerating(true);
-    const uploadedFileText = uploadedFiles.length ? `已上传本地文件：${uploadedFiles.join("、")}。` : "";
+    const clientMessageId = makeId("M");
+    let uploadedAttachments: StudentAttachmentRecord[];
+    try {
+      uploadedAttachments = await Promise.all(
+        uploadedFiles.map((file) => uploadStudentAttachment(activeIdea.id, clientMessageId, file)),
+      );
+    } catch (error) {
+      setSystemNotice({
+        title: "本地文件上传失败",
+        message: error instanceof Error ? error.message : "文件未写入服务器，已取消本次 AI 调用。",
+      });
+      setIsGenerating(false);
+      return;
+    }
+    const unreadableAttachmentMessage =
+      uploadedAttachments.length > 0 && uploadedAttachments.every((attachment) => !attachment.readable)
+        ? uploadedAttachments.map((attachment) => `${attachment.originalName}：${attachment.extractionMessage || "未提取到可读文本"}`).join("；")
+        : "";
+    const uploadedFileText = uploadedAttachments.length
+      ? `已上传本地文件：${uploadedAttachments.map((attachment) => `${attachment.originalName}（${attachment.extractionStatus === "READY" ? "正文已识别" : attachment.extractionMessage || "未识别"}）`).join("、")}。`
+      : "";
     const typedPrompt = promptOverride.trim() || prompt.trim();
     const userContent =
-      mode === "录音"
+      mode === "文件" || mode === "录音"
         ? `${uploadedFileText || `上传了一份关于《${activeIdea.title}》的本地资料。`}请整理重点并给出建议。`
         : mode === "语音"
           ? typedPrompt || `通过语音补充了《${activeIdea.title}》的答辩想法，请模拟评委追问并给建议。`
           : typedPrompt || getScenarioPrompt(selectedExpert.id, activeIdea);
     const userMessage: ChatMessage = {
-      id: makeId("M"),
+      id: clientMessageId,
       ideaId: activeIdea.id,
       sender: "user",
       mode,
@@ -3130,18 +3364,46 @@ function App() {
       createdAt: nowTime(),
     };
     setMessages((current) => [...current, userMessage]);
-    void persistStudentMessage(userMessage);
     setPrompt("");
     const round = getExpertDialogueRound(messages, activeIdea.id, selectedExpert.id);
     const artifactType = getArtifactType(selectedExpert.id);
     const shouldOutput = shouldOutputStageResult(selectedExpert.id, round);
     const selectedExpertKnowledgeCategories = getConfiguredExpertKnowledgeCategories(selectedExpert.id, promptKnowledgeRoutes);
 
-    window.setTimeout(() => {
-      const blocks = shouldOutput
+    try {
+      await saveStudentConversation(activeIdea.id, {
+        selectedExpertId: selectedExpert.id,
+        selectedSkillId: selectedSkill.id,
+        modelMode: model,
+        knowledgeSelection: selectedKnowledgeSelection,
+      });
+      const persistedUserMessage = await persistStudentMessage(userMessage);
+      if (!persistedUserMessage) {
+        throw new Error("用户消息尚未写入数据库，已取消本次 AI 调用");
+      }
+      if (unreadableAttachmentMessage) {
+        const localNoticeMessage: ChatMessage = {
+          id: makeId("M"),
+          ideaId: activeIdea.id,
+          sender: "ai",
+          expertId: selectedExpert.id,
+          expertName: selectedExpert.name,
+          skillName: selectedSkill.name,
+          content: `文件已安全保存，但当前还不能读取正文：${unreadableAttachmentMessage}。请上传包含可复制文本的 PDF、Word、PPT、Excel、TXT/Markdown，或等待平台配置 OCR/ASR 后再试。`,
+          createdAt: nowTime(),
+        };
+        setMessages((current) => [...current, localNoticeMessage]);
+        await persistStudentMessage(localNoticeMessage);
+        return;
+      }
+      const reply = await requestDeepSeekExpertReply({
+        ideaId: activeIdea.id,
+        expertId: selectedExpert.id,
+        clientMessageId: userMessage.id,
+      });
+      const blocks: ResultBlock[] | undefined = shouldOutput
         ? [
-            ...guidedConversationBlocks(selectedExpert.id, activeIdea, round),
-            ...buildBlocks(selectedExpert.id, selectedSkill.name, model),
+            { title: `${selectedExpert.name}生成结果`, items: [reply.content] },
             ...getKnowledgeSpecificBlocks(
               selectedExpert.id,
               selectedKnowledgeSelection,
@@ -3168,7 +3430,7 @@ function App() {
         expertName: selectedExpert.name,
         skillName: selectedSkill.name,
         artifactType: shouldOutput ? artifactType : undefined,
-        content: shouldOutput ? blocks?.[0]?.items[0] || "已生成成果。" : guidedConversationText(selectedExpert.id, activeIdea, round),
+        content: reply.content,
         blocks,
         createdAt: nowTime(),
       };
@@ -3197,8 +3459,14 @@ function App() {
             message: error instanceof Error ? error.message : "生成结果已保留，但当前阶段暂未同步。",
           });
         });
+    } catch (error) {
+      setSystemNotice({
+        title: "AI 生成失败",
+        message: error instanceof Error ? error.message : "AI 服务暂时不可用，请稍后重试。",
+      });
+    } finally {
       setIsGenerating(false);
-    }, getChatGenerationDelay(selectedExpert.id, shouldOutput));
+    }
   }
 
   function buildPptAssetFromMessage(
@@ -3932,7 +4200,7 @@ function StudentView(props: {
   experts: Expert[];
   selectedExpert: Expert;
   selectedSkill: Skill;
-  model: ModelMode;
+  model: AnswerMode;
   prompt: string;
   messages: ChatMessage[];
   submissions: Submission[];
@@ -3949,7 +4217,7 @@ function StudentView(props: {
   permissionAccess: PermissionAccess;
   onViewChange: (view: StudentViewMode) => void;
   onExpertSelect: (expert: Expert) => void;
-  onModelChange: (mode: ModelMode) => void;
+  onModelChange: (mode: AnswerMode) => void;
   onKnowledgeSelectionChange: (selection: StudentKnowledgeSelection) => void;
   onPromptChange: (value: string) => void;
   onIdeaSelect: (ideaId: string) => void;
@@ -3957,7 +4225,7 @@ function StudentView(props: {
   onIdeaDelete: (ideaId: string) => void;
   onIdeaRename: (ideaId: string, nextTitle: string) => void;
   onIdeaEdit: () => void;
-  onGenerate: (mode?: "文本" | "录音" | "语音", uploadedFiles?: string[], promptOverride?: string) => void;
+  onGenerate: (mode?: "文本" | "录音" | "语音" | "文件", uploadedFiles?: File[], promptOverride?: string) => void;
   onContextAction: (message: ChatMessage, action: ContextAction) => void | Promise<void>;
   onSubmitMessage: (message: ChatMessage) => void;
   onSaveDefense: (practice: DefensePractice) => void;
@@ -4178,7 +4446,7 @@ function ChatWorkspace(props: {
   experts: Expert[];
   selectedExpert: Expert;
   selectedSkill: Skill;
-  model: ModelMode;
+  model: AnswerMode;
   prompt: string;
   messages: ChatMessage[];
   submissions: Submission[];
@@ -4190,11 +4458,11 @@ function ChatWorkspace(props: {
   isGenerating: boolean;
   studentAvatarId: StudentAvatarId;
   onExpertSelect: (expert: Expert) => void;
-  onModelChange: (mode: ModelMode) => void;
+  onModelChange: (mode: AnswerMode) => void;
   onKnowledgeSelectionChange: (selection: StudentKnowledgeSelection) => void;
   onPromptChange: (value: string) => void;
   onIdeaEdit: () => void;
-  onGenerate: (mode?: "文本" | "录音" | "语音", uploadedFiles?: string[], promptOverride?: string) => void;
+  onGenerate: (mode?: "文本" | "录音" | "语音" | "文件", uploadedFiles?: File[], promptOverride?: string) => void;
   onContextAction: (message: ChatMessage, action: ContextAction) => void | Promise<void>;
   onSubmitMessage: (message: ChatMessage) => void;
   permissionAccess: PermissionAccess;
@@ -4296,8 +4564,7 @@ function ChatWorkspace(props: {
       props.permissionAccess.block("AI 创意工作台");
       return;
     }
-    const uploadedFiles = Array.from(files).map((file) => `${file.name}（${formatFileSize(file.size)}）`);
-    props.onGenerate("录音", uploadedFiles);
+    props.onGenerate("文件", Array.from(files));
   }
 
   return (
@@ -4505,6 +4772,10 @@ function ChatWorkspace(props: {
             <p>{props.selectedExpert.role}</p>
           </div>
         </div>
+        <p className="expert-output-route">
+          <strong>成果路线：</strong>
+          {getStudentOutcomeFlow(props.selectedExpert.id)}
+        </p>
         <textarea
           aria-label="和 AI 助教对话"
           value={props.prompt}
@@ -4539,12 +4810,12 @@ function ChatWorkspace(props: {
             />
           </label>
           <label>
-            <span>模式</span>
+            <span>回答方式</span>
             <PrettySelect
               value={props.model}
               disabled={!props.permissionAccess.can("AI 创意工作台")}
-              ariaLabel="选择生成模式"
-              options={modelModes.map((mode) => ({ value: mode, label: mode }))}
+              ariaLabel="选择回答方式"
+              options={answerModes.map((mode) => ({ value: mode, label: answerModeLabels[mode] }))}
               onChange={(value) => props.onModelChange(value)}
             />
           </label>
@@ -4574,7 +4845,7 @@ function ChatWorkspace(props: {
               className="visually-hidden-input"
               type="file"
               multiple
-              accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.mp3,.m4a,.wav"
+              accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.mp3,.m4a,.wav,.mp4,.mov,.webm"
               onChange={(event) => {
                 handleStudentUpload(event.target.files);
                 event.currentTarget.value = "";
@@ -5388,16 +5659,21 @@ function MediaGenerationModal(props: {
   onClose: () => void;
   onConfirm: (asset: GeneratedAsset) => void;
 }) {
-  const [showPreview, setShowPreview] = useState(Boolean(props.asset.videoUrl));
+  const hasActiveVideoJob = props.asset.videoGenerationStatus === "QUEUED"
+    || props.asset.videoGenerationStatus === "RUNNING";
+  const [showPreview, setShowPreview] = useState(Boolean(props.asset.videoUrl) && !hasActiveVideoJob);
   const [isRendering, setIsRendering] = useState(false);
-  const [workBuddyRunId, setWorkBuddyRunId] = useState("");
+  const [workBuddyRunId, setWorkBuddyRunId] = useState(props.asset.videoGenerationJobId || "");
   const [workBuddyError, setWorkBuddyError] = useState("");
   const [workBuddyStatus, setWorkBuddyStatus] = useState<"idle" | "checking" | "connected" | "offline">("idle");
   const [workBuddyStatusMessage, setWorkBuddyStatusMessage] = useState("点击生成视频时才会连接 WorkBuddy。");
   const [generatedVideoVersion, setGeneratedVideoVersion] = useState(() => Date.now());
-  const [hasGeneratedWorkBuddyVideo, setHasGeneratedWorkBuddyVideo] = useState(Boolean(props.asset.videoUrl));
+  const [hasGeneratedWorkBuddyVideo, setHasGeneratedWorkBuddyVideo] = useState(
+    Boolean(props.asset.videoUrl) && !hasActiveVideoJob,
+  );
   const [videoCheckMessage, setVideoCheckMessage] = useState("");
   const [videoRenderProgress, setVideoRenderProgress] = useState(4);
+  const [awaitingCostConfirmation, setAwaitingCostConfirmation] = useState(false);
 
   const modalEyebrow = hasGeneratedWorkBuddyVideo && showPreview ? "视频已生成" : workBuddyRunId ? "正在渲染视频" : isRendering ? "正在提交任务" : "先确认生成提示词";
   const modalDescription =
@@ -5417,8 +5693,15 @@ function MediaGenerationModal(props: {
     : undefined;
   const { asset: activeMediaAsset, onAssetChange, onConfirm } = props;
 
-  const markWorkBuddyVideoReady = useCallback((runId: string) => {
-    const nextAsset = { ...activeMediaAsset, videoUrl: getWorkBuddyRunResultUrl(runId), videoGeneratedAt: nowTime() };
+  const markWorkBuddyVideoReady = useCallback((jobId: string, artifactUrl?: string | null, revision?: number) => {
+    const nextAsset = {
+      ...activeMediaAsset,
+      videoUrl: artifactUrl || getGenerationJobArtifactUrl(jobId),
+      videoGeneratedAt: nowTime(),
+      videoGenerationJobId: jobId,
+      videoGenerationRevision: revision ?? activeMediaAsset.videoGenerationRevision,
+      videoGenerationStatus: "SUCCEEDED" as GenerationJobStatus,
+    };
     onAssetChange(nextAsset);
     onConfirm(nextAsset);
   }, [activeMediaAsset, onAssetChange, onConfirm]);
@@ -5430,13 +5713,17 @@ function MediaGenerationModal(props: {
     const timer = window.setInterval(() => {
       attempts += 1;
       checkGeneratedWorkBuddyVideo(workBuddyRunId)
-        .then((isReady) => {
-          if (isReady) {
+        .then((job) => {
+          if (job.status === "SUCCEEDED" && job.artifactUrl) {
             setGeneratedVideoVersion(Date.now());
             setHasGeneratedWorkBuddyVideo(true);
             setShowPreview(true);
             setVideoCheckMessage("视频已生成，可以预览。");
-            markWorkBuddyVideoReady(workBuddyRunId);
+            markWorkBuddyVideoReady(workBuddyRunId, job.artifactUrl);
+            window.clearInterval(timer);
+          } else if (job.status === "FAILED" || job.status === "CANCELED") {
+            setVideoCheckMessage(job.status === "FAILED" ? "视频生成失败，请检查任务后再重新生成。" : "视频生成已取消。");
+            setWorkBuddyStatus("offline");
             window.clearInterval(timer);
           } else if (attempts >= 60) {
             setVideoCheckMessage("暂未找到 MP4 文件。WorkBuddy 可能仍在处理，或任务没有完成渲染。");
@@ -5475,9 +5762,9 @@ function MediaGenerationModal(props: {
 
   async function handleConfirmPrompt() {
     if (isRendering) return;
-    const regeneratingAsset = { ...props.asset, videoUrl: undefined, videoGeneratedAt: undefined };
-    props.onAssetChange(regeneratingAsset);
-    props.onConfirm(regeneratingAsset);
+    const revision = nextVideoGenerationRevision(props.asset.videoGenerationRevision);
+    const regeneratingAsset = { ...props.asset, videoGenerationRevision: revision };
+    setAwaitingCostConfirmation(false);
     setShowPreview(false);
     setHasGeneratedWorkBuddyVideo(false);
     setIsRendering(true);
@@ -5491,9 +5778,23 @@ function MediaGenerationModal(props: {
       await checkWorkBuddyConnection();
       setWorkBuddyStatus("connected");
       setWorkBuddyStatusMessage("已连接平台 Java 网关，正在检查 WorkBuddy 网关是否启用。");
-      const runId = await submitWorkBuddyVideoRun(regeneratingAsset);
-      setWorkBuddyRunId(runId);
+      const job = await submitWorkBuddyVideoRun(regeneratingAsset, revision);
+      const acceptedAsset = {
+        ...regeneratingAsset,
+        videoGenerationJobId: job.id,
+        videoGenerationStatus: job.status,
+      };
+      props.onAssetChange(acceptedAsset);
+      props.onConfirm(acceptedAsset);
+      setWorkBuddyRunId(job.id);
       setVideoRenderProgress(4);
+      if (job.status === "SUCCEEDED" && job.artifactUrl) {
+        setGeneratedVideoVersion(Date.now());
+        setHasGeneratedWorkBuddyVideo(true);
+        setShowPreview(true);
+        markWorkBuddyVideoReady(job.id, job.artifactUrl, revision);
+        return;
+      }
       setVideoCheckMessage("已提交生成任务，正在检查独立任务目录中的 MP4 结果。");
     } catch (error) {
       setWorkBuddyStatus("offline");
@@ -5506,13 +5807,13 @@ function MediaGenerationModal(props: {
 
   async function handleCheckGeneratedVideo() {
     if (!workBuddyRunId) return;
-    const isReady = await checkGeneratedWorkBuddyVideo(workBuddyRunId);
-    if (isReady) {
+    const job = await checkGeneratedWorkBuddyVideo(workBuddyRunId);
+    if (job.status === "SUCCEEDED" && job.artifactUrl) {
       setGeneratedVideoVersion(Date.now());
       setHasGeneratedWorkBuddyVideo(true);
       setShowPreview(true);
       setVideoCheckMessage("视频已生成，可以预览。");
-      markWorkBuddyVideoReady(workBuddyRunId);
+      markWorkBuddyVideoReady(workBuddyRunId, job.artifactUrl);
       return;
     }
     setShowPreview(false);
@@ -5567,6 +5868,18 @@ function MediaGenerationModal(props: {
             </div>
           )}
           {workBuddyError && <p className="asset-hint workbuddy-error">{workBuddyError}</p>}
+          {awaitingCostConfirmation && (
+            <div className="workbuddy-cost-confirmation" role="alert">
+              <div>
+                <strong>{props.asset.videoUrl ? "确认重新生成视频" : "确认生成视频"}</strong>
+                <p>确认后才会创建一个 WorkBuddy 付费任务。同一任务刷新或重试不会重复创建；完成后不会继续调用。</p>
+              </div>
+              <div>
+                <button type="button" onClick={() => setAwaitingCostConfirmation(false)}>取消</button>
+                <button type="button" onClick={handleConfirmPrompt}>确认并生成</button>
+              </div>
+            </div>
+          )}
           {showPreview && videoPreviewUrl && (
             <div className="video-preview">
               <video
@@ -5606,7 +5919,11 @@ function MediaGenerationModal(props: {
           </div>
         </div>
         <footer className="context-actions">
-          <button type="button" onClick={handleConfirmPrompt} disabled={isRendering || isWaitingForGeneratedVideo}>
+          <button
+            type="button"
+            onClick={() => setAwaitingCostConfirmation(true)}
+            disabled={isRendering || isWaitingForGeneratedVideo || awaitingCostConfirmation}
+          >
             <Clapperboard size={15} />
             {isRendering
               ? "正在提交任务"
@@ -6504,6 +6821,7 @@ function TeacherView(props: {
     systemPrompt: string,
     userPrompt: string,
     categories: KnowledgeCategory[],
+    active: boolean,
   ) => Promise<void>;
   onDeleteExpert: (expertId: ExpertId) => boolean;
   onDeleteKnowledgeBase: (category: KnowledgeCategory) => boolean;
@@ -6533,16 +6851,19 @@ function TeacherView(props: {
   const [knowledgeSaveMessage, setKnowledgeSaveMessage] = useState<string | null>(null);
   const [pendingDeleteExpertId, setPendingDeleteExpertId] = useState<ExpertId | null>(null);
   const [teacherPromptExpertId, setTeacherPromptExpertId] = useState<ExpertId>("brainstorm");
-  const [teacherPromptMode, setTeacherPromptMode] = useState<ModelMode>("Auto");
+  const [isTeacherExpertDetailOpen, setIsTeacherExpertDetailOpen] = useState(false);
+  const [teacherExpertListRefreshKey, setTeacherExpertListRefreshKey] = useState(0);
+  const teacherManageableExperts = mergeManageableExperts(experts, props.customExperts);
+  const initialTeacherPromptExpert = teacherManageableExperts.find((expert) => expert.id === "brainstorm") || teacherManageableExperts[0];
   const initialTeacherPromptParts = buildPromptTemplateParts(
-    experts[0],
-    "Auto",
+    initialTeacherPromptExpert,
     props.knowledgeUploads,
     props.knowledgeBaseStates,
-    props.promptKnowledgeRoutes[experts[0].id],
+    props.promptKnowledgeRoutes[initialTeacherPromptExpert.id],
   );
   const [teacherSystemPromptDraft, setTeacherSystemPromptDraft] = useState(initialTeacherPromptParts.system);
   const [teacherUserPromptDraft, setTeacherUserPromptDraft] = useState(initialTeacherPromptParts.user);
+  const [teacherExpertActiveDraft, setTeacherExpertActiveDraft] = useState(initialTeacherPromptExpert.active !== false);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
   const [selectedIssueMetricLabel, setSelectedIssueMetricLabel] = useState<string | null>(null);
@@ -6560,12 +6881,11 @@ function TeacherView(props: {
     ? activeKnowledgeCatalog.find((base) => base.category === knowledgeBasePreviewCategory) || null
     : null;
   const selectedUploadKnowledgeBase = activeKnowledgeCatalog.find((base) => base.category === uploadCategory) || activeKnowledgeCatalog[0];
-  const teacherPromptExpert = experts.find((expert) => expert.id === teacherPromptExpertId) || experts[0];
-  const pendingDeleteExpert = pendingDeleteExpertId ? experts.find((expert) => expert.id === pendingDeleteExpertId) || null : null;
+  const teacherPromptExpert = teacherManageableExperts.find((expert) => expert.id === teacherPromptExpertId) || teacherManageableExperts[0];
+  const pendingDeleteExpert = pendingDeleteExpertId ? teacherManageableExperts.find((expert) => expert.id === pendingDeleteExpertId) || null : null;
   const teacherPromptKnowledgeCategories = props.promptKnowledgeRoutes[teacherPromptExpert.id] || getExpertKnowledgeCategories(teacherPromptExpert.id);
   const teacherPromptMeta = buildPromptTemplateParts(
     teacherPromptExpert,
-    teacherPromptMode,
     props.knowledgeUploads,
     props.knowledgeBaseStates,
     teacherPromptKnowledgeCategories,
@@ -6890,13 +7210,16 @@ function TeacherView(props: {
     if (!pendingDeleteExpert) return;
     const expertId = pendingDeleteExpert.id;
     if (props.onDeleteExpert(expertId)) {
-      const nextExpert = experts.find((expert) => expert.id !== expertId) || experts[0];
+      const nextExpert = teacherManageableExperts.find((expert) => expert.id !== expertId) || teacherManageableExperts[0];
       const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
-      const nextParts = buildPromptTemplateParts(nextExpert, teacherPromptMode, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
+      const nextParts = buildPromptTemplateParts(nextExpert, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
       setTeacherPromptExpertId(nextExpert.id);
       setTeacherSystemPromptDraft(nextParts.system);
       setTeacherUserPromptDraft(nextParts.user);
+      setTeacherExpertActiveDraft(nextExpert.active !== false);
       setKnowledgeSaveMessage("专家已删除，并同步到学生端专家列表。");
+      setIsTeacherExpertDetailOpen(false);
+      setTeacherExpertListRefreshKey((current) => current + 1);
     }
     setPendingDeleteExpertId(null);
   }
@@ -7089,7 +7412,6 @@ function TeacherView(props: {
     props.onPromptKnowledgeRoutesChange({ ...props.promptKnowledgeRoutes, [teacherPromptExpert.id]: nextCategories });
     const nextParts = buildPromptTemplateParts(
       teacherPromptExpert,
-      teacherPromptMode,
       props.knowledgeUploads,
       props.knowledgeBaseStates,
       nextCategories,
@@ -7105,7 +7427,10 @@ function TeacherView(props: {
         teacherSystemPromptDraft,
         teacherUserPromptDraft,
         teacherPromptKnowledgeCategories,
+        teacherExpertActiveDraft,
       );
+      setIsTeacherExpertDetailOpen(false);
+      setTeacherExpertListRefreshKey((current) => current + 1);
       setIsPromptSaveOpen(true);
     } catch (error) {
       setKnowledgeSaveMessage(error instanceof Error ? error.message : "提示词保存失败");
@@ -7121,16 +7446,31 @@ function TeacherView(props: {
     const mapped = mapKnowledgeExpertRecord(result.expert);
     const nextParts = buildPromptTemplateParts(
       buildCustomExpert(mapped),
-      "Auto",
       props.knowledgeUploads,
       nextStates,
       result.expert.knowledgeCategories,
     );
     setTeacherPromptExpertId(mapped.id);
-    setTeacherPromptMode("Auto");
     setTeacherSystemPromptDraft(nextParts.system);
     setTeacherUserPromptDraft(nextParts.user);
+    setTeacherExpertActiveDraft(result.expert.active);
     setKnowledgeSaveMessage(`专家 Skill「${result.expert.name}」已保存${result.expert.active ? "并启用" : "，当前未启用"}。`);
+  }
+
+  function openTeacherExpertDetail(expertId: string) {
+    const nextExpert = teacherManageableExperts.find((expert) => expert.id === expertId) || teacherManageableExperts[0];
+    const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
+    const nextParts = buildPromptTemplateParts(
+      nextExpert,
+      props.knowledgeUploads,
+      props.knowledgeBaseStates,
+      nextCategories,
+    );
+    setTeacherPromptExpertId(nextExpert.id);
+    setTeacherSystemPromptDraft(nextParts.system);
+    setTeacherUserPromptDraft(nextParts.user);
+    setTeacherExpertActiveDraft(nextExpert.active !== false);
+    setIsTeacherExpertDetailOpen(true);
   }
 
   function handleCreateKnowledgeBase() {
@@ -7609,128 +7949,31 @@ function TeacherView(props: {
             <ExpertSkillManager
               actorLabel="教师端"
               knowledgeBases={props.knowledgeCatalog}
+              refreshKey={teacherExpertListRefreshKey}
               onMessage={setKnowledgeSaveMessage}
               onConfirmed={handleTeacherExpertSkillConfirmed}
+              onOpenExpert={openTeacherExpertDetail}
             />
-            <div className="prompt-control-panel teacher-prompt-controls">
-              <label>
-                <span>专家</span>
-                <PrettySelect
-                  value={teacherPromptExpert.id}
-                  ariaLabel="选择提示词专家"
-                  options={experts.map((expert) => ({ value: expert.id, label: expert.name }))}
-                  onChange={(value) => {
-                    const nextExpert = experts.find((expert) => expert.id === value) || experts[0];
-                          const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
-                    const nextParts = buildPromptTemplateParts(nextExpert, teacherPromptMode, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
-                    setTeacherPromptExpertId(nextExpert.id);
-                    setTeacherSystemPromptDraft(nextParts.system);
-                    setTeacherUserPromptDraft(nextParts.user);
-                  }}
-                />
-              </label>
-              <label>
-                <span>模式</span>
-                <PrettySelect
-                  value={teacherPromptMode}
-                  ariaLabel="选择提示词模式"
-                  options={modelModes.map((mode) => ({ value: mode, label: mode }))}
-                  onChange={(nextMode) => {
-                    const nextParts = buildPromptTemplateParts(
-                      teacherPromptExpert,
-                      nextMode,
-                      props.knowledgeUploads,
-                      props.knowledgeBaseStates,
-                      teacherPromptKnowledgeCategories,
-                    );
-                    setTeacherPromptMode(nextMode);
-                    setTeacherSystemPromptDraft(nextParts.system);
-                    setTeacherUserPromptDraft(nextParts.user);
-                  }}
-                />
-              </label>
-              <div className="prompt-action-group">
-                <button className="primary-button prompt-save-button" type="button" onClick={() => void handleTeacherSavePrompt()}>
-                  <Save size={15} />
-                  保存提示词
-                </button>
-                {experts.length > 1 && (
-                  <button
-                    className="ghost-button danger prompt-delete-expert-button"
-                    type="button"
-                    onClick={() => setPendingDeleteExpertId(teacherPromptExpert.id)}
-                  >
-                    <Trash2 size={15} />
-                    删除当前专家
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="prompt-quick-stats">
-              <article>
-                <span>当前专家</span>
-                <strong>{teacherPromptExpert.name}</strong>
-              </article>
-              <article>
-                <span>生成模式</span>
-                <strong>{teacherPromptMode}</strong>
-              </article>
-              <article>
-                <span>知识库目录</span>
-                <strong>{teacherPromptKnowledgeCategories.length} 个</strong>
-              </article>
-              <article>
-                <span>启用资料</span>
-                <strong>{teacherPromptMeta.enabledKnowledgeCount} 个</strong>
-              </article>
-            </div>
-            <section className="prompt-knowledge-route teacher-prompt-route">
-              <div>
-                <strong>当前专家调用知识库目录</strong>
-                <span>已选择 {teacherPromptKnowledgeCategories.length} 个目录 · 已启用资料 {teacherPromptMeta.enabledKnowledgeCount} 个</span>
-              </div>
-              <div className="prompt-knowledge-options">
-                {activeKnowledgeCatalog.map((base) => {
-                  const selected = teacherPromptKnowledgeCategories.includes(base.category);
-                  const enabled = props.knowledgeBaseStates[base.category];
-                  return (
-                    <label className={`${selected ? "selected" : ""} ${enabled ? "" : "disabled"}`} key={base.category}>
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => handleTeacherPromptKnowledgeToggle(base.category)}
-                      />
-                      <span>{base.category}知识库</span>
-                      <em>{enabled ? "目录开放" : "目录停用"}</em>
-                      <small>{base.usedBy}</small>
-                    </label>
-                  );
-                })}
-              </div>
-              <p>教师端和管理端共用同一套专家知识库目录配置；至少保留 1 个目录，修改后会同步重算系统提示词和用户输入组装规则。</p>
-            </section>
-            <section className="prompt-content-grid teacher-prompt-grid">
-              <article>
-                <span className="eyebrow">System</span>
-                <h3>系统提示词</h3>
-                <p>定义专家角色、知识库引用规则、模式策略和输出边界。</p>
-                <textarea
-                  className="teacher-prompt-textarea"
-                  value={teacherSystemPromptDraft}
-                  onChange={(event) => setTeacherSystemPromptDraft(event.target.value)}
-                />
-              </article>
-              <article>
-                <span className="eyebrow">User</span>
-                <h3>用户输入组装规则</h3>
-                <p>定义学生输入、历史上下文、上传资料和本轮任务如何组装。</p>
-                <textarea
-                  className="teacher-prompt-textarea"
-                  value={teacherUserPromptDraft}
-                  onChange={(event) => setTeacherUserPromptDraft(event.target.value)}
-                />
-              </article>
-            </section>
+            {isTeacherExpertDetailOpen && (
+              <ExpertDetailModal
+                expert={teacherPromptExpert}
+                knowledgeCatalog={activeKnowledgeCatalog}
+                knowledgeBaseStates={props.knowledgeBaseStates}
+                selectedCategories={teacherPromptKnowledgeCategories}
+                enabledKnowledgeCount={teacherPromptMeta.enabledKnowledgeCount}
+                systemPrompt={teacherSystemPromptDraft}
+                userPrompt={teacherUserPromptDraft}
+                active={teacherExpertActiveDraft}
+                canDelete={teacherManageableExperts.length > 1}
+                onKnowledgeToggle={handleTeacherPromptKnowledgeToggle}
+                onSystemPromptChange={setTeacherSystemPromptDraft}
+                onUserPromptChange={setTeacherUserPromptDraft}
+                onActiveChange={setTeacherExpertActiveDraft}
+                onSave={() => void handleTeacherSavePrompt()}
+                onDelete={() => setPendingDeleteExpertId(teacherPromptExpert.id)}
+                onClose={() => setIsTeacherExpertDetailOpen(false)}
+              />
+            )}
           </div>
         )}
 
@@ -8211,6 +8454,7 @@ function AdminView(props: {
     systemPrompt: string,
     userPrompt: string,
     categories: KnowledgeCategory[],
+    active: boolean,
   ) => Promise<void>;
   onDeleteExpert: (expertId: ExpertId) => boolean;
   onDeleteKnowledgeBase: (category: KnowledgeCategory) => boolean;
@@ -8224,8 +8468,8 @@ function AdminView(props: {
   const [selectedKanbanGroupId, setSelectedKanbanGroupId] = useState<string | null>(null);
   const [selectedGroupDetailId, setSelectedGroupDetailId] = useState<string | null>(null);
   const [promptExpertId, setPromptExpertId] = useState<ExpertId>("brainstorm");
-  const [promptMode, setPromptMode] = useState<ModelMode>("Auto");
   const [pendingDeleteExpertId, setPendingDeleteExpertId] = useState<ExpertId | null>(null);
+  const [isAdminExpertDetailOpen, setIsAdminExpertDetailOpen] = useState(false);
   const accountRecords = props.accountRecords;
   const [selectedAccountId, setSelectedAccountId] = useState(() => accountRecords[0]?.id || "");
   const [accountDetailId, setAccountDetailId] = useState<string | null>(null);
@@ -8257,15 +8501,18 @@ function AdminView(props: {
   const [adminKnowledgeDirectorySearch, setAdminKnowledgeDirectorySearch] = useState("");
   const [adminKnowledgeBasePreviewCategory, setAdminKnowledgeBasePreviewCategory] = useState<KnowledgeCategory | null>(null);
   const [knowledgeSaveMessage, setKnowledgeSaveMessage] = useState<string | null>(null);
+  const [adminExpertListRefreshKey, setAdminExpertListRefreshKey] = useState(0);
+  const adminManageableExperts = mergeManageableExperts(experts, props.customExperts);
+  const initialAdminPromptExpert = adminManageableExperts.find((expert) => expert.id === "brainstorm") || adminManageableExperts[0];
   const initialAdminPromptParts = buildPromptTemplateParts(
-    experts[0],
-    "Auto",
+    initialAdminPromptExpert,
     props.knowledgeUploads,
     props.knowledgeBaseStates,
-    props.promptKnowledgeRoutes[experts[0].id],
+    props.promptKnowledgeRoutes[initialAdminPromptExpert.id],
   );
   const [adminSystemPromptDraft, setAdminSystemPromptDraft] = useState(initialAdminPromptParts.system);
   const [adminUserPromptDraft, setAdminUserPromptDraft] = useState(initialAdminPromptParts.user);
+  const [adminExpertActiveDraft, setAdminExpertActiveDraft] = useState(initialAdminPromptExpert.active !== false);
   const [isPromptSaveOpen, setIsPromptSaveOpen] = useState(false);
   const [accountSaveMessage, setAccountSaveMessage] = useState<string | null>(null);
   const [adminDataLoading, setAdminDataLoading] = useState(true);
@@ -8347,58 +8594,15 @@ function AdminView(props: {
   });
   const selectedKanbanProject = selectedKanbanGroupId ? kanbanProjects.find((project) => project.group.id === selectedKanbanGroupId) || null : null;
   const selectedGroupDetail = selectedGroupDetailId ? kanbanProjects.find((project) => project.group.id === selectedGroupDetailId) || null : null;
-  const promptExpert = experts.find((expert) => expert.id === promptExpertId) || experts[0];
-  const pendingDeleteExpert = pendingDeleteExpertId ? experts.find((expert) => expert.id === pendingDeleteExpertId) || null : null;
+  const promptExpert = adminManageableExperts.find((expert) => expert.id === promptExpertId) || adminManageableExperts[0];
+  const pendingDeleteExpert = pendingDeleteExpertId ? adminManageableExperts.find((expert) => expert.id === pendingDeleteExpertId) || null : null;
   const adminPromptKnowledgeCategories = props.promptKnowledgeRoutes[promptExpert.id] || getExpertKnowledgeCategories(promptExpert.id);
-  const promptKnowledgeBases = getKnowledgeCatalogItems(adminPromptKnowledgeCategories);
   const enabledKnowledgeCount = props.knowledgeUploads.filter(
     (asset) =>
       asset.enabled !== false &&
       props.knowledgeBaseStates[asset.category || inferKnowledgeCategory(asset.name)] &&
       adminPromptKnowledgeCategories.includes(asset.category || inferKnowledgeCategory(asset.name)),
   ).length;
-  const modeInstructions: Record<ModelMode, string> = {
-    Auto: "自动判断输出深度，优先保证课堂演示节奏和结果完整性。",
-    快速生成: "压缩分析过程，优先给出可直接复制的结构化结论。",
-    深度分析: "增加商业判断、证据链、风险提示和教师审核口径。",
-    多模态增强: "在文本结果之外补充 PPT、视频、海报或视觉素材的生成建议。",
-  };
-  const expertPromptContent = `角色：${promptExpert.name}
-定位：${promptExpert.role}
-适用场景：${promptExpert.scenario}
-
-技能匹配方式：系统根据学生提问自动匹配该专家下的技能，不再在学生输入框展示技能下拉。
-覆盖技能：${promptExpert.skills.map((skill) => `${skill.stage}/${skill.name}`).join("、")}
-
-知识库引用规则：
-${promptKnowledgeBases.map((base) => `- ${base.category}知识库：${base.description}`).join("\n")}
-引用方式：优先使用已启用资料；如果某个知识库暂无教师上传资料，则使用平台预置教学口径生成，但需要在结果中保持“知识来源标签”。
-
-模式策略：${promptMode}
-${modeInstructions[promptMode]}
-
-输出要求：
-1. 结合上海财经大学商学院创业实践课程场景，保持正式、教学导向、可审核。
-2. 输出必须包含“生成摘要、关键建议、风险提醒、下一步动作”四类内容。
-3. 如涉及阶段成果，需明确该成果可提交教师审核，并说明教师可重点看哪些判断依据。
-4. 不出现底层供应商、真实模型名称或 token 信息。`;
-  const expertPromptUserTemplate = `学生输入变量：
-- 当前创意：项目名称、目标用户、问题场景、已验证/待验证假设
-- 历史上下文：同一创意下最近 5 轮对话、已生成的阶段成果、教师反馈意见
-- 本轮输入：学生在聊天框提出的问题、上传文件摘要、语音转写摘要
-- 当前专家字段：${promptExpert.name} / ${promptExpert.scenario}
-- 可引用知识库：${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}
-- 已启用资料数量：${enabledKnowledgeCount} 个；如为 0，则使用平台预置教学口径并保留知识来源标签
-
-生成任务：
-请基于以上上下文，调用“${promptExpert.name}”，由系统自动匹配技能，并按照“${promptMode}”模式输出结果。
-
-组装规则：
-1. 先判断学生当前处于哪个阶段节点，优先读取同一创意下与该节点相关的历史成果。
-2. 从${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}中检索已启用资料，并把命中的资料转成“知识来源标签”。
-3. ${promptMode === "快速生成" ? "只保留最关键的 3-4 条建议，避免长篇解释。" : promptMode === "深度分析" ? "补充证据链、风险边界、教师审核口径和下一轮修改任务。" : promptMode === "多模态增强" ? "除文本建议外，额外输出 PPT/视频/海报等多媒体承接建议。" : "根据输入完整度自动选择简版或深度版输出。"}
-4. 输出必须能被学生直接复制到阶段成果中，并标明是否建议提交老师审核。
-5. 如学生输入与当前技能不匹配，需要先温和纠偏，再给出可继续推进的结果。`;
   const accountDetail = accountDetailId ? accountRecords.find((account) => account.id === accountDetailId) || null : null;
   const studentGroupRows = props.studentGroups.map((group) => ({
     ...group,
@@ -8632,13 +8836,16 @@ ${modeInstructions[promptMode]}
     if (!pendingDeleteExpert) return;
     const expertId = pendingDeleteExpert.id;
     if (props.onDeleteExpert(expertId)) {
-      const nextExpert = experts.find((expert) => expert.id !== expertId) || experts[0];
+      const nextExpert = adminManageableExperts.find((expert) => expert.id !== expertId) || adminManageableExperts[0];
       const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
-      const nextParts = buildPromptTemplateParts(nextExpert, promptMode, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
+      const nextParts = buildPromptTemplateParts(nextExpert, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
       setPromptExpertId(nextExpert.id);
       setAdminSystemPromptDraft(nextParts.system);
       setAdminUserPromptDraft(nextParts.user);
+      setAdminExpertActiveDraft(nextExpert.active !== false);
       setKnowledgeSaveMessage("专家已删除，并同步到教师端和学生端专家列表。");
+      setIsAdminExpertDetailOpen(false);
+      setAdminExpertListRefreshKey((current) => current + 1);
     }
     setPendingDeleteExpertId(null);
   }
@@ -8648,13 +8855,28 @@ ${modeInstructions[promptMode]}
     props.onPromptKnowledgeRoutesChange({ ...props.promptKnowledgeRoutes, [promptExpert.id]: nextCategories });
     const nextParts = buildPromptTemplateParts(
       promptExpert,
-      promptMode,
       props.knowledgeUploads,
       props.knowledgeBaseStates,
       nextCategories,
     );
     setAdminSystemPromptDraft(nextParts.system);
     setAdminUserPromptDraft(nextParts.user);
+  }
+
+  function openAdminExpertDetail(expertId: string) {
+    const nextExpert = adminManageableExperts.find((expert) => expert.id === expertId) || adminManageableExperts[0];
+    const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
+    const nextParts = buildPromptTemplateParts(
+      nextExpert,
+      props.knowledgeUploads,
+      props.knowledgeBaseStates,
+      nextCategories,
+    );
+    setPromptExpertId(nextExpert.id);
+    setAdminSystemPromptDraft(nextParts.system);
+    setAdminUserPromptDraft(nextParts.user);
+    setAdminExpertActiveDraft(nextExpert.active !== false);
+    setIsAdminExpertDetailOpen(true);
   }
 
   async function handleAdminSavePrompt() {
@@ -8664,7 +8886,10 @@ ${modeInstructions[promptMode]}
         adminSystemPromptDraft,
         adminUserPromptDraft,
         adminPromptKnowledgeCategories,
+        adminExpertActiveDraft,
       );
+      setIsAdminExpertDetailOpen(false);
+      setAdminExpertListRefreshKey((current) => current + 1);
       setIsPromptSaveOpen(true);
     } catch (error) {
       setKnowledgeSaveMessage(error instanceof Error ? error.message : "提示词保存失败");
@@ -8680,15 +8905,14 @@ ${modeInstructions[promptMode]}
     const mapped = mapKnowledgeExpertRecord(result.expert);
     const nextParts = buildPromptTemplateParts(
       buildCustomExpert(mapped),
-      "Auto",
       props.knowledgeUploads,
       nextStates,
       result.expert.knowledgeCategories,
     );
     setPromptExpertId(mapped.id);
-    setPromptMode("Auto");
     setAdminSystemPromptDraft(nextParts.system);
     setAdminUserPromptDraft(nextParts.user);
+    setAdminExpertActiveDraft(result.expert.active);
     setKnowledgeSaveMessage(`专家 Skill「${result.expert.name}」已保存${result.expert.active ? "并启用" : "，当前未启用"}。`);
   }
 
@@ -8748,6 +8972,8 @@ ${modeInstructions[promptMode]}
           uploadedAt: nowDateTime(),
           uploadedBy: props.adminName || "平台管理员",
           preview: buildUploadPreview(file, text, adminUploadCategory),
+          contentText: text || undefined,
+          file,
           category: adminUploadCategory,
           enabled: true,
         };
@@ -8774,7 +9000,7 @@ ${modeInstructions[promptMode]}
       return `允许学生在 AI 创意工作台中调用“${expert.name}”，用于${expert.scenario}。停用后学生端专家下拉中不再显示该专家。`;
     }
     const descriptions: Record<string, string> = {
-      "AI 创意工作台": "允许学生进入对话式创意空间，选择专家和生成模式，由系统自动匹配技能，生成头脑风暴、定位、BP、PPT、路演稿、多媒体物料等阶段成果。",
+      "AI 创意工作台": "允许学生进入对话式创意空间，选择专家和回答方式，由系统自动匹配技能，并按独立成果流程生成或导出 Word、PPTX、视频脚本等内容。",
       调用课程知识库: "允许学生端专家在生成时读取管理端已开放目录、教师端已启用资料，并把命中的资料作为知识来源标签。",
       答辩模拟: "允许学生基于已生成的 BP、PPT 或路演稿进入答辩模拟，进行语音或文本问答，并保存答辩评价与复盘记录。",
       提交老师审核: "允许学生将阶段成果发送到教师端提交审核中心，教师可查看内容、预览附件、通过或退回修改。",
@@ -9609,116 +9835,31 @@ ${modeInstructions[promptMode]}
             <ExpertSkillManager
               actorLabel="管理端"
               knowledgeBases={props.knowledgeCatalog}
+              refreshKey={adminExpertListRefreshKey}
               onMessage={setKnowledgeSaveMessage}
               onConfirmed={handleAdminExpertSkillConfirmed}
+              onOpenExpert={openAdminExpertDetail}
             />
-            <div className="prompt-control-panel teacher-prompt-controls">
-              <div>
-                <label className="field-label" htmlFor="admin-prompt-expert">
-                  专家
-                </label>
-                <PrettySelect
-                  value={promptExpert.id}
-                  ariaLabel="选择提示词专家"
-                  options={experts.map((expert) => ({ value: expert.id, label: expert.name }))}
-                  onChange={(value) => {
-                    const nextExpert = experts.find((item) => item.id === value) || experts[0];
-                          const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
-                    const nextParts = buildPromptTemplateParts(nextExpert, promptMode, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
-                    setPromptExpertId(nextExpert.id);
-                    setAdminSystemPromptDraft(nextParts.system);
-                    setAdminUserPromptDraft(nextParts.user);
-                  }}
-                />
-              </div>
-              <div>
-                <label className="field-label" htmlFor="admin-prompt-mode">
-                  模式
-                </label>
-                <PrettySelect
-                  value={promptMode}
-                  ariaLabel="选择提示词模式"
-                  options={modelModes.map((mode) => ({ value: mode, label: mode }))}
-                  onChange={(nextMode) => {
-                    const nextParts = buildPromptTemplateParts(
-                      promptExpert,
-                      nextMode,
-                      props.knowledgeUploads,
-                      props.knowledgeBaseStates,
-                      adminPromptKnowledgeCategories,
-                    );
-                    setPromptMode(nextMode);
-                    setAdminSystemPromptDraft(nextParts.system);
-                    setAdminUserPromptDraft(nextParts.user);
-                  }}
-                />
-              </div>
-              <div className="prompt-action-group">
-                <button className="primary-button prompt-save-button" type="button" onClick={() => void handleAdminSavePrompt()}>
-                  <Save size={15} />
-                  保存提示词
-                </button>
-                {experts.length > 1 && (
-                  <button
-                    className="ghost-button danger prompt-delete-expert-button"
-                    type="button"
-                    onClick={() => setPendingDeleteExpertId(promptExpert.id)}
-                  >
-                    <Trash2 size={15} />
-                    删除当前专家
-                  </button>
-                )}
-              </div>
-            </div>
-            <section className="prompt-knowledge-route teacher-prompt-route">
-              <div>
-                <strong>当前专家调用知识库目录</strong>
-                <span>已选择 {adminPromptKnowledgeCategories.length} 个目录 · 已启用资料 {enabledKnowledgeCount} 个</span>
-              </div>
-              <div className="prompt-knowledge-options">
-                {getActiveKnowledgeCatalog(props.knowledgeCatalog).map((base) => {
-                  const selected = adminPromptKnowledgeCategories.includes(base.category);
-                  const enabled = props.knowledgeBaseStates[base.category];
-                  return (
-                    <label className={`${selected ? "selected" : ""} ${enabled ? "" : "disabled"}`} key={base.category}>
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => handleAdminPromptKnowledgeToggle(base.category)}
-                      />
-                      <span>{base.category}知识库</span>
-                      <em>{enabled ? "目录开放" : "目录停用"}</em>
-                      <small>{base.usedBy}</small>
-                    </label>
-                  );
-                })}
-              </div>
-              <p>教师端和管理端共用同一套专家知识库目录配置；修改后会同步影响当前专家的系统提示词与用户输入组装规则。</p>
-            </section>
-            <section className="prompt-content-grid teacher-prompt-grid">
-              <article>
-                <span className="eyebrow">系统规则</span>
-                <h3>系统提示词</h3>
-                <p>定义专家角色、知识库引用规则、模式策略和输出边界。</p>
-                <textarea
-                  className="teacher-prompt-textarea"
-                  placeholder={expertPromptContent}
-                  value={adminSystemPromptDraft}
-                  onChange={(event) => setAdminSystemPromptDraft(event.target.value)}
-                />
-              </article>
-              <article>
-                <span className="eyebrow">任务模板</span>
-                <h3>用户输入组装规则</h3>
-                <p>定义学生输入、历史上下文、上传文件、知识库资料和专家技能如何拼接。</p>
-                <textarea
-                  className="teacher-prompt-textarea"
-                  placeholder={expertPromptUserTemplate}
-                  value={adminUserPromptDraft}
-                  onChange={(event) => setAdminUserPromptDraft(event.target.value)}
-                />
-              </article>
-            </section>
+            {isAdminExpertDetailOpen && (
+              <ExpertDetailModal
+                expert={promptExpert}
+                knowledgeCatalog={adminActiveKnowledgeCatalog}
+                knowledgeBaseStates={props.knowledgeBaseStates}
+                selectedCategories={adminPromptKnowledgeCategories}
+                enabledKnowledgeCount={enabledKnowledgeCount}
+                systemPrompt={adminSystemPromptDraft}
+                userPrompt={adminUserPromptDraft}
+                active={adminExpertActiveDraft}
+                canDelete={adminManageableExperts.length > 1}
+                onKnowledgeToggle={handleAdminPromptKnowledgeToggle}
+                onSystemPromptChange={setAdminSystemPromptDraft}
+                onUserPromptChange={setAdminUserPromptDraft}
+                onActiveChange={setAdminExpertActiveDraft}
+                onSave={() => void handleAdminSavePrompt()}
+                onDelete={() => setPendingDeleteExpertId(promptExpert.id)}
+                onClose={() => setIsAdminExpertDetailOpen(false)}
+              />
+            )}
           </div>
         </div>
       )}

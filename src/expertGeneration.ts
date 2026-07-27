@@ -1,4 +1,5 @@
-type ModelMode = "Auto" | "快速生成" | "深度分析" | "多模态增强";
+import type { AnswerMode } from "./answerModes";
+
 type ExpertId = string;
 type ArtifactType = "BRAINSTORM" | "POSITIONING" | "MARKET" | "BP" | "PPT" | "SCRIPT" | "DEFENSE" | "MEDIA";
 type Idea = { id: string; title: string; description: string; stage: string; updatedAt: string };
@@ -183,60 +184,7 @@ function deepModeItems(expertId: ExpertId, skillName: string) {
   ];
 }
 
-function multimodalModeItems(expertId: ExpertId, skillName: string) {
-  const map: Partial<Record<ExpertId, string[]>> = {
-    brainstorm: [
-      "PPT 呈现：用一页四象限展示目标用户、痛点、假设和下周任务。",
-      "图表建议：把访谈对象、痛点频次和任务负责人做成小组任务看板。",
-      "视频衔接：可作为宣传片开场，呈现学生从零散讨论进入 AI 整理的过程。",
-    ],
-    positioning: [
-      "PPT 呈现：用一句话定位、三类用户画像、差异化坐标图形成产品定位说明页。",
-      "图表建议：使用“学生价值-教师价值-学院价值”三栏对照。",
-      "下载文档：产品定位说明大纲应直接承接后续 BP 第一章和路演开场。",
-    ],
-    market: [
-      "PPT 呈现：用竞品雷达图或对比矩阵展示通用 AI、招聘平台、高校系统的差异。",
-      "图表建议：横轴为教学闭环程度，纵轴为个性化训练能力。",
-      "视频衔接：可用 5 秒镜头表现替代方案分散、平台统一闭环的对比。",
-    ],
-    business: [
-      "PPT 呈现：把商业模式画布压缩成付费方、核心价值、交付包、续费理由四块。",
-      "图表建议：用 8 周试点漏斗展示学生使用、教师审核、成果沉淀的转化链路。",
-      "下载文档：BP Word 应保留财务假设、风险应对和试点指标，便于老师批注。",
-    ],
-    pitch: [
-      "PPT 呈现：每页固定为标题、核心观点、图表建议、演讲提示四段，便于直接路演。",
-      "图表建议：优先使用流程图、闭环图、试点数据卡片和成果库截图式表达。",
-      "视频衔接：路演 PPT 可作为 30 秒宣传视频的镜头脚本基础。",
-    ],
-    script: [
-      "PPT 衔接：每段讲稿需要标注对应 PPT 页码，方便学生路演时按页讲述。",
-      "音频衔接：可作为答辩模拟的口播底稿，后续由 AI 评委围绕其中的论点追问。",
-      "视频衔接：3 分钟讲稿可以拆成 30 秒宣传视频旁白和分镜脚本。",
-    ],
-    defense: [
-      "PPT 呈现：把评委追问分成商业可行性、教学价值、数据安全、落地成本四组。",
-      "图表建议：用问题卡片加回答要点的方式做答辩备忘页。",
-      "音频衔接：答辩练习可以保存语音记录，作为老师指导和学生复盘依据。",
-    ],
-    media: [
-      "PPT 呈现：直接输出视频脚本、6 镜头分镜、海报文案和视觉 Prompt 四块。",
-      "图表建议：用时间轴展示 0-30 秒视频节奏，用卡片展示主标题、副标题和 CTA。",
-      "下载物料：视频和 PPT 使用固定演示附件，Prompt 文案用于解释后续真实生成能力。",
-    ],
-  };
-  return [
-    `多模态增强对象：《${skillName}》将同时面向文档、PPT、视频或海报展示。`,
-    ...(map[expertId] || [
-      "PPT 呈现：把核心结论整理成标题、观点、依据和下一步动作四段。",
-      "图表建议：优先使用流程图、对比表或任务看板，便于课堂汇报和教师审核。",
-      "下载文档：输出内容需要保留知识来源标签，方便后续形成 Word、PPT 或复盘材料。",
-    ]),
-  ];
-}
-
-function applyModeVariant(blocks: ResultBlock[], mode: ModelMode, expertId: ExpertId, skillName: string): ResultBlock[] {
+function applyModeVariant(blocks: ResultBlock[], mode: AnswerMode, expertId: ExpertId, skillName: string): ResultBlock[] {
   const baseBlocks = blocks.filter((block) => !block.title.startsWith("生成模式"));
   if (mode === "Auto") return baseBlocks;
   if (mode === "快速生成") {
@@ -255,10 +203,7 @@ function applyModeVariant(blocks: ResultBlock[], mode: ModelMode, expertId: Expe
       { title: `深度分析补充：${skillName}`, items: deepModeItems(expertId, skillName) },
     ];
   }
-  return [
-    ...baseBlocks,
-    { title: `多模态展示建议：${skillName}`, items: multimodalModeItems(expertId, skillName) },
-  ];
+  return baseBlocks;
 }
 
 type GuidedTurn = {
@@ -868,7 +813,7 @@ function skillBlocks(expertId: ExpertId, skillName: string): ResultBlock[] | nul
   return null;
 }
 
-function buildSufeBlocks(expertId: ExpertId, skillName = "", mode: ModelMode = "Auto"): ResultBlock[] {
+function buildSufeBlocks(expertId: ExpertId, skillName = "", mode: AnswerMode = "Auto"): ResultBlock[] {
   void mode;
   const project = "AI 就业教练";
   const commonSources = "引用资料：创业实践课程教学大纲、BP 模板、创业项目评分 Rubric、优秀创业案例集。";
@@ -1162,7 +1107,7 @@ function buildSufeBlocks(expertId: ExpertId, skillName = "", mode: ModelMode = "
   ];
 }
 
-function buildBlocks(expertId: ExpertId, skillName: string, mode: ModelMode = "Auto"): ResultBlock[] {
+function buildBlocks(expertId: ExpertId, skillName: string, mode: AnswerMode = "Auto"): ResultBlock[] {
   const sufeBlocks = buildSufeBlocks(expertId, skillName, mode);
   if (sufeBlocks.length) return applyModeVariant(sufeBlocks, mode, expertId, skillName);
 

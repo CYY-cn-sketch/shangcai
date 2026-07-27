@@ -10,6 +10,7 @@ export type SubmitGenerationJobInput = {
   expertId: string;
   contextSnapshot: unknown;
   idempotencyKey: string;
+  costConfirmed?: boolean;
 };
 
 export type GenerationJob = {

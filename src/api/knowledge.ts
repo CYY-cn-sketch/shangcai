@@ -22,6 +22,8 @@ export type KnowledgeAssetRecord = {
   mimeType?: string | null;
   fileSizeBytes?: number | null;
   sha256?: string | null;
+  extractionStatus: "READY" | "EMPTY" | "OCR_REQUIRED" | "ASR_REQUIRED" | "UNSUPPORTED" | "FAILED";
+  extractionMessage?: string | null;
   downloadUrl?: string | null;
   createdAt: string;
 };
@@ -136,7 +138,16 @@ export type SaveKnowledgeBaseInput = Pick<KnowledgeBaseRecord, "category" | "des
 
 export type SaveKnowledgeAssetInput = Omit<
   KnowledgeAssetRecord,
-  "id" | "createdAt" | "fileAvailable" | "originalName" | "mimeType" | "fileSizeBytes" | "sha256" | "downloadUrl"
+  | "id"
+  | "createdAt"
+  | "fileAvailable"
+  | "originalName"
+  | "mimeType"
+  | "fileSizeBytes"
+  | "sha256"
+  | "extractionStatus"
+  | "extractionMessage"
+  | "downloadUrl"
 >;
 
 export type UploadKnowledgeAssetInput = {
@@ -326,8 +337,33 @@ export async function uploadExpertSkillArchive(archive: File) {
   return (await response.json()) as ExpertSkillUploadRecord;
 }
 
+export async function uploadExpertSkillFolder(files: File[]) {
+  if (!files.length) throw new KnowledgeApiError("请选择包含 SKILL.md 的完整 Skill 文件夹", 400);
+  if (files.length > 50) throw new KnowledgeApiError("Skill 文件夹最多上传 50 个文件", 400);
+
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file, file.name));
+  files.forEach((file) => form.append("paths", file.webkitRelativePath || file.name));
+  const response = await fetch("/api/knowledge/expert-skill-uploads", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as ExpertSkillUploadRecord;
+}
+
 export function listExpertSkillUploads() {
   return readJson<ExpertSkillUploadRecord[]>("/api/knowledge/expert-skill-uploads");
+}
+
+export function discardExpertSkillUpload(id: string) {
+  return deleteResource(`/api/knowledge/expert-skill-uploads/${encodeURIComponent(id)}`);
 }
 
 export function confirmExpertSkillUpload(id: string, input: ConfirmExpertSkillUploadInput) {

@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
-import { Archive, Check, ChevronLeft, ChevronRight, Download, FileText, Upload, X } from "lucide-react";
+import { Archive, Check, ChevronLeft, ChevronRight, Download, FileText, FolderOpen, Upload, X } from "lucide-react";
 import {
   confirmExpertSkillUpload,
+  discardExpertSkillUpload,
   uploadExpertSkillArchive,
+  uploadExpertSkillFolder,
   type ConfirmExpertSkillUploadInput,
   type ExpertSkillConfirmationRecord,
   type ExpertSkillKnowledgeSelection,
@@ -35,6 +37,49 @@ type ExpertDraft = {
 };
 
 const steps = ["上传 Skill", "确认专家信息", "配置知识库", "检查提示词", "确认启用"];
+
+type SkillDirectoryFileHandle = {
+  kind: "file";
+  name: string;
+  getFile: () => Promise<File>;
+};
+
+type SkillDirectoryHandle = {
+  kind: "directory";
+  name: string;
+  values: () => AsyncIterableIterator<SkillDirectoryFileHandle | SkillDirectoryHandle>;
+};
+
+type SkillDirectoryPickerWindow = Window & {
+  showDirectoryPicker?: (options?: { mode?: "read" }) => Promise<SkillDirectoryHandle>;
+};
+
+async function collectSkillDirectoryFiles(root: SkillDirectoryHandle) {
+  const files: File[] = [];
+
+  async function visit(directory: SkillDirectoryHandle, prefix: string) {
+    for await (const entry of directory.values()) {
+      if (entry.kind === "directory") {
+        await visit(entry, `${prefix}/${entry.name}`);
+        continue;
+      }
+      if (files.length >= 50) {
+        throw new Error("该文件夹超过 50 个文件，请选择单个专家 Skill 文件夹，或先整理为不超过 50 个文件的 ZIP。");
+      }
+      const source = await entry.getFile();
+      const file = new File([source], source.name, { type: source.type, lastModified: source.lastModified });
+      Object.defineProperty(file, "webkitRelativePath", {
+        configurable: true,
+        value: `${prefix}/${entry.name}`,
+      });
+      files.push(file);
+    }
+  }
+
+  await visit(root, root.name);
+  if (!files.length) throw new Error("所选文件夹为空，请选择包含 SKILL.md 的完整 Skill 文件夹。");
+  return files;
+}
 
 function fromUpload(upload: ExpertSkillUploadRecord): ExpertDraft {
   return {
@@ -79,10 +124,12 @@ export function ExpertSkillWizard(props: {
   onClose: () => void;
   onConfirmed: (result: ExpertSkillConfirmationRecord) => void | Promise<void>;
 }) {
+  const { onClose } = props;
   const initialDraft = props.initialUpload ? fromUpload(props.initialUpload) : null;
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const archiveInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const [upload, setUpload] = useState<ExpertSkillUploadRecord | null>(props.initialUpload || null);
   const [step, setStep] = useState(props.initialUpload ? 2 : 1);
   const [draft, setDraft] = useState<ExpertDraft | null>(initialDraft);
@@ -108,6 +155,7 @@ export function ExpertSkillWizard(props: {
   );
   const [studentVisible, setStudentVisible] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const candidateFiles = useMemo(
@@ -116,13 +164,31 @@ export function ExpertSkillWizard(props: {
   );
   const totalBytes = upload?.files.reduce((sum, file) => sum + file.fileSizeBytes, 0) || 0;
 
+  const cancelUpload = useCallback(async () => {
+    if (busy) return;
+    if (!upload || upload.status !== "PARSED") {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await discardExpertSkillUpload(upload.id);
+      onClose();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "临时上传清理失败，请重试。");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, onClose, upload]);
+
   useEffect(() => {
     closeRef.current?.focus();
   }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) props.onClose();
+      if (event.key === "Escape" && !busy) void cancelUpload();
       if (event.key !== "Tab" || !dialogRef.current) return;
       const focusable = Array.from(
         dialogRef.current.querySelectorAll<HTMLElement>(
@@ -142,7 +208,7 @@ export function ExpertSkillWizard(props: {
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [busy, props]);
+  }, [busy, cancelUpload]);
 
   function initializeUpload(nextUpload: ExpertSkillUploadRecord) {
     const nextDraft = fromUpload(nextUpload);
@@ -168,12 +234,66 @@ export function ExpertSkillWizard(props: {
     setBusy(true);
     setError(null);
     try {
+      if (upload?.status === "PARSED") {
+        await discardExpertSkillUpload(upload.id);
+        setUpload(null);
+        setDraft(null);
+      }
       initializeUpload(await uploadExpertSkillArchive(file));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Skill 压缩包上传失败。");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleFolder(fileList: FileList | File[] | null) {
+    const files = fileList ? Array.from(fileList) : [];
+    if (!files.length) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (upload?.status === "PARSED") {
+        await discardExpertSkillUpload(upload.id);
+        setUpload(null);
+        setDraft(null);
+      }
+      initializeUpload(await uploadExpertSkillFolder(files));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Skill 文件夹上传失败。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openFolderPicker() {
+    const picker = (window as SkillDirectoryPickerWindow).showDirectoryPicker;
+    if (!picker) {
+      folderInputRef.current?.click();
+      return;
+    }
+    setError(null);
+    try {
+      const directory = await picker({ mode: "read" });
+      setBusy(true);
+      await handleFolder(await collectSkillDirectoryFiles(directory));
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") return;
+      setError(caught instanceof Error ? caught.message : "Skill 文件夹读取失败，请重试。");
+      setBusy(false);
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDragging(false);
+    if (busy) return;
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length === 1 && /\.zip$/i.test(files[0].name)) {
+      void handleArchive(files[0]);
+      return;
+    }
+    setError("拖放区支持单个 ZIP 压缩包；上传未压缩文件夹请点击“选择文件夹”。");
   }
 
   function updateDraft(field: keyof ExpertDraft, value: string) {
@@ -216,10 +336,6 @@ export function ExpertSkillWizard(props: {
 
   function goNext() {
     if (!validateCurrentStep()) return;
-    if (step === 3 && knowledgeMode === "NONE") {
-      props.onClose();
-      return;
-    }
     setStep((current) => Math.min(5, current + 1));
   }
 
@@ -255,7 +371,7 @@ export function ExpertSkillWizard(props: {
     return (
       <div className="skill-wizard-upload-step">
         <input
-          ref={fileInputRef}
+          ref={archiveInputRef}
           className="visually-hidden-input"
           type="file"
           accept=".zip,application/zip"
@@ -264,18 +380,59 @@ export function ExpertSkillWizard(props: {
             event.currentTarget.value = "";
           }}
         />
+        <input
+          ref={(node) => {
+            folderInputRef.current = node;
+            node?.setAttribute("webkitdirectory", "");
+            node?.setAttribute("directory", "");
+          }}
+          className="visually-hidden-input"
+          type="file"
+          multiple
+          onChange={(event) => {
+            void handleFolder(event.target.files);
+            event.currentTarget.value = "";
+          }}
+        />
         {!upload ? (
-          <button className="skill-wizard-dropzone" type="button" onClick={() => fileInputRef.current?.click()} disabled={busy}>
+          <div
+            className={`skill-wizard-dropzone${isDragging ? " is-dragging" : ""}`}
+            aria-busy={busy}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              if (!busy) setIsDragging(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDragging(false);
+            }}
+            onDrop={handleDrop}
+          >
             <Archive size={30} aria-hidden="true" />
-            <strong>{busy ? "正在安全解析并保存…" : "选择完整 Skill 文件夹的 ZIP 压缩包"}</strong>
-            <span>最多 50 个安全白名单文件，压缩包不超过 20 MB；不会执行任何上传内容。</span>
-          </button>
+            <strong>{busy ? "正在安全解析并保存…" : isDragging ? "松开鼠标上传 ZIP" : "将 Skill ZIP 拖到这里"}</strong>
+            <span>也可以直接选择 ZIP 或完整文件夹；最多 50 个安全白名单文件，ZIP 不超过 20 MB。</span>
+            <div className="skill-wizard-upload-actions" aria-label="Skill 上传方式">
+              <button type="button" onClick={() => archiveInputRef.current?.click()} disabled={busy}>
+                <Archive size={17} aria-hidden="true" />选择 ZIP
+              </button>
+              <button type="button" onClick={() => void openFolderPicker()} disabled={busy}>
+                <FolderOpen size={17} aria-hidden="true" />选择文件夹
+              </button>
+            </div>
+            <small>上传内容只归档和解析，不会执行其中的程序或脚本。</small>
+          </div>
         ) : (
           <>
             <div className="skill-wizard-upload-summary">
               <Check size={20} aria-hidden="true" />
               <div><strong>{upload.folderName}</strong><span>{upload.fileCount} 个文件 · {formatBytes(totalBytes)} · 主文件 {upload.mainFilePath}</span></div>
-              <button type="button" onClick={() => fileInputRef.current?.click()}>重新选择</button>
+              <div className="skill-wizard-reselect-actions">
+                <button type="button" onClick={() => archiveInputRef.current?.click()}>重新选择 ZIP</button>
+                <button type="button" onClick={() => void openFolderPicker()}>重新选择文件夹</button>
+              </div>
             </div>
             <div className="skill-wizard-file-tree" role="list" aria-label="Skill 文件目录">
               {upload.files.map((file) => (
@@ -335,7 +492,7 @@ export function ExpertSkillWizard(props: {
           {([
             ["EXISTING", "绑定已有知识库", "使用平台中已经维护的知识目录"],
             ["CREATE", "新建知识库并导入", "在本次确认中一次性创建并导入"],
-            ["NONE", "暂不配置", "保留上传草稿，不创建专家"],
+            ["NONE", "不绑定知识库", "本次仍创建专家，但不导入知识资料"],
           ] as const).map(([value, title, description]) => (
             <label key={value} className={knowledgeMode === value ? "selected" : ""}>
               <input type="radio" name="knowledge-mode" value={value} checked={knowledgeMode === value} onChange={() => setKnowledgeMode(value)} />
@@ -370,7 +527,7 @@ export function ExpertSkillWizard(props: {
             )) : <p className="skill-wizard-empty">没有识别到知识资料候选，可只绑定知识库后继续。</p>}
           </section>
         )}
-        {knowledgeMode === "NONE" && <p className="skill-wizard-draft-note">退出后上传记录仍保留为待确认草稿，可从管理页继续配置。</p>}
+        {knowledgeMode === "NONE" && <p className="skill-wizard-draft-note">本次将创建专家，但不会绑定知识库或导入资料；后续仍可在专家详情中调整。</p>}
       </div>
     );
   }
@@ -414,12 +571,22 @@ export function ExpertSkillWizard(props: {
       <section ref={dialogRef} className="skill-wizard-dialog" role="dialog" aria-modal="true" aria-labelledby="skill-wizard-title">
         <header className="skill-wizard-header">
           <div><span>{props.actorLabel} · 专家配置</span><h2 id="skill-wizard-title">专家配置与 Skill 管理</h2><p>完整来源归档、知识资料分流、提示词人工确认后再启用。</p></div>
-          <button ref={closeRef} type="button" aria-label="关闭专家 Skill 配置" onClick={props.onClose} disabled={busy}><X size={19} /></button>
+          <button ref={closeRef} type="button" aria-label="关闭专家 Skill 配置" onClick={() => void cancelUpload()} disabled={busy}><X size={19} /></button>
         </header>
         <ol className="skill-wizard-steps" aria-label="配置进度">
           {steps.map((label, index) => {
             const number = index + 1;
-            return <li key={label} className={number === step ? "current" : number < step ? "complete" : ""}><span>{number < step ? <Check size={14} /> : number}</span><small>{label}</small></li>;
+            return (
+              <li
+                key={label}
+                className={number === step ? "current" : number < step ? "complete" : ""}
+                aria-current={number === step ? "step" : undefined}
+              >
+                <span className="skill-wizard-step-marker">{number < step ? <Check size={14} /> : number}</span>
+                <small>{label}</small>
+                {number < steps.length && <span className="skill-wizard-step-connector" aria-hidden="true" />}
+              </li>
+            );
           })}
         </ol>
         <main className="skill-wizard-content">
@@ -432,12 +599,12 @@ export function ExpertSkillWizard(props: {
           {error && <p className="skill-wizard-error" role="alert">{error}</p>}
         </main>
         <footer className="skill-wizard-footer">
-          <button className="ghost-button" type="button" onClick={step === 1 ? props.onClose : () => { setError(null); setStep((current) => Math.max(1, current - 1)); }} disabled={busy}>
+          <button className="ghost-button" type="button" onClick={step === 1 ? () => void cancelUpload() : () => { setError(null); setStep((current) => Math.max(1, current - 1)); }} disabled={busy}>
             {step === 1 ? "取消" : <><ChevronLeft size={15} />上一步</>}
           </button>
           {step < 5 ? (
             <button className="primary-button" type="button" onClick={goNext} disabled={busy || (step === 1 && !upload)}>
-              {step === 3 && knowledgeMode === "NONE" ? "保存草稿并退出" : <>下一步<ChevronRight size={15} /></>}
+              <>下一步<ChevronRight size={15} /></>
             </button>
           ) : (
             <button className="primary-button" type="button" onClick={() => void confirm()} disabled={busy}>

@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, ChevronRight, RefreshCw, Upload } from "lucide-react";
+import { Eye, Upload } from "lucide-react";
 import {
-  listExpertSkillUploads,
   listKnowledgeExperts,
   type ExpertSkillConfirmationRecord,
-  type ExpertSkillUploadRecord,
   type KnowledgeExpertRecord,
 } from "./api/knowledge";
 import { ExpertSkillWizard } from "./ExpertSkillWizard";
@@ -14,20 +12,19 @@ type KnowledgeBaseOption = { id?: string; category: string; description: string;
 export function ExpertSkillManager(props: {
   actorLabel: string;
   knowledgeBases: KnowledgeBaseOption[];
+  refreshKey?: number;
   onConfirmed: (result: ExpertSkillConfirmationRecord) => void | Promise<void>;
+  onOpenExpert: (expertId: string) => void;
   onMessage: (message: string) => void;
 }) {
   const { onMessage } = props;
-  const [uploads, setUploads] = useState<ExpertSkillUploadRecord[]>([]);
   const [experts, setExperts] = useState<KnowledgeExpertRecord[]>([]);
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [resumeUpload, setResumeUpload] = useState<ExpertSkillUploadRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const openerRef = useRef<HTMLButtonElement | null>(null);
 
   function closeWizard() {
     setWizardOpen(false);
-    setResumeUpload(null);
     void reload();
     window.requestAnimationFrame(() => openerRef.current?.focus());
   }
@@ -35,11 +32,9 @@ export function ExpertSkillManager(props: {
   async function reload() {
     setLoading(true);
     try {
-      const [nextUploads, nextExperts] = await Promise.all([listExpertSkillUploads(), listKnowledgeExperts()]);
-      setUploads(nextUploads);
-      setExperts(nextExperts);
+      setExperts(await listKnowledgeExperts());
     } catch (caught) {
-      onMessage(caught instanceof Error ? caught.message : "Skill 草稿读取失败。");
+      onMessage(caught instanceof Error ? caught.message : "专家列表读取失败。");
     } finally {
       setLoading(false);
     }
@@ -47,15 +42,12 @@ export function ExpertSkillManager(props: {
 
   useEffect(() => {
     let active = true;
-    Promise.all([listExpertSkillUploads(), listKnowledgeExperts()])
-      .then(([records, nextExperts]) => {
-        if (active) {
-          setUploads(records);
-          setExperts(nextExperts);
-        }
+    listKnowledgeExperts()
+      .then((records) => {
+        if (active) setExperts(records);
       })
       .catch((caught) => {
-        if (active) onMessage(caught instanceof Error ? caught.message : "Skill 草稿读取失败。");
+        if (active) onMessage(caught instanceof Error ? caught.message : "专家列表读取失败。");
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -63,33 +55,34 @@ export function ExpertSkillManager(props: {
     return () => {
       active = false;
     };
-  }, [onMessage]);
+  }, [onMessage, props.refreshKey]);
 
-  const drafts = uploads.filter((upload) => upload.status === "PARSED");
   return (
     <>
       <section className="expert-skill-manager-panel">
         <div className="expert-skill-manager-copy">
-          <span className="eyebrow">统一配置入口</span>
-          <h4>上传 Skill 后分步确认</h4>
-          <p>系统保存完整来源档案，只把勾选的知识资料导入知识库；提示词和配置单独写入专家档案。</p>
+          <h4>专家列表</h4>
+          <p>上传 Skill 后完成一次配置即可生效；点击专家查看知识库、提示词和来源信息。</p>
         </div>
         <div className="expert-skill-manager-actions">
-          <button className="primary-button" type="button" onClick={(event) => { openerRef.current = event.currentTarget; setResumeUpload(null); setWizardOpen(true); }}>
+          <button className="primary-button" type="button" onClick={(event) => { openerRef.current = event.currentTarget; setWizardOpen(true); }}>
             <Upload size={16} />上传并配置 Skill
           </button>
-          <button className="ghost-button" type="button" onClick={() => void reload()} disabled={loading} aria-label="刷新 Skill 草稿">
-            <RefreshCw size={15} />{loading ? "读取中…" : "刷新草稿"}
-          </button>
         </div>
-        <div className="expert-skill-draft-list">
-          <header><span><Archive size={15} />待确认草稿</span><small>{drafts.length} 个</small></header>
-          {drafts.length ? drafts.slice(0, 5).map((upload) => (
-            <button key={upload.id} type="button" onClick={(event) => { openerRef.current = event.currentTarget; setResumeUpload(upload); setWizardOpen(true); }}>
-              <span><strong>{upload.parsedName}</strong><small>{upload.folderName} · {upload.fileCount} 个文件</small></span>
-              <span>继续配置<ChevronRight size={14} /></span>
+        <div className="expert-skill-list" aria-busy={loading}>
+          <header><strong>已配置专家</strong><small>{loading ? "读取中…" : `${experts.length} 个`}</small></header>
+          {experts.length ? experts.map((expert) => (
+            <button key={expert.id} type="button" onClick={(event) => { openerRef.current = event.currentTarget; props.onOpenExpert(expert.id); }}>
+              <span className="expert-skill-list-accent" style={{ background: expert.accent }} aria-hidden="true" />
+              <span className="expert-skill-list-copy">
+                <strong>{expert.name}</strong>
+                <small>{expert.role}</small>
+              </span>
+              <span className={`expert-skill-list-status ${expert.active ? "active" : "inactive"}`}>{expert.active ? "已启用" : "未启用"}</span>
+              <span className="expert-skill-list-meta">{expert.knowledgeCategories.length} 个知识库</span>
+              <span className="expert-skill-list-action"><Eye size={15} />查看详情</span>
             </button>
-          )) : <p>{loading ? "正在读取草稿…" : "暂无待确认草稿。上传后可随时退出并继续配置。"}</p>}
+          )) : <p>{loading ? "正在读取专家列表…" : "暂无专家，请上传 Skill 完成首个专家配置。"}</p>}
         </div>
       </section>
       {wizardOpen && (
@@ -97,11 +90,9 @@ export function ExpertSkillManager(props: {
           actorLabel={props.actorLabel}
           knowledgeBases={props.knowledgeBases}
           experts={experts}
-          initialUpload={resumeUpload}
           onClose={closeWizard}
           onConfirmed={async (result) => {
             await props.onConfirmed(result);
-            setUploads((current) => [result.upload, ...current.filter((upload) => upload.id !== result.upload.id)]);
             setExperts((current) => [result.expert, ...current.filter((expert) => expert.id !== result.expert.id)]);
           }}
         />

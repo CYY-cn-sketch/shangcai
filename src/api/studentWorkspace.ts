@@ -57,6 +57,20 @@ export type AppendMessageInput = {
   blocks?: unknown;
 };
 
+export type StudentAttachmentRecord = {
+  id: string;
+  ideaId: string;
+  clientMessageId: string;
+  originalName: string;
+  mimeType: string;
+  fileSizeBytes: number;
+  extractionStatus: "READY" | "EMPTY" | "OCR_REQUIRED" | "ASR_REQUIRED" | "UNSUPPORTED" | "FAILED";
+  extractionMessage?: string | null;
+  readable: boolean;
+  downloadUrl: string;
+  createdAt: string;
+};
+
 type CsrfResponse = {
   headerName: string;
   token: string;
@@ -144,4 +158,22 @@ export function appendStudentMessage(ideaId: string, input: AppendMessageInput) 
     "POST",
     input,
   );
+}
+
+export async function uploadStudentAttachment(ideaId: string, clientMessageId: string, file: File) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.set("clientMessageId", clientMessageId);
+  form.set("file", file, file.name);
+  const response = await fetch("/api/student/ideas/" + encodeURIComponent(ideaId) + "/attachments", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw new Error(await parseError(response));
+  return (await response.json()) as StudentAttachmentRecord;
 }
