@@ -6,6 +6,7 @@ import com.sufe.ai.knowledge.domain.ExpertProfile;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadFile;
 import com.sufe.ai.knowledge.domain.ExpertSkillFileRole;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadRecord;
+import com.sufe.ai.knowledge.domain.ExpertSkillUploadStatus;
 import com.sufe.ai.knowledge.domain.KnowledgeAsset;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
 import com.sufe.ai.knowledge.repository.ExpertKnowledgeRouteRepository;
@@ -31,6 +32,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -163,7 +165,7 @@ public class ExpertSkillUploadController {
                     "EXPERT_SKILL_PARSED",
                     "EXPERT_SKILL_UPLOAD",
                     record.getId(),
-                    "保存并解析专家 Skill " + sourceLabel + "：" + record.getFolderName() + "（待确认）"
+                    "保存并解析专家 Skill " + sourceLabel + "：" + record.getFolderName() + "（配置中）"
             );
         } catch (RuntimeException exception) {
             storageKeys.forEach(fileStorageService::delete);
@@ -195,6 +197,29 @@ public class ExpertSkillUploadController {
                 .contentType(MediaType.parseMediaType(file.getMimeType()))
                 .contentLength(file.getFileSizeBytes())
                 .body(resource);
+    }
+
+    @DeleteMapping("/{uploadId}")
+    @Transactional
+    public ResponseEntity<?> discard(@PathVariable String uploadId, Authentication authentication) {
+        ExpertSkillUploadRecord upload = uploadRepository.findById(uploadId).orElse(null);
+        if (upload == null) return ResponseEntity.noContent().build();
+        if (upload.getStatus() != ExpertSkillUploadStatus.PARSED) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(new ErrorResponse("EXPERT_SKILL_UPLOAD_ALREADY_CONFIRMED", "已确认的专家 Skill 不能作为临时上传删除"));
+        }
+        List<ExpertSkillUploadFile> files = uploadFileRepository.findByUploadIdOrderByRelativePathAsc(uploadId);
+        files.forEach(file -> fileStorageService.delete(file.getStorageKey()));
+        uploadFileRepository.deleteAll(files);
+        uploadRepository.delete(upload);
+        auditLogService.record(
+                authentication.getName(),
+                "EXPERT_SKILL_UPLOAD_DISCARDED",
+                "EXPERT_SKILL_UPLOAD",
+                uploadId,
+                "取消专家 Skill 配置并清理临时来源文件：" + upload.getFolderName()
+        );
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{uploadId}/confirm")

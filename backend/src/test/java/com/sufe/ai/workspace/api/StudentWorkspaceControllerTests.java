@@ -6,6 +6,7 @@ import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.workspace.domain.StudentIdea;
+import com.sufe.ai.workspace.repository.StudentAttachmentRepository;
 import com.sufe.ai.workspace.repository.StudentIdeaRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -14,17 +15,21 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ActiveProfiles("test")
@@ -49,6 +54,9 @@ class StudentWorkspaceControllerTests {
 
     @Autowired
     private StudentIdeaRepository ideaRepository;
+
+    @Autowired
+    private StudentAttachmentRepository attachmentRepository;
 
     @BeforeEach
     void setUp() {
@@ -167,6 +175,43 @@ class StudentWorkspaceControllerTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ideas").isEmpty())
                 .andExpect(jsonPath("$.conversations").isEmpty());
+    }
+
+    @Test
+    @WithMockUser(username = STUDENT_ACCOUNT, roles = "STUDENT")
+    void uploadsExtractsAndIsolatesStudentAttachment() throws Exception {
+        StudentIdea idea = ideaRepository.save(StudentIdea.create(
+                STUDENT_ID,
+                "附件识别项目",
+                "验证学生文件正文解析",
+                "新建创意"
+        ));
+        byte[] body = "访谈证据：学生每周至少遇到三次排队。".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile("file", "interview.md", "text/markdown", body);
+
+        String response = mockMvc.perform(multipart("/api/student/ideas/{ideaId}/attachments", idea.getId())
+                        .file(file)
+                        .param("clientMessageId", "message-with-file-001")
+                        .with(csrf()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.originalName").value("interview.md"))
+                .andExpect(jsonPath("$.extractionStatus").value("READY"))
+                .andExpect(jsonPath("$.readable").value(true))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String attachmentId = objectMapper.readTree(response).path("id").asText();
+
+        assertThat(attachmentRepository.findById(attachmentId)).hasValueSatisfying(attachment ->
+                assertThat(attachment.getContentText()).contains("每周至少遇到三次排队"));
+
+        mockMvc.perform(get("/api/student/attachments/{attachmentId}/file", attachmentId))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(body));
+
+        mockMvc.perform(get("/api/student/attachments/{attachmentId}/file", attachmentId)
+                        .with(user(OTHER_ACCOUNT).roles("STUDENT")))
+                .andExpect(status().isNotFound());
     }
 
     @Test

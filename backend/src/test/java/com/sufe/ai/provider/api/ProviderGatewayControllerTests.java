@@ -4,6 +4,7 @@ import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.provider.lexiang.LexiangAiQaClient;
+import com.sufe.ai.provider.deepseek.DeepSeekExpertChatService;
 import com.sufe.ai.provider.workbuddy.WorkBuddyClient;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,9 @@ class ProviderGatewayControllerTests {
     @MockitoBean
     private LexiangAiQaClient lexiangAiQaClient;
 
+    @MockitoBean
+    private DeepSeekExpertChatService deepSeekExpertChatService;
+
     @BeforeEach
     void setUp() {
         userAccountRepository.save(UserAccount.create(
@@ -67,13 +71,13 @@ class ProviderGatewayControllerTests {
                         .cookie(sessionCookie)
                         .contentType("application/json")
                         .content("{\"text\":\"生成视频\"}"))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.code").value("WORKBUDDY_DISABLED"));
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.code").value("WORKBUDDY_DIRECT_GATEWAY_REMOVED"));
 
         mockMvc.perform(get("/api/provider/workbuddy/runs/run-001")
                         .cookie(sessionCookie))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.code").value("WORKBUDDY_DISABLED"));
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.code").value("WORKBUDDY_DIRECT_GATEWAY_REMOVED"));
 
         mockMvc.perform(post("/api/provider/lexiang/qa")
                         .with(csrf())
@@ -91,7 +95,21 @@ class ProviderGatewayControllerTests {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("LEXIANG_DISABLED"));
 
-        verifyNoInteractions(workBuddyClient, lexiangAiQaClient);
+        mockMvc.perform(post("/api/provider/deepseek/chat")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "ideaId": "idea-001",
+                                  "expertId": "positioning",
+                                  "clientMessageId": "message-001"
+                                }
+                                """))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("DEEPSEEK_DISABLED"));
+
+        verifyNoInteractions(workBuddyClient, lexiangAiQaClient, deepSeekExpertChatService);
     }
 
     @Test

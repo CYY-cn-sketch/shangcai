@@ -8,5 +8,9 @@ import java.util.Optional;
 
 public interface ConversationMessageRepository extends JpaRepository<ConversationMessage, String> {
     List<ConversationMessage> findAllByUserIdOrderByCreatedAtAscIdAsc(String userId);
+    List<ConversationMessage> findAllByUserIdAndConversationIdOrderByCreatedAtAscIdAsc(
+            String userId,
+            String conversationId
+    );
     Optional<ConversationMessage> findByUserIdAndClientMessageId(String userId, String clientMessageId);
 }

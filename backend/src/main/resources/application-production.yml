@@ -61,3 +61,5 @@ sufe:
       jobs-root: ${WORKBUDDY_JOBS_ROOT:/srv/sufe-ai/data/workbuddy/jobs}
     lexiang:
       enabled: ${LEXIANG_ENABLED:false}
+    deepseek:
+      enabled: ${DEEPSEEK_ENABLED:false}

@@ -11,6 +11,7 @@ import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeAssetRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeBaseRepository;
+import com.sufe.ai.storage.DocumentTextExtractionService;
 import com.sufe.ai.storage.FileStorageService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.AssertTrue;
@@ -57,6 +58,7 @@ public class AdminKnowledgeController {
     private final ExpertSkillRepository expertSkillRepository;
     private final ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository;
     private final FileStorageService fileStorageService;
+    private final DocumentTextExtractionService extractionService;
     private final AuditLogService auditLogService;
 
     public AdminKnowledgeController(
@@ -66,6 +68,7 @@ public class AdminKnowledgeController {
             ExpertSkillRepository expertSkillRepository,
             ExpertKnowledgeRouteRepository expertKnowledgeRouteRepository,
             FileStorageService fileStorageService,
+            DocumentTextExtractionService extractionService,
             AuditLogService auditLogService
     ) {
         this.knowledgeBaseRepository = knowledgeBaseRepository;
@@ -74,6 +77,7 @@ public class AdminKnowledgeController {
         this.expertSkillRepository = expertSkillRepository;
         this.expertKnowledgeRouteRepository = expertKnowledgeRouteRepository;
         this.fileStorageService = fileStorageService;
+        this.extractionService = extractionService;
         this.auditLogService = auditLogService;
     }
 
@@ -245,15 +249,20 @@ public class AdminKnowledgeController {
         }
 
         try {
+            DocumentTextExtractionService.ExtractionResult extraction = extractionService.extract(
+                    fileStorageService.load(stored.storageKey()),
+                    stored.originalName()
+            );
             KnowledgeAsset asset = KnowledgeAsset.create(
                     base.getId(),
                     stored.originalName(),
                     formatFileSize(stored.size()),
                     displayFileType(stored.originalName()),
-                    preview,
-                    contentText,
+                    extraction.ready() ? buildExtractedPreview(extraction.contentText()) : preview,
+                    extraction.ready() ? extraction.contentText() : null,
                     uploadedBy
             );
+            asset.updateExtraction(extraction.status(), extraction.message(), extraction.contentText());
             asset.setEnabled(enabled);
             asset.attachFile(
                     stored.storageKey(),
@@ -303,6 +312,10 @@ public class AdminKnowledgeController {
         String previousStorageKey = asset.getStorageKey();
         boolean replacingFile = asset.hasFile();
         try {
+            DocumentTextExtractionService.ExtractionResult extraction = extractionService.extract(
+                    fileStorageService.load(stored.storageKey()),
+                    stored.originalName()
+            );
             asset.attachFile(
                     stored.storageKey(),
                     stored.originalName(),
@@ -310,6 +323,7 @@ public class AdminKnowledgeController {
                     stored.size(),
                     stored.sha256()
             );
+            asset.updateExtraction(extraction.status(), extraction.message(), extraction.contentText());
             asset = knowledgeAssetRepository.saveAndFlush(asset);
             fileStorageService.delete(previousStorageKey);
             auditLogService.record(
@@ -550,6 +564,8 @@ public class AdminKnowledgeController {
                 asset.getMimeType(),
                 asset.getFileSizeBytes(),
                 asset.getSha256(),
+                asset.getExtractionStatus(),
+                asset.getExtractionMessage(),
                 asset.hasFile() ? "/api/knowledge/knowledge-assets/" + asset.getId() + "/file" : null,
                 asset.getCreatedAt()
         );
@@ -557,6 +573,11 @@ public class AdminKnowledgeController {
 
     private static boolean hasLength(String value, int maxLength) {
         return value != null && !value.isBlank() && value.trim().length() <= maxLength;
+    }
+
+    private static String buildExtractedPreview(String contentText) {
+        String normalized = contentText.replaceAll("\\s+", " ").trim();
+        return normalized.length() <= 300 ? normalized : normalized.substring(0, 300) + "…";
     }
 
     private static String formatFileSize(long size) {
@@ -723,6 +744,8 @@ public class AdminKnowledgeController {
             String mimeType,
             Long fileSizeBytes,
             String sha256,
+            String extractionStatus,
+            String extractionMessage,
             String downloadUrl,
             Instant createdAt
     ) {

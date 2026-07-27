@@ -4,7 +4,6 @@ import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.provider.workbuddy.WorkBuddyClient;
-import com.sufe.ai.provider.workbuddy.repository.WorkBuddyRunRepository;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,26 +16,15 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ActiveProfiles("test")
-@SpringBootTest(properties = {
-        "sufe.providers.workbuddy.enabled=true",
-        "sufe.providers.workbuddy.jobs-root=target/workbuddy-gateway-tests"
-})
+@SpringBootTest(properties = "sufe.providers.workbuddy.enabled=true")
 @AutoConfigureMockMvc
 @Transactional
 class ProviderGatewayOwnershipTests {
@@ -48,9 +36,6 @@ class ProviderGatewayOwnershipTests {
 
     @Autowired
     private UserAccountRepository userAccountRepository;
-
-    @Autowired
-    private WorkBuddyRunRepository workBuddyRunRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -65,75 +50,37 @@ class ProviderGatewayOwnershipTests {
                 "owner@test.local",
                 passwordEncoder.encode(PASSWORD),
                 UserRole.STUDENT,
-                "任务所有者",
-                "学生",
-                100
-        ));
-        userAccountRepository.save(UserAccount.create(
-                "U-WORKBUDDY-OTHER",
-                "other@test.local",
-                passwordEncoder.encode(PASSWORD),
-                UserRole.STUDENT,
-                "其他学生",
-                "学生",
+                "WorkBuddy owner",
+                "student",
                 100
         ));
     }
 
     @Test
-    void isolatesTaskDirectoryAndRejectsOtherUsersRunStatusQuery() throws Exception {
-        when(workBuddyClient.submit(anyString(), any()))
-                .thenReturn(new WorkBuddyClient.RunSubmission("run-owned-001"));
-        when(workBuddyClient.getRun("run-owned-001"))
-                .thenReturn(new WorkBuddyClient.RunStatus("run-owned-001", new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode()));
+    void directGatewayNeverCallsWorkBuddyEvenWhenProviderIsEnabled() throws Exception {
+        Cookie session = login();
 
-        Cookie ownerSession = login("owner@test.local");
         mockMvc.perform(post("/api/provider/workbuddy/runs")
                         .with(csrf())
-                        .cookie(ownerSession)
+                        .cookie(session)
                         .contentType("application/json")
-                        .content("{\"text\":\"生成宣传视频\"}"))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.runId").value("run-owned-001"));
+                        .content("{\"text\":\"render video\"}"))
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.code").value("WORKBUDDY_DIRECT_GATEWAY_REMOVED"));
 
-        Cookie otherSession = login("other@test.local");
-        mockMvc.perform(get("/api/provider/workbuddy/runs/run-owned-001")
-                        .cookie(otherSession))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("WORKBUDDY_RUN_NOT_FOUND"));
-        verify(workBuddyClient, never()).getRun(anyString());
+        mockMvc.perform(get("/api/provider/workbuddy/runs/run-001").cookie(session))
+                .andExpect(status().isGone());
+        mockMvc.perform(get("/api/provider/workbuddy/runs/run-001/result").cookie(session))
+                .andExpect(status().isGone());
 
-        mockMvc.perform(get("/api/provider/workbuddy/runs/run-owned-001/result")
-                        .cookie(otherSession))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("WORKBUDDY_RESULT_NOT_FOUND"));
-
-        mockMvc.perform(get("/api/provider/workbuddy/runs/run-owned-001")
-                        .cookie(ownerSession))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.runId").value("run-owned-001"));
-        verify(workBuddyClient).getRun("run-owned-001");
-
-        Path resultPath = Path.of("target/workbuddy-gateway-tests")
-                .toAbsolutePath()
-                .normalize()
-                .resolve(workBuddyRunRepository.findByRunIdAndUserId("run-owned-001", "U-WORKBUDDY-OWNER")
-                        .orElseThrow()
-                        .getOutputPath());
-        Files.write(resultPath, new byte[2048]);
-
-        mockMvc.perform(get("/api/provider/workbuddy/runs/run-owned-001/result")
-                        .cookie(ownerSession))
-                .andExpect(status().isOk())
-                .andExpect(content().contentType("video/mp4"))
-                .andExpect(content().bytes(new byte[2048]));
+        verifyNoInteractions(workBuddyClient);
     }
 
-    private Cookie login(String account) throws Exception {
+    private Cookie login() throws Exception {
         return mockMvc.perform(post("/api/auth/login")
                         .with(csrf())
                         .contentType("application/json")
-                        .content("{\"account\":\"" + account + "\",\"password\":\"" + PASSWORD + "\"}"))
+                        .content("{\"account\":\"owner@test.local\",\"password\":\"" + PASSWORD + "\"}"))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getResponse()

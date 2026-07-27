@@ -83,6 +83,7 @@ public class GenerationJobCoordinator {
                 GenerationProvider.LEXIANG,
                 new Semaphore(lexiangProperties.maxConcurrency())
         );
+        this.concurrencyLimits.put(GenerationProvider.DEEPSEEK, new Semaphore(0));
     }
 
     @Scheduled(fixedDelayString = "${sufe.generation.queue.poll-interval-ms:1000}")
@@ -201,6 +202,7 @@ public class GenerationJobCoordinator {
         return switch (provider) {
             case WORKBUDDY -> workBuddyProperties.enabled();
             case LEXIANG -> lexiangProperties.configured();
+            case DEEPSEEK -> false;
         };
     }
 
@@ -208,6 +210,7 @@ public class GenerationJobCoordinator {
         return switch (provider) {
             case WORKBUDDY -> workBuddyProperties.maxConcurrency();
             case LEXIANG -> lexiangProperties.maxConcurrency();
+            case DEEPSEEK -> 0;
         };
     }
 

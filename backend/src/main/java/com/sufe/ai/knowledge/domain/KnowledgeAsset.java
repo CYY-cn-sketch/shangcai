@@ -31,7 +31,7 @@ public class KnowledgeAsset {
     @Column(length = 1000, nullable = false)
     private String preview;
 
-    @Column(name = "content_text", columnDefinition = "TEXT")
+    @Column(name = "content_text", columnDefinition = "MEDIUMTEXT")
     private String contentText;
 
     @Column(name = "uploaded_by", length = 100, nullable = false)
@@ -51,6 +51,12 @@ public class KnowledgeAsset {
 
     @Column(length = 64)
     private String sha256;
+
+    @Column(name = "extraction_status", length = 32, nullable = false)
+    private String extractionStatus;
+
+    @Column(name = "extraction_message", length = 500)
+    private String extractionMessage;
 
     @Column(nullable = false)
     private boolean enabled;
@@ -82,6 +88,7 @@ public class KnowledgeAsset {
         this.preview = KnowledgeBase.requireText(preview, "preview");
         this.contentText = normalizeOptional(contentText);
         this.uploadedBy = KnowledgeBase.requireText(uploadedBy, "uploadedBy");
+        this.extractionStatus = this.contentText == null ? "EMPTY" : "READY";
         this.enabled = true;
         this.createdAt = now;
         this.updatedAt = now;
@@ -130,6 +137,13 @@ public class KnowledgeAsset {
         this.updatedAt = Instant.now();
     }
 
+    public void updateExtraction(String status, String message, String contentText) {
+        this.extractionStatus = KnowledgeBase.requireText(status, "extractionStatus");
+        this.extractionMessage = normalizeOptional(message);
+        this.contentText = normalizeOptional(contentText);
+        this.updatedAt = Instant.now();
+    }
+
     private static String normalizeOptional(String value) {
         return value == null || value.isBlank() ? null : value.trim();
     }
@@ -171,6 +185,8 @@ public class KnowledgeAsset {
     public String getMimeType() { return mimeType; }
     public Long getFileSizeBytes() { return fileSizeBytes; }
     public String getSha256() { return sha256; }
+    public String getExtractionStatus() { return extractionStatus; }
+    public String getExtractionMessage() { return extractionMessage; }
     public boolean hasFile() { return storageKey != null; }
 
     public boolean isEnabled() {

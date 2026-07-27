@@ -548,6 +548,9 @@ class AdminKnowledgeControllerTests {
                 .andExpect(jsonPath("$.originalName").value("course-notes.txt"))
                 .andExpect(jsonPath("$.fileSizeBytes").value(fileBytes.length))
                 .andExpect(jsonPath("$.sha256").isNotEmpty())
+                .andExpect(jsonPath("$.contentText").value("verified knowledge file"))
+                .andExpect(jsonPath("$.extractionStatus").value("READY"))
+                .andExpect(jsonPath("$.extractionMessage").value("已提取可读文本"))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();

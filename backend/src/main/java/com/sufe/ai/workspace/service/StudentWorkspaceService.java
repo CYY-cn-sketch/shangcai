@@ -19,17 +19,20 @@ public class StudentWorkspaceService {
     private final StudentIdeaRepository ideaRepository;
     private final StudentConversationRepository conversationRepository;
     private final ConversationMessageRepository messageRepository;
+    private final StudentAttachmentService attachmentService;
 
     public StudentWorkspaceService(
             UserAccountRepository userAccountRepository,
             StudentIdeaRepository ideaRepository,
             StudentConversationRepository conversationRepository,
-            ConversationMessageRepository messageRepository
+            ConversationMessageRepository messageRepository,
+            StudentAttachmentService attachmentService
     ) {
         this.userAccountRepository = userAccountRepository;
         this.ideaRepository = ideaRepository;
         this.conversationRepository = conversationRepository;
         this.messageRepository = messageRepository;
+        this.attachmentService = attachmentService;
     }
 
     @Transactional(readOnly = true)
@@ -63,7 +66,9 @@ public class StudentWorkspaceService {
     @Transactional
     public void deleteIdea(String accountName, String ideaId) {
         String userId = resolveUserId(accountName);
-        ideaRepository.delete(requireOwnedIdea(userId, ideaId));
+        StudentIdea idea = requireOwnedIdea(userId, ideaId);
+        attachmentService.deleteIdeaFiles(userId, ideaId);
+        ideaRepository.delete(idea);
     }
 
     @Transactional

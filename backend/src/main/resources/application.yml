@@ -66,6 +66,8 @@ sufe:
       base-url: ${WORKBUDDY_API_BASE:http://127.0.0.1:49678}
       jobs-root: ${WORKBUDDY_JOBS_ROOT:./data/workbuddy/jobs}
       max-concurrency: ${WORKBUDDY_MAX_CONCURRENCY:1}
+      poll-interval-ms: ${WORKBUDDY_POLL_INTERVAL_MS:5000}
+      run-timeout-ms: ${WORKBUDDY_RUN_TIMEOUT_MS:900000}
     lexiang:
       enabled: ${LEXIANG_ENABLED:false}
       api-base: ${LEXIANG_API_BASE:https://lxapi.lexiangla.com}
@@ -74,3 +76,12 @@ sufe:
       staff-id: ${LEXIANG_STAFF_ID:system-bot}
       space-id: ${LEXIANG_SPACE_ID:}
       max-concurrency: ${LEXIANG_MAX_CONCURRENCY:2}
+    deepseek:
+      enabled: ${DEEPSEEK_ENABLED:false}
+      api-base: ${DEEPSEEK_API_BASE:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      flash-model: ${DEEPSEEK_FLASH_MODEL:deepseek-v4-flash}
+      pro-model: ${DEEPSEEK_PRO_MODEL:deepseek-v4-pro}
+      max-output-tokens: ${DEEPSEEK_MAX_OUTPUT_TOKENS:4096}
+      max-history-messages: ${DEEPSEEK_MAX_HISTORY_MESSAGES:20}
+      max-knowledge-chars: ${DEEPSEEK_MAX_KNOWLEDGE_CHARS:12000}

@@ -10,11 +10,19 @@ public record WorkBuddyProperties(
         boolean enabled,
         URI baseUrl,
         Path jobsRoot,
-        int maxConcurrency
+        int maxConcurrency,
+        long pollIntervalMs,
+        long runTimeoutMs
 ) {
     public WorkBuddyProperties {
         if (maxConcurrency < 1) {
             throw new IllegalArgumentException("WorkBuddy maxConcurrency 必须大于 0");
+        }
+        if (pollIntervalMs < 1) {
+            throw new IllegalArgumentException("WorkBuddy pollIntervalMs must be greater than 0");
+        }
+        if (runTimeoutMs < pollIntervalMs) {
+            throw new IllegalArgumentException("WorkBuddy runTimeoutMs must not be shorter than pollIntervalMs");
         }
     }
 }

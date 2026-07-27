@@ -1,18 +1,17 @@
 package com.sufe.ai.provider.api;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.provider.config.LexiangProperties;
-import com.sufe.ai.provider.config.WorkBuddyProperties;
+import com.sufe.ai.provider.config.DeepSeekProperties;
 import com.sufe.ai.provider.VerifiedProviderUsage;
+import com.sufe.ai.provider.deepseek.DeepSeekChatResult;
+import com.sufe.ai.provider.deepseek.DeepSeekClientException;
+import com.sufe.ai.provider.deepseek.DeepSeekExpertChatService;
 import com.sufe.ai.provider.lexiang.LexiangAiQaClient;
 import com.sufe.ai.provider.lexiang.LexiangQaCommand;
 import com.sufe.ai.provider.lexiang.LexiangQaResult;
 import com.sufe.ai.provider.lexiang.LexiangReferenceDoc;
 import com.sufe.ai.provider.lexiang.LexiangTarget;
-import com.sufe.ai.provider.workbuddy.WorkBuddyApiException;
-import com.sufe.ai.provider.workbuddy.WorkBuddyClient;
-import com.sufe.ai.provider.workbuddy.service.WorkBuddyRunService;
 import com.sufe.ai.generation.domain.GenerationProvider;
 import com.sufe.ai.usage.service.AiUsageService;
 import jakarta.validation.Valid;
@@ -20,10 +19,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.core.io.FileSystemResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -36,9 +32,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Optional;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.io.IOException;
 
 @RestController
 @RequestMapping("/api/provider")
@@ -46,28 +39,25 @@ public class ProviderGatewayController {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ProviderGatewayController.class);
 
-    private final WorkBuddyProperties workBuddyProperties;
     private final LexiangProperties lexiangProperties;
-    private final WorkBuddyClient workBuddyClient;
-    private final WorkBuddyRunService workBuddyRunService;
+    private final DeepSeekProperties deepSeekProperties;
     private final LexiangAiQaClient lexiangAiQaClient;
+    private final DeepSeekExpertChatService deepSeekExpertChatService;
     private final UserAccountRepository userAccountRepository;
     private final AiUsageService usageService;
 
     public ProviderGatewayController(
-            WorkBuddyProperties workBuddyProperties,
             LexiangProperties lexiangProperties,
-            WorkBuddyClient workBuddyClient,
-            WorkBuddyRunService workBuddyRunService,
+            DeepSeekProperties deepSeekProperties,
             LexiangAiQaClient lexiangAiQaClient,
+            DeepSeekExpertChatService deepSeekExpertChatService,
             UserAccountRepository userAccountRepository,
             AiUsageService usageService
     ) {
-        this.workBuddyProperties = workBuddyProperties;
         this.lexiangProperties = lexiangProperties;
-        this.workBuddyClient = workBuddyClient;
-        this.workBuddyRunService = workBuddyRunService;
+        this.deepSeekProperties = deepSeekProperties;
         this.lexiangAiQaClient = lexiangAiQaClient;
+        this.deepSeekExpertChatService = deepSeekExpertChatService;
         this.userAccountRepository = userAccountRepository;
         this.usageService = usageService;
     }
@@ -77,74 +67,17 @@ public class ProviderGatewayController {
             Authentication authentication,
             @Valid @RequestBody WorkBuddyRunRequest request
     ) {
-        if (!workBuddyProperties.enabled()) {
-            return unavailable("WORKBUDDY_DISABLED", "WorkBuddy 网关未启用，未发起供应商调用");
-        }
-        String userId = resolveUserId(authentication);
-        try {
-            WorkBuddyRunService.PreparedRun preparedRun = workBuddyRunService.prepare(userId, request.text());
-            WorkBuddyClient.RunSubmission submission = workBuddyClient.submit(
-                    preparedRun.prompt(),
-                    new WorkBuddyClient.Sender(userId, authentication.getName())
-            );
-            workBuddyRunService.record(userId, submission.runId(), preparedRun);
-            recordVerifiedUsage(
-                    userId,
-                    GenerationProvider.WORKBUDDY,
-                    "VIDEO",
-                    submission.verifiedUsage()
-            );
-            return ResponseEntity.accepted().body(new WorkBuddyRunResponse(submission.runId()));
-        } catch (WorkBuddyApiException exception) {
-            return ResponseEntity.status(exception.getStatusCode())
-                    .body(new ErrorResponse(
-                            exception.getErrorCode() == null ? "WORKBUDDY_ERROR" : exception.getErrorCode(),
-                            exception.getMessage()
-                    ));
-        }
+        return directWorkBuddyGatewayRemoved();
     }
 
     @GetMapping("/workbuddy/runs/{runId}")
     public ResponseEntity<?> getWorkBuddyRun(Authentication authentication, @PathVariable String runId) {
-        if (!workBuddyProperties.enabled()) {
-            return unavailable("WORKBUDDY_DISABLED", "WorkBuddy 网关未启用，未发起供应商调用");
-        }
-        String userId = resolveUserId(authentication);
-        if (!workBuddyRunService.isOwnedBy(runId, userId)) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(new ErrorResponse("WORKBUDDY_RUN_NOT_FOUND", "WorkBuddy 任务不存在"));
-        }
-        try {
-            WorkBuddyClient.RunStatus status = workBuddyClient.getRun(runId);
-            recordVerifiedUsage(userId, GenerationProvider.WORKBUDDY, "VIDEO", status.verifiedUsage());
-            return ResponseEntity.ok(new WorkBuddyStatusResponse(status.runId(), status.data()));
-        } catch (WorkBuddyApiException exception) {
-            return ResponseEntity.status(exception.getStatusCode())
-                    .body(new ErrorResponse(
-                            exception.getErrorCode() == null ? "WORKBUDDY_ERROR" : exception.getErrorCode(),
-                            exception.getMessage()
-                    ));
-        }
+        return directWorkBuddyGatewayRemoved();
     }
 
     @GetMapping("/workbuddy/runs/{runId}/result")
     public ResponseEntity<?> getWorkBuddyRunResult(Authentication authentication, @PathVariable String runId) {
-        String userId = resolveUserId(authentication);
-        Path resultPath = workBuddyRunService.findCompletedResult(runId, userId).orElse(null);
-        if (resultPath == null) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(new ErrorResponse("WORKBUDDY_RESULT_NOT_FOUND", "WorkBuddy 任务结果尚未生成"));
-        }
-        try {
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType("video/mp4"))
-                    .contentLength(Files.size(resultPath))
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"result.mp4\"")
-                    .body(new FileSystemResource(resultPath));
-        } catch (IOException exception) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ErrorResponse("WORKBUDDY_RESULT_READ_FAILED", "WorkBuddy 任务结果读取失败"));
-        }
+        return directWorkBuddyGatewayRemoved();
     }
 
     @PostMapping("/lexiang/qa")
@@ -168,6 +101,39 @@ public class ProviderGatewayController {
         ));
         recordVerifiedUsage(userId, GenerationProvider.LEXIANG, "EXPERT_CHAT", result.verifiedUsage());
         return ResponseEntity.ok(new LexiangQaResponse(result.content(), result.sessionId(), result.referenceDocs()));
+    }
+
+    @GetMapping("/deepseek/status")
+    public DeepSeekStatusResponse getDeepSeekStatus() {
+        return new DeepSeekStatusResponse(
+                deepSeekProperties.configured(),
+                deepSeekProperties.flashModel(),
+                deepSeekProperties.proModel()
+        );
+    }
+
+    @PostMapping("/deepseek/chat")
+    public ResponseEntity<?> chatWithDeepSeek(
+            Authentication authentication,
+            @Valid @RequestBody DeepSeekChatRequest request
+    ) {
+        if (!deepSeekProperties.configured()) {
+            return unavailable("DEEPSEEK_DISABLED", "DeepSeek 网关未启用或凭据未配置，未发起供应商调用");
+        }
+        String userId = resolveUserId(authentication);
+        try {
+            DeepSeekChatResult result = deepSeekExpertChatService.chat(
+                    userId,
+                    request.ideaId(),
+                    request.expertId(),
+                    request.clientMessageId()
+            );
+            recordVerifiedUsage(userId, GenerationProvider.DEEPSEEK, "EXPERT_CHAT", result.verifiedUsage());
+            return ResponseEntity.ok(new DeepSeekChatResponse(result.content(), result.model()));
+        } catch (DeepSeekClientException exception) {
+            return ResponseEntity.status(exception.getResponseStatus())
+                    .body(new ErrorResponse(exception.getErrorCode(), exception.getMessage()));
+        }
     }
 
     private void recordVerifiedUsage(
@@ -208,13 +174,14 @@ public class ProviderGatewayController {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new ErrorResponse(code, message));
     }
 
+    private static ResponseEntity<ErrorResponse> directWorkBuddyGatewayRemoved() {
+        return ResponseEntity.status(HttpStatus.GONE).body(new ErrorResponse(
+                "WORKBUDDY_DIRECT_GATEWAY_REMOVED",
+                "Direct WorkBuddy access is disabled; submit an idempotent generation job instead"
+        ));
+    }
+
     public record WorkBuddyRunRequest(@NotBlank @Size(max = 50000) String text) {
-    }
-
-    public record WorkBuddyRunResponse(String runId) {
-    }
-
-    public record WorkBuddyStatusResponse(String runId, JsonNode data) {
     }
 
     public record LexiangQaRequest(
@@ -237,6 +204,19 @@ public class ProviderGatewayController {
             String sessionId,
             @NotNull List<LexiangReferenceDoc> referenceDocs
     ) {
+    }
+
+    public record DeepSeekChatRequest(
+            @NotBlank @Size(max = 36) String ideaId,
+            @NotBlank @Size(max = 64) String expertId,
+            @NotBlank @Size(max = 64) String clientMessageId
+    ) {
+    }
+
+    public record DeepSeekChatResponse(String content, String model) {
+    }
+
+    public record DeepSeekStatusResponse(boolean configured, String flashModel, String proModel) {
     }
 
     public record ErrorResponse(String code, String message) {

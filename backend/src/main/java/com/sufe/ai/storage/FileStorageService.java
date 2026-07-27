@@ -36,6 +36,11 @@ public class FileStorageService {
             "py", "sh", "bash", "ps1", "bat", "cmd", "js", "mjs", "cjs", "ts", "tsx", "jsx"
     );
 
+    private static final Set<String> STUDENT_ATTACHMENT_EXTENSIONS = Set.of(
+            "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md",
+            "png", "jpg", "jpeg", "mp3", "m4a", "wav", "mp4", "mov", "webm"
+    );
+
     private static final Map<String, String> MIME_TYPES = Map.ofEntries(
             Map.entry("pdf", "application/pdf"),
             Map.entry("doc", "application/msword"),
@@ -52,7 +57,13 @@ public class FileStorageService {
             Map.entry("yml", "application/yaml"),
             Map.entry("png", "image/png"),
             Map.entry("jpg", "image/jpeg"),
-            Map.entry("jpeg", "image/jpeg")
+            Map.entry("jpeg", "image/jpeg"),
+            Map.entry("mp3", "audio/mpeg"),
+            Map.entry("m4a", "audio/mp4"),
+            Map.entry("wav", "audio/wav"),
+            Map.entry("mp4", "video/mp4"),
+            Map.entry("mov", "video/quicktime"),
+            Map.entry("webm", "video/webm")
     );
 
     private final Path root;
@@ -91,6 +102,23 @@ public class FileStorageService {
             throw new IllegalArgumentException("Skill 文件不能为空");
         }
         return storeFile("skill", uploadId, relativePath, new ByteArrayInputStream(content), content.length, SKILL_EXTENSIONS);
+    }
+
+    public StoredFile storeStudentAttachment(String userId, MultipartFile file) throws IOException {
+        if (userId == null || !userId.matches("[A-Za-z0-9-]{1,64}")) {
+            throw new IllegalArgumentException("学生账号标识无效");
+        }
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("上传文件不能为空");
+        }
+        return storeFile(
+                "student-attachments",
+                userId,
+                file.getOriginalFilename(),
+                file.getInputStream(),
+                file.getSize(),
+                STUDENT_ATTACHMENT_EXTENSIONS
+        );
     }
 
     public StoredFile copySkillFileToKnowledge(String storageKey, String originalName) throws IOException {

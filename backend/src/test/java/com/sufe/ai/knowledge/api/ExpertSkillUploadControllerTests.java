@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
@@ -30,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -37,7 +39,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -188,6 +192,66 @@ class ExpertSkillUploadControllerTests {
 
         assertThat(expertProfileRepository.findByName("现金流专家")).isPresent();
         assertThat(uploadRepository.findById(uploadId).orElseThrow().getStatus()).isEqualTo(ExpertSkillUploadStatus.ENABLED);
+    }
+
+    @Test
+    void parsesEveryBuiltInExpertSkillPackageWithKnowledgeCandidates() throws Exception {
+        Cookie session = login();
+        Map<String, String[]> packages = new LinkedHashMap<>();
+        packages.put("brainstorm-expert", new String[]{"创意头脑风暴专家", "创意头脑风暴方法与创意方向卡.md"});
+        packages.put("positioning-expert", new String[]{"项目定位专家", "项目定位与价值主张工作表.md"});
+        packages.put("market-expert", new String[]{"市场与竞品专家", "市场与竞品分析框架.md"});
+        packages.put("business-expert", new String[]{"商业模式/BP 专家", "商业模式与BP撰写框架.md"});
+        packages.put("pitch-expert", new String[]{"路演 PPT 专家", "路演PPT结构模板.md"});
+        packages.put("script-expert", new String[]{"路演稿生成专家", "路演稿结构与时间控制.md"});
+        packages.put("defense-expert", new String[]{"AI 评委/答辩陪练专家", "答辩题库与回答框架.md"});
+        packages.put("media-expert", new String[]{"多媒体物料专家", "多媒体物料脚本与分镜模板.md"});
+
+        for (var entry : packages.entrySet()) {
+            String packageName = entry.getKey();
+            String expectedExpertName = entry.getValue()[0];
+            String referenceName = entry.getValue()[1];
+            Map<String, byte[]> files = new LinkedHashMap<>();
+            files.put("SKILL.md", readClasspath("starter-content/experts/" + packageName + "/SKILL.md"));
+            files.put("references/" + referenceName, readClasspath("starter-content/knowledge/" + referenceName));
+            files.put("examples/真实使用样例.md", readClasspath("starter-content/experts/" + packageName + "/examples/真实使用样例.md"));
+
+            mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                            .file(new MockMultipartFile("archive", packageName + ".zip", "application/zip", zipEntries(files)))
+                            .with(csrf())
+                            .cookie(session))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.status").value("PARSED"))
+                    .andExpect(jsonPath("$.parsedName").value(expectedExpertName))
+                    .andExpect(jsonPath("$.files.length()").value(3))
+                    .andExpect(jsonPath("$.files[?(@.relativePath == 'references/" + referenceName + "')].fileRole")
+                            .value("KNOWLEDGE_CANDIDATE"))
+                    .andExpect(jsonPath("$.files[?(@.relativePath == 'examples/真实使用样例.md')].fileRole")
+                            .value("REFERENCE"));
+        }
+    }
+
+    @Test
+    void acceptsWindowsGbkEncodedChineseZipEntryNames() throws Exception {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("中文专家/SKILL.md", """
+                # 中文路径专家
+
+                专家定位：验证 Windows 中文 ZIP 文件名能够安全解析。
+                适用场景：Skill 文件夹上传
+                """.getBytes(StandardCharsets.UTF_8));
+
+        mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(new MockMultipartFile(
+                                "archive", "中文专家.zip", "application/zip",
+                                zipEntries(entries, Charset.forName("GBK"))
+                        ))
+                        .with(csrf())
+                        .cookie(login()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.folderName").value("中文专家"))
+                .andExpect(jsonPath("$.parsedName").value("中文路径专家"))
+                .andExpect(jsonPath("$.files[0].relativePath").value("中文专家/SKILL.md"));
     }
 
     @Test
@@ -368,6 +432,36 @@ class ExpertSkillUploadControllerTests {
                 .andExpect(jsonPath("$.mainFilePath").value("market-expert/SKILL.md"))
                 .andExpect(jsonPath("$.fileCount").value(1))
                 .andExpect(jsonPath("$.files[0].fileRole").value("PROMPT"));
+    }
+
+    @Test
+    void discardsUnconfirmedUploadAndDeletesItsSourceFiles() throws Exception {
+        Cookie session = login();
+        String uploadJson = mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(new MockMultipartFile(
+                                "archive",
+                                "discard-me.zip",
+                                "application/zip",
+                                zipEntry("discard-me/SKILL.md", "# 临时专家\n专家定位：验证取消上传。")
+                        ))
+                        .with(csrf())
+                        .cookie(session))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String uploadId = objectMapper.readTree(uploadJson).path("id").asText();
+        String storageKey = uploadFileRepository.findByUploadIdOrderByRelativePathAsc(uploadId)
+                .getFirst().getStorageKey();
+        assertThat(fileStorageService.load(storageKey).exists()).isTrue();
+
+        mockMvc.perform(delete("/api/knowledge/expert-skill-uploads/{uploadId}", uploadId)
+                        .with(csrf())
+                        .cookie(session))
+                .andExpect(status().isNoContent());
+
+        assertThat(uploadRepository.findById(uploadId)).isEmpty();
+        assertThat(uploadFileRepository.findByUploadIdOrderByRelativePathAsc(uploadId)).isEmpty();
+        assertThatThrownBy(() -> fileStorageService.load(storageKey))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -566,6 +660,12 @@ class ExpertSkillUploadControllerTests {
         return login("skill-upload-admin@test.local");
     }
 
+    private static byte[] readClasspath(String path) throws IOException {
+        try (var input = new ClassPathResource(path).getInputStream()) {
+            return input.readAllBytes();
+        }
+    }
+
     private Cookie login(String account) throws Exception {
         return mockMvc.perform(post("/api/auth/login")
                         .with(csrf())
@@ -585,8 +685,12 @@ class ExpertSkillUploadControllerTests {
     }
 
     private static byte[] zipEntries(Map<String, byte[]> entries) throws IOException {
+        return zipEntries(entries, StandardCharsets.UTF_8);
+    }
+
+    private static byte[] zipEntries(Map<String, byte[]> entries, Charset charset) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
+        try (ZipOutputStream zip = new ZipOutputStream(output, charset)) {
             for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
                 zip.write(entry.getValue());

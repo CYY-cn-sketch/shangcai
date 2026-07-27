@@ -14,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -91,12 +92,32 @@ public class ExpertSkillUploadParser {
         }
         if (archive.getSize() > MAX_ARCHIVE_BYTES) throw invalid("Skill ZIP 压缩包不能超过 20 MB");
 
+        List<ParsedFile> parsedFiles;
+        try {
+            parsedFiles = readArchiveFiles(archive, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException exception) {
+            if (!isArchiveNameEncodingError(exception)) throw exception;
+            try {
+                parsedFiles = readArchiveFiles(archive, Charset.forName("GBK"));
+            } catch (IllegalArgumentException fallbackException) {
+                if (isArchiveNameEncodingError(fallbackException)) {
+                    throw invalid("ZIP 文件名编码无法识别，请重新压缩为 UTF-8 ZIP，或直接选择文件夹上传");
+                }
+                throw fallbackException;
+            }
+        }
+        if (parsedFiles.isEmpty()) throw invalid("压缩包中没有可保存的 Skill 文件");
+        String archiveFolderName = fileName.substring(0, fileName.length() - 4).trim();
+        return parseFiles(parsedFiles, archiveFolderName);
+    }
+
+    private List<ParsedFile> readArchiveFiles(MultipartFile archive, Charset entryNameCharset) {
         List<ParsedFile> parsedFiles = new ArrayList<>();
         Set<String> uniquePaths = new HashSet<>();
         long totalBytes = 0;
         long textBytes = 0;
         int entryCount = 0;
-        try (ZipInputStream input = new ZipInputStream(archive.getInputStream(), StandardCharsets.UTF_8)) {
+        try (ZipInputStream input = new ZipInputStream(archive.getInputStream(), entryNameCharset)) {
             ZipEntry entry;
             while ((entry = input.getNextEntry()) != null) {
                 entryCount++;
@@ -120,11 +141,21 @@ public class ExpertSkillUploadParser {
         } catch (IllegalArgumentException exception) {
             throw exception;
         } catch (IOException exception) {
+            if (isArchiveNameEncodingError(exception)) {
+                throw new IllegalArgumentException("ZIP 文件名编码读取失败", exception);
+            }
             throw invalid("无法读取 Skill ZIP 压缩包");
         }
-        if (parsedFiles.isEmpty()) throw invalid("压缩包中没有可保存的 Skill 文件");
-        String archiveFolderName = fileName.substring(0, fileName.length() - 4).trim();
-        return parseFiles(parsedFiles, archiveFolderName);
+        return parsedFiles;
+    }
+
+    private static boolean isArchiveNameEncodingError(Throwable exception) {
+        for (Throwable current = exception; current != null; current = current.getCause()) {
+            if (current instanceof CharacterCodingException) return true;
+            String message = current.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT).contains("malformed input")) return true;
+        }
+        return false;
     }
 
     private ParsedUpload parseFiles(List<ParsedFile> files, String rootFallbackName) {

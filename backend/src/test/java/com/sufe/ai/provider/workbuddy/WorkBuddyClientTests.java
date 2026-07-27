@@ -37,7 +37,9 @@ class WorkBuddyClientTests {
                         true,
                         URI.create("http://workbuddy.test"),
                         Path.of("build/workbuddy-test-jobs"),
-                        1
+                        1,
+                        5_000,
+                        900_000
                 ),
                 builder
         );
@@ -138,5 +140,15 @@ class WorkBuddyClientTests {
         ))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("WorkBuddy 响应缺少 runId");
+    }
+
+    @Test
+    void cancelsRunWithTheDocumentedEndpoint() {
+        server.expect(once(), requestTo("http://workbuddy.test/api/v1/runs/run-003/cancel"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-CodeBuddy-Request", "1"))
+                .andRespond(withSuccess());
+
+        client.cancel(" run-003 ");
     }
 }

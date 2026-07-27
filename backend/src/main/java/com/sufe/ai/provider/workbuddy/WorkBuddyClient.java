@@ -50,6 +50,14 @@ public class WorkBuddyClient {
         return new RunStatus(normalizedRunId, data, Optional.empty());
     }
 
+    public void cancel(String runId) {
+        String normalizedRunId = requireText(runId, "runId");
+        restClient.post()
+                .uri("/api/v1/runs/{runId}/cancel", normalizedRunId)
+                .retrieve()
+                .toBodilessEntity();
+    }
+
     private static JsonNode extractData(HttpStatusCode statusCode, JsonNode envelope) {
         if (envelope == null || !envelope.isObject()) {
             throw new IllegalStateException("WorkBuddy 响应不是有效的 envelope");

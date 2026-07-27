@@ -159,15 +159,35 @@ class GenerationJobControllerTests {
 
     @Test
     @WithMockUser(username = USER_ACCOUNT, roles = "STUDENT")
-    void derivesWorkBuddyProviderForVideoJobs() throws Exception {
+    void rejectsVideoJobsWithoutCreatingAQueueEntryWhenWorkBuddyIsDisabled() throws Exception {
         mockMvc.perform(post("/api/generation/jobs")
                         .with(csrf())
                         .contentType("application/json")
-                        .content(validRequest("video-key", "project-001")
-                                .replace("\"artifactType\": \"PPT\"", "\"artifactType\": \"VIDEO\"")))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.provider").value("WORKBUDDY"))
-                .andExpect(jsonPath("$.artifactType").value("VIDEO"));
+                        .content(videoRequest("video-key", "media", true)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("WORKBUDDY_DISABLED"));
+
+        assertThat(generationJobRepository.findByUserIdAndIdempotencyKey(USER_ID, "video-key")).isEmpty();
+    }
+
+    @Test
+    @WithMockUser(username = USER_ACCOUNT, roles = "STUDENT")
+    void requiresExplicitCostConfirmationForVideoJobs() throws Exception {
+        mockMvc.perform(post("/api/generation/jobs")
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(videoRequest("video-without-confirmation", "media", false)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @WithMockUser(username = USER_ACCOUNT, roles = "STUDENT")
+    void restrictsVideoJobsToTheMultimediaExpert() throws Exception {
+        mockMvc.perform(post("/api/generation/jobs")
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(videoRequest("video-wrong-expert", "pitch", true)))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -223,5 +243,20 @@ class GenerationJobControllerTests {
                   "idempotencyKey": "%s"
                 }
                 """.formatted(projectId, idempotencyKey);
+    }
+
+    private static String videoRequest(String idempotencyKey, String expertId, boolean costConfirmed) {
+        return """
+                {
+                  "artifactType": "VIDEO",
+                  "projectId": "project-001",
+                  "conversationId": "conversation-001",
+                  "ideaId": "idea-001",
+                  "expertId": "%s",
+                  "contextSnapshot": {"businessPrompt": "render the approved video plan"},
+                  "idempotencyKey": "%s",
+                  "costConfirmed": %s
+                }
+                """.formatted(expertId, idempotencyKey, costConfirmed);
     }
 }

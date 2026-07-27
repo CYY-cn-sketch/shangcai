@@ -86,6 +86,9 @@ public class GenerationJob {
     @Column(name = "completed_at")
     private Instant completedAt;
 
+    @Column(name = "provider_authorized_at", updatable = false)
+    private Instant providerAuthorizedAt;
+
     protected GenerationJob() {
     }
 
@@ -98,7 +101,8 @@ public class GenerationJob {
             GenerationProvider provider,
             ArtifactType artifactType,
             String inputSnapshot,
-            String idempotencyKey
+            String idempotencyKey,
+            boolean providerCostConfirmed
     ) {
         Instant now = Instant.now();
         this.id = UUID.randomUUID().toString();
@@ -112,6 +116,7 @@ public class GenerationJob {
         this.status = GenerationJobStatus.QUEUED;
         this.inputSnapshot = requireText(inputSnapshot, "inputSnapshot");
         this.idempotencyKey = requireText(idempotencyKey, "idempotencyKey");
+        this.providerAuthorizedAt = providerCostConfirmed ? now : null;
         this.createdAt = now;
         this.updatedAt = now;
     }
@@ -127,6 +132,32 @@ public class GenerationJob {
             String inputSnapshot,
             String idempotencyKey
     ) {
+        return queued(
+                userId,
+                conversationId,
+                projectId,
+                ideaId,
+                expertId,
+                provider,
+                artifactType,
+                inputSnapshot,
+                idempotencyKey,
+                false
+        );
+    }
+
+    public static GenerationJob queued(
+            String userId,
+            String conversationId,
+            String projectId,
+            String ideaId,
+            String expertId,
+            GenerationProvider provider,
+            ArtifactType artifactType,
+            String inputSnapshot,
+            String idempotencyKey,
+            boolean providerCostConfirmed
+    ) {
         return new GenerationJob(
                 userId,
                 conversationId,
@@ -136,7 +167,8 @@ public class GenerationJob {
                 provider,
                 artifactType,
                 inputSnapshot,
-                idempotencyKey
+                idempotencyKey,
+                providerCostConfirmed
         );
     }
 
@@ -274,5 +306,13 @@ public class GenerationJob {
 
     public Instant getCompletedAt() {
         return completedAt;
+    }
+
+    public boolean isProviderCostConfirmed() {
+        return providerAuthorizedAt != null;
+    }
+
+    public Instant getProviderAuthorizedAt() {
+        return providerAuthorizedAt;
     }
 }

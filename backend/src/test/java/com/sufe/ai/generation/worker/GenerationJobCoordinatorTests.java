@@ -172,7 +172,9 @@ class GenerationJobCoordinatorTests {
                         enabled,
                         URI.create("http://127.0.0.1:49678"),
                         Path.of("target/coordinator-tests"),
-                        maxConcurrency
+                        maxConcurrency,
+                        5_000,
+                        900_000
                 ),
                 new LexiangProperties(
                         false,

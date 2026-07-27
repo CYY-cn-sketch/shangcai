@@ -187,8 +187,8 @@ public class StarterContentInitializer implements ApplicationRunner {
         seedExpert(new ExpertStarter(
                 "pitch",
                 "路演 PPT 专家",
-                "将已确认的商业计划和证据转化为结论先行、可讲述的路演 PPT 内容结构。",
-                "路演结构、逐页观点、证据、图表建议和讲述提示。",
+                "将已确认的商业计划和证据转化为逐页内容，由平台结合乐享知识库组装并保存 PPTX。",
+                "路演结构、逐页观点、证据、图表建议、讲述提示和 PPTX 组装。",
                 "#005aa8",
                 "starter-content/experts/pitch-expert/SKILL.md",
                 List.of(
@@ -228,8 +228,8 @@ public class StarterContentInitializer implements ApplicationRunner {
         seedExpert(new ExpertStarter(
                 "media",
                 "多媒体物料专家",
-                "将已确认的项目叙事转化为适合课程路演和成果展示的多媒体内容规格。",
-                "短视频脚本、分镜、海报文案、视觉提示词和物料清单。",
+                "将已确认的项目叙事转化为多媒体脚本和制作规格，真实成片由独立任务执行。",
+                "短视频脚本、分镜、海报文案、视觉提示词、预处理摘要和物料清单。",
                 "#0b6b88",
                 "starter-content/experts/media-expert/SKILL.md",
                 List.of(

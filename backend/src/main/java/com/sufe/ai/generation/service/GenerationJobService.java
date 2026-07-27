@@ -9,6 +9,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
+import java.util.List;
 
 @Service
 public class GenerationJobService {
@@ -34,6 +35,23 @@ public class GenerationJobService {
             return new SubmissionResult(existing.get(), false);
         }
 
+        validateNewSubmission(command);
+        if (command.artifactType() == ArtifactType.VIDEO) {
+            Optional<GenerationJob> activeVideo = generationJobRepository
+                    .findFirstByUserIdAndIdeaIdAndArtifactTypeAndStatusInOrderByCreatedAtDesc(
+                            userId,
+                            command.ideaId().trim(),
+                            ArtifactType.VIDEO,
+                            List.of(
+                                    com.sufe.ai.generation.domain.GenerationJobStatus.QUEUED,
+                                    com.sufe.ai.generation.domain.GenerationJobStatus.RUNNING
+                            )
+                    );
+            if (activeVideo.isPresent()) {
+                return new SubmissionResult(activeVideo.get(), false);
+            }
+        }
+
         GenerationJob queuedJob = GenerationJob.queued(
                 userId,
                 command.conversationId(),
@@ -43,7 +61,8 @@ public class GenerationJobService {
                 resolveProvider(command.artifactType()),
                 command.artifactType(),
                 command.contextSnapshot(),
-                idempotencyKey
+                idempotencyKey,
+                command.costConfirmed()
         );
 
         // 保持服务方法无外层事务，唯一键冲突回滚后才能安全回读已提交的任务。
@@ -76,6 +95,21 @@ public class GenerationJobService {
         };
     }
 
+    private static void validateNewSubmission(SubmitCommand command) {
+        if (command.artifactType() != ArtifactType.VIDEO) {
+            return;
+        }
+        if (!command.costConfirmed()) {
+            throw new IllegalArgumentException("VIDEO generation requires explicit cost confirmation");
+        }
+        if (!"media".equals(command.expertId())) {
+            throw new IllegalArgumentException("VIDEO generation is only available to the media expert");
+        }
+        if (command.ideaId() == null || command.ideaId().isBlank()) {
+            throw new IllegalArgumentException("VIDEO generation requires ideaId");
+        }
+    }
+
     public record SubmitCommand(
             ArtifactType artifactType,
             String projectId,
@@ -83,7 +117,8 @@ public class GenerationJobService {
             String ideaId,
             String expertId,
             String contextSnapshot,
-            String idempotencyKey
+            String idempotencyKey,
+            boolean costConfirmed
     ) {
     }
 
