@@ -38,49 +38,6 @@ type ExpertDraft = {
 
 const steps = ["上传 Skill", "确认专家信息", "配置知识库", "检查提示词", "确认启用"];
 
-type SkillDirectoryFileHandle = {
-  kind: "file";
-  name: string;
-  getFile: () => Promise<File>;
-};
-
-type SkillDirectoryHandle = {
-  kind: "directory";
-  name: string;
-  values: () => AsyncIterableIterator<SkillDirectoryFileHandle | SkillDirectoryHandle>;
-};
-
-type SkillDirectoryPickerWindow = Window & {
-  showDirectoryPicker?: (options?: { mode?: "read" }) => Promise<SkillDirectoryHandle>;
-};
-
-async function collectSkillDirectoryFiles(root: SkillDirectoryHandle) {
-  const files: File[] = [];
-
-  async function visit(directory: SkillDirectoryHandle, prefix: string) {
-    for await (const entry of directory.values()) {
-      if (entry.kind === "directory") {
-        await visit(entry, `${prefix}/${entry.name}`);
-        continue;
-      }
-      if (files.length >= 50) {
-        throw new Error("该文件夹超过 50 个文件，请选择单个专家 Skill 文件夹，或先整理为不超过 50 个文件的 ZIP。");
-      }
-      const source = await entry.getFile();
-      const file = new File([source], source.name, { type: source.type, lastModified: source.lastModified });
-      Object.defineProperty(file, "webkitRelativePath", {
-        configurable: true,
-        value: `${prefix}/${entry.name}`,
-      });
-      files.push(file);
-    }
-  }
-
-  await visit(root, root.name);
-  if (!files.length) throw new Error("所选文件夹为空，请选择包含 SKILL.md 的完整 Skill 文件夹。");
-  return files;
-}
-
 function fromUpload(upload: ExpertSkillUploadRecord): ExpertDraft {
   return {
     name: upload.parsedName,
@@ -266,22 +223,9 @@ export function ExpertSkillWizard(props: {
     }
   }
 
-  async function openFolderPicker() {
-    const picker = (window as SkillDirectoryPickerWindow).showDirectoryPicker;
-    if (!picker) {
-      folderInputRef.current?.click();
-      return;
-    }
+  function openFolderPicker() {
     setError(null);
-    try {
-      const directory = await picker({ mode: "read" });
-      setBusy(true);
-      await handleFolder(await collectSkillDirectoryFiles(directory));
-    } catch (caught) {
-      if (caught instanceof DOMException && caught.name === "AbortError") return;
-      setError(caught instanceof Error ? caught.message : "Skill 文件夹读取失败，请重试。");
-      setBusy(false);
-    }
+    folderInputRef.current?.click();
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
@@ -387,6 +331,7 @@ export function ExpertSkillWizard(props: {
             node?.setAttribute("directory", "");
           }}
           className="visually-hidden-input"
+          data-testid="expert-skill-folder-input"
           type="file"
           multiple
           onChange={(event) => {
@@ -418,11 +363,11 @@ export function ExpertSkillWizard(props: {
               <button type="button" onClick={() => archiveInputRef.current?.click()} disabled={busy}>
                 <Archive size={17} aria-hidden="true" />选择 ZIP
               </button>
-              <button type="button" onClick={() => void openFolderPicker()} disabled={busy}>
+              <button type="button" onClick={openFolderPicker} disabled={busy}>
                 <FolderOpen size={17} aria-hidden="true" />选择文件夹
               </button>
             </div>
-            <small>上传内容只归档和解析，不会执行其中的程序或脚本。</small>
+            <small>文件夹仅读取本次所选文件，不申请持续访问权限；上传内容只归档和解析，不执行程序或脚本。</small>
           </div>
         ) : (
           <>
@@ -431,7 +376,7 @@ export function ExpertSkillWizard(props: {
               <div><strong>{upload.folderName}</strong><span>{upload.fileCount} 个文件 · {formatBytes(totalBytes)} · 主文件 {upload.mainFilePath}</span></div>
               <div className="skill-wizard-reselect-actions">
                 <button type="button" onClick={() => archiveInputRef.current?.click()}>重新选择 ZIP</button>
-                <button type="button" onClick={() => void openFolderPicker()}>重新选择文件夹</button>
+                <button type="button" onClick={openFolderPicker}>重新选择文件夹</button>
               </div>
             </div>
             <div className="skill-wizard-file-tree" role="list" aria-label="Skill 文件目录">

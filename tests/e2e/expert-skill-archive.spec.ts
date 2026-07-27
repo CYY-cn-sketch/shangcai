@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import path from "node:path";
 
 const password = process.env.SUFE_E2E_PASSWORD || "";
 
@@ -24,21 +25,18 @@ test.beforeEach(() => {
 test("专家 Skill 支持 ZIP 拖放和文件夹选择的统一五步向导", async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   await page.addInitScript(() => {
+    Object.defineProperty(window, "__skillDirectoryPickerCalls", {
+      configurable: true,
+      writable: true,
+      value: 0,
+    });
     Object.defineProperty(window, "showDirectoryPicker", {
       configurable: true,
-      value: async () => ({
-        kind: "directory",
-        name: "e2e-skill",
-        async *values() {
-          yield {
-            kind: "file",
-            name: "SKILL.md",
-            async getFile() {
-              return new File(["# E2E Skill"], "SKILL.md", { type: "text/markdown" });
-            },
-          };
-        },
-      }),
+      value: async () => {
+        const target = window as Window & { __skillDirectoryPickerCalls?: number };
+        target.__skillDirectoryPickerCalls = (target.__skillDirectoryPickerCalls || 0) + 1;
+        throw new Error("不应调用高权限目录选择 API");
+      },
     });
   });
   const failures = collectUnexpectedFailures(page);
@@ -175,9 +173,13 @@ test("专家 Skill 支持 ZIP 拖放和文件夹选择的统一五步向导", as
   await successDialog.getByRole("button", { name: "确定" }).click();
   await page.getByRole("button", { name: "上传并配置 Skill" }).click();
   await expect(dialog).toBeVisible();
+  const fileChooserPromise = page.waitForEvent("filechooser");
   await dialog.getByRole("button", { name: "选择文件夹" }).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles(path.resolve("backend/src/main/resources/starter-content/experts/brainstorm-expert"));
   await expect(dialog.getByRole("heading", { name: "确认专家信息" })).toBeVisible({ timeout: 15_000 });
   expect(folderUploadSeen).toBe(true);
+  expect(await page.evaluate(() => (window as Window & { __skillDirectoryPickerCalls?: number }).__skillDirectoryPickerCalls)).toBe(0);
   await dialog.getByRole("button", { name: "关闭专家 Skill 配置" }).click();
   expect(failures.httpFailures).toEqual([]);
   expect(failures.consoleErrors).toEqual([]);
