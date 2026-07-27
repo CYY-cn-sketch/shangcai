@@ -19,6 +19,8 @@ test-results
 !.env.example
 backend/target
 backend/data
+deliverables/
+/*.docx
 
 # Editor directories and files
 .vscode/*
