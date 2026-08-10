@@ -1,0 +1,859 @@
+package com.sufe.ai.knowledge.api;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sufe.ai.account.domain.GroupMembership;
+import com.sufe.ai.account.domain.ProjectGroup;
+import com.sufe.ai.account.domain.UserAccount;
+import com.sufe.ai.account.domain.UserRole;
+import com.sufe.ai.account.repository.GroupMembershipRepository;
+import com.sufe.ai.account.repository.ProjectGroupRepository;
+import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.audit.repository.AuditLogRepository;
+import com.sufe.ai.knowledge.domain.ExpertProfile;
+import com.sufe.ai.knowledge.domain.KnowledgeAsset;
+import com.sufe.ai.knowledge.domain.KnowledgeBase;
+import com.sufe.ai.knowledge.domain.KnowledgeBaseScope;
+import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
+import com.sufe.ai.knowledge.repository.KnowledgeAssetRepository;
+import com.sufe.ai.knowledge.repository.KnowledgeBaseRepository;
+import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@ActiveProfiles("test")
+@SpringBootTest
+@AutoConfigureMockMvc
+@Transactional
+class AdminKnowledgeControllerTests {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private UserAccountRepository userAccountRepository;
+
+    @Autowired
+    private ProjectGroupRepository projectGroupRepository;
+
+    @Autowired
+    private GroupMembershipRepository groupMembershipRepository;
+
+    @Autowired
+    private KnowledgeBaseRepository knowledgeBaseRepository;
+
+    @Autowired
+    private KnowledgeAssetRepository knowledgeAssetRepository;
+
+    @Autowired
+    private ExpertProfileRepository expertProfileRepository;
+
+    @Autowired
+    private AuditLogRepository auditLogRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @BeforeEach
+    void setUp() {
+        userAccountRepository.save(UserAccount.create(
+                "U-KNOWLEDGE-ADMIN",
+                "knowledge-admin@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.ADMIN,
+                "知识库管理员",
+                "平台管理员",
+                100
+        ));
+    }
+
+    @Test
+    void adminManagesKnowledgeBaseAndAssets() throws Exception {
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+
+        String baseJson = mockMvc.perform(post("/api/admin/knowledge-bases")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "行业调研",
+                                  "description": "行业报告、访谈摘要和竞品资料",
+                                  "usedBy": "项目定位、市场判断"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.category").value("行业调研"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String baseId = objectMapper.readTree(baseJson).path("id").asText();
+
+        mockMvc.perform(patch("/api/admin/knowledge-bases/{baseId}", baseId)
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "行业调研",
+                                  "description": "更新后的知识库说明",
+                                  "usedBy": "项目定位、市场判断",
+                                  "active": true
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(true));
+
+        String assetJson = mockMvc.perform(post("/api/admin/knowledge-assets")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "行业调研",
+                                  "name": "访谈摘要.md",
+                                  "sizeLabel": "12 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "目标用户访谈摘要，只作为知识库资料读取。",
+                                  "contentText": "# 访谈摘要\\n不能作为程序执行。",
+                                  "uploadedBy": "平台管理员",
+                                  "enabled": true
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.category").value("行业调研"))
+                .andExpect(jsonPath("$.enabled").value(true))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String assetId = objectMapper.readTree(assetJson).path("id").asText();
+
+        mockMvc.perform(get("/api/admin/knowledge-bases").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.category == '行业调研')].assetCount").value(1));
+
+        mockMvc.perform(patch("/api/admin/knowledge-assets/{assetId}", assetId)
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "name": "访谈摘要.md",
+                                  "sizeLabel": "12 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "已更新的资料预览。",
+                                  "contentText": "# 已更新",
+                                  "enabled": false
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.enabled").value(false));
+
+        mockMvc.perform(delete("/api/admin/knowledge-bases/{baseId}", baseId)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("KNOWLEDGE_BASE_HAS_ASSETS"));
+
+        mockMvc.perform(delete("/api/admin/knowledge-assets/{assetId}", assetId)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(delete("/api/admin/knowledge-bases/{baseId}", baseId)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isNoContent());
+
+        assertThat(knowledgeBaseRepository.findById(baseId)).isEmpty();
+        assertThat(knowledgeAssetRepository.findById(assetId)).isEmpty();
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(baseId) || log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactlyInAnyOrder(
+                        "KNOWLEDGE_BASE_CREATE",
+                        "KNOWLEDGE_BASE_UPDATE",
+                        "KNOWLEDGE_ASSET_CREATE",
+                        "KNOWLEDGE_ASSET_UPDATE",
+                        "KNOWLEDGE_ASSET_DELETE",
+                        "KNOWLEDGE_BASE_DELETE"
+                );
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(baseId) || log.getResourceId().equals(assetId))
+                .allSatisfy(log -> {
+                    assertThat(log.getActorAccount()).isEqualTo("knowledge-admin@test.local");
+                    assertThat(log.getSummary())
+                            .doesNotContain("不能作为程序执行")
+                            .doesNotContain("# 已更新");
+                });
+    }
+
+    @Test
+    void teacherUploadCannotWriteIntoExpertPrivateKnowledgeBase() throws Exception {
+        ExpertProfile expert = expertProfileRepository.saveAndFlush(ExpertProfile.create(
+                "private-upload-expert",
+                "专属资料测试专家",
+                "验证教师资料与 Skill 资料隔离。",
+                "知识库隔离测试",
+                "#0f7b73"
+        ));
+        KnowledgeBase privateBase = knowledgeBaseRepository.saveAndFlush(KnowledgeBase.createExpertPrivate(
+                "专属资料测试专家专属知识库",
+                "仅保存该专家 Skill 导入的资料",
+                "专属资料测试专家",
+                expert.getId()
+        ));
+
+        mockMvc.perform(post("/api/admin/knowledge-assets")
+                        .with(csrf())
+                        .cookie(login("knowledge-admin@test.local"))
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "%s",
+                                  "name": "教师课程材料.md",
+                                  "sizeLabel": "1 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "不应写入专家专属库",
+                                  "contentText": "教师课程材料",
+                                  "uploadedBy": "平台管理员",
+                                  "enabled": true
+                                }
+                                """.formatted(privateBase.getCategory())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("EXPERT_PRIVATE_KNOWLEDGE_REQUIRES_SKILL_IMPORT"));
+
+        assertThat(knowledgeAssetRepository.findByKnowledgeBaseId(privateBase.getId())).isEmpty();
+    }
+
+    @Test
+    void teacherUploadsReadableFileIntoNamedExpertPrivateKnowledgeBaseWithoutExposingItToStudents() throws Exception {
+        ExpertProfile expert = expertProfileRepository.saveAndFlush(ExpertProfile.create(
+                "private-direct-upload-expert",
+                "专家资料直传测试",
+                "验证教师可定向补充专家检索资料。",
+                "专家知识资料上传",
+                "#0f7b73"
+        ));
+        KnowledgeBase privateBase = knowledgeBaseRepository.saveAndFlush(KnowledgeBase.createExpertPrivate(
+                "专家资料直传测试专属知识库",
+                "仅供当前专家检索",
+                expert.getName(),
+                expert.getId()
+        ));
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "专家补充资料.txt",
+                "text/plain",
+                "这是只供当前专家检索的补充资料。".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        String responseJson = mockMvc.perform(multipart(
+                                "/api/knowledge/experts/{expertId}/knowledge-assets/files",
+                                expert.getId()
+                        )
+                        .file(file)
+                        .with(csrf())
+                        .cookie(login("knowledge-admin@test.local")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.category").value(privateBase.getCategory()))
+                .andExpect(jsonPath("$.name").value("专家补充资料.txt"))
+                .andExpect(jsonPath("$.extractionStatus").value("READY"))
+                .andExpect(jsonPath("$.contentText").value("这是只供当前专家检索的补充资料。"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String assetId = objectMapper.readTree(responseJson).path("id").asText();
+
+        KnowledgeAsset saved = knowledgeAssetRepository.findById(assetId).orElseThrow();
+        assertThat(saved.getKnowledgeBaseId()).isEqualTo(privateBase.getId());
+        assertThat(saved.getOriginType()).isEqualTo("EXPERT_DIRECT_UPLOAD");
+        assertThat(knowledgeAssetRepository.countByKnowledgeBaseId(privateBase.getId())).isEqualTo(1);
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactly("EXPERT_PRIVATE_KNOWLEDGE_UPLOAD");
+
+        userAccountRepository.saveAndFlush(UserAccount.create(
+                "U-KNOWLEDGE-STUDENT",
+                "knowledge-student@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.STUDENT,
+                "知识库学生",
+                "学生",
+                0
+        ));
+        Cookie studentSession = login("knowledge-student@test.local");
+        String studentAssets = mockMvc.perform(get("/api/knowledge/knowledge-assets").cookie(studentSession))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(studentAssets).doesNotContain(assetId);
+        mockMvc.perform(get("/api/knowledge/knowledge-assets/{assetId}/file", assetId).cookie(studentSession))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(delete(
+                                "/api/knowledge/experts/{expertId}/knowledge-assets/{assetId}",
+                                expert.getId(),
+                                assetId
+                        )
+                        .with(csrf())
+                        .cookie(login("knowledge-admin@test.local")))
+                .andExpect(status().isNoContent());
+        assertThat(knowledgeAssetRepository.findById(assetId)).isEmpty();
+        assertThat(knowledgeAssetRepository.countByKnowledgeBaseId(privateBase.getId())).isZero();
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactly("EXPERT_PRIVATE_KNOWLEDGE_UPLOAD", "EXPERT_PRIVATE_KNOWLEDGE_DELETE");
+    }
+
+    @Test
+    void adminStoresExpertSkillAsTextConfigurationOnly() throws Exception {
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+
+        String expertJson = mockMvc.perform(post("/api/admin/experts")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "id": "custom-finance",
+                                  "name": "财务测算专家",
+                                  "role": "辅助学生拆解收入、成本和单元经济性。",
+                                  "scenario": "财务测算、商业模式验证",
+                                  "accent": "#0f7b73",
+                                  "sourceSkillName": "finance/SKILL.md",
+                                  "sourceSkillContent": "# 财务测算专家\\n只解析提示词和配置，不执行文件。",
+                                  "sourceSkillUploadedBy": "平台管理员",
+                                  "systemPrompt": "按课程口径输出。",
+                                  "userPrompt": "结合学生输入和知识库资料。",
+                                  "active": true,
+                                  "skills": [
+                                    {
+                                      "id": "custom-finance-skill",
+                                      "name": "财务假设拆解",
+                                      "stage": "商业模式",
+                                      "description": "生成收入、成本、毛利和验证任务。"
+                                    }
+                                  ],
+                                  "knowledgeCategories": ["BP 模板", "评分标准"]
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.sourceSkillContent").value("# 财务测算专家\n只解析提示词和配置，不执行文件。"))
+                .andExpect(jsonPath("$.skills[0].name").value("财务假设拆解"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode expert = objectMapper.readTree(expertJson);
+        assertThat(expert.path("id").asText()).isEqualTo("custom-finance");
+        assertThat(knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType("custom-finance", KnowledgeBaseScope.EXPERT_PRIVATE)
+                .orElseThrow()
+                .getCategory()).isEqualTo("财务测算专家专属知识库");
+
+        mockMvc.perform(get("/api/admin/experts").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == 'custom-finance')]").exists());
+
+        mockMvc.perform(patch("/api/admin/experts/custom-finance")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "name": "财务测算专家",
+                                  "role": "更新后的专家定位。",
+                                  "scenario": "财务测算",
+                                  "accent": "#0f7b73",
+                                  "sourceSkillName": "finance/SKILL.md",
+                                  "sourceSkillContent": "# 更新后",
+                                  "sourceSkillUploadedBy": "平台管理员",
+                                  "systemPrompt": "更新后的系统提示词。",
+                                  "userPrompt": "更新后的用户输入规则。",
+                                  "active": false,
+                                  "skills": [
+                                    {
+                                      "id": "custom-finance-skill",
+                                      "name": "财务假设拆解",
+                                      "stage": "商业模式",
+                                      "description": "更新后的说明。"
+                                    }
+                                  ],
+                                  "knowledgeCategories": ["BP 模板"]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(false))
+                .andExpect(jsonPath("$.knowledgeCategories[0]").value("BP 模板"));
+
+        mockMvc.perform(delete("/api/admin/experts/custom-finance")
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isNoContent());
+
+        assertThat(expertProfileRepository.findById("custom-finance")).isEmpty();
+    }
+
+    @Test
+    void adminCreatesDistinctPrivateKnowledgeBasesForLongExpertNamesWithSamePrefix() throws Exception {
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+        String sharedPrefix = "超".repeat(92);
+
+        createExpert(sessionCookie, "long-expert-one", sharedPrefix + "甲");
+        createExpert(sessionCookie, "long-expert-two", sharedPrefix + "乙");
+
+        KnowledgeBase first = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType(
+                        "long-expert-one",
+                        KnowledgeBaseScope.EXPERT_PRIVATE
+                )
+                .orElseThrow();
+        KnowledgeBase second = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType(
+                        "long-expert-two",
+                        KnowledgeBaseScope.EXPERT_PRIVATE
+                )
+                .orElseThrow();
+
+        assertThat(first.getCategory()).isNotEqualTo(second.getCategory());
+        assertLongCategory(first.getCategory(), "long-expert-one");
+        assertLongCategory(second.getCategory(), "long-expert-two");
+    }
+
+    @Test
+    void studentReadsRedactedKnowledgeButCannotMutateIt() throws Exception {
+        KnowledgeBase base = knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Student visible base",
+                "Metadata is visible to authenticated users",
+                "Course generation"
+        ));
+        KnowledgeAsset asset = KnowledgeAsset.create(
+                base.getId(),
+                "000-student-visible.md",
+                "1 KB",
+                "Markdown",
+                "Safe preview",
+                "private knowledge content",
+                "Knowledge administrator"
+        );
+        knowledgeAssetRepository.save(asset);
+        ExpertProfile expert = ExpertProfile.create(
+                "student-visible-expert",
+                "Student visible expert",
+                "Safe role description",
+                "Course scenario",
+                "#0f7b73"
+        );
+        expert.update(
+                expert.getName(),
+                expert.getRoleDescription(),
+                expert.getScenario(),
+                expert.getAccent(),
+                "expert/SKILL.md",
+                "private skill content",
+                "Knowledge administrator",
+                "private system prompt",
+                "private user prompt",
+                true
+        );
+        expertProfileRepository.save(expert);
+
+        ProjectGroup group = projectGroupRepository.save(ProjectGroup.create("G-KNOWLEDGE-STUDENT", "测试组", "测试项目"));
+        UserAccount student = userAccountRepository.save(UserAccount.create(
+                "U-KNOWLEDGE-STUDENT",
+                "knowledge-student@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.STUDENT,
+                "测试学生",
+                "创业实践课学生",
+                50
+        ));
+        groupMembershipRepository.save(GroupMembership.create("M-KNOWLEDGE-STUDENT", student.getId(), group.getId()));
+        Cookie sessionCookie = login("knowledge-student@test.local");
+
+        mockMvc.perform(get("/api/admin/knowledge-bases").cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/knowledge/knowledge-bases").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.category == 'Student visible base')]").exists());
+
+        mockMvc.perform(get("/api/knowledge/knowledge-assets").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].preview").value("Safe preview"))
+                .andExpect(jsonPath("$[0].contentText").value(nullValue()));
+
+        String expertsJson = mockMvc.perform(get("/api/knowledge/experts").cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode studentVisibleExpert = null;
+        for (JsonNode expertNode : objectMapper.readTree(expertsJson)) {
+            if ("student-visible-expert".equals(expertNode.path("id").asText())) {
+                studentVisibleExpert = expertNode;
+                break;
+            }
+        }
+        assertThat(studentVisibleExpert).isNotNull();
+        assertThat(studentVisibleExpert.get("sourceSkillContent").isNull()).isTrue();
+        assertThat(studentVisibleExpert.get("sourceSkillUploadedBy").isNull()).isTrue();
+        assertThat(studentVisibleExpert.get("systemPrompt").isNull()).isTrue();
+        assertThat(studentVisibleExpert.get("userPrompt").isNull()).isTrue();
+
+        mockMvc.perform(post("/api/knowledge/knowledge-assets")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("{}"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/knowledge/knowledge-bases")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "Student forbidden base",
+                                  "description": "Must not be created",
+                                  "usedBy": "Student"
+                                }
+                                """))
+                .andExpect(status().isForbidden());
+
+        MockMultipartFile forbiddenFile = new MockMultipartFile(
+                "file", "student.txt", "text/plain", "must not upload".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/files")
+                        .file(forbiddenFile)
+                        .param("category", base.getCategory())
+                        .param("preview", "Forbidden upload")
+                        .param("uploadedBy", "Student")
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(patch("/api/knowledge/knowledge-assets/{assetId}", asset.getId())
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "name": "student-change.md",
+                                  "sizeLabel": "1 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "Forbidden change",
+                                  "contentText": "Forbidden content",
+                                  "enabled": false
+                                }
+                                """))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(delete("/api/knowledge/knowledge-assets/{assetId}", asset.getId())
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(delete("/api/knowledge/knowledge-bases/{baseId}", base.getId())
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isForbidden());
+
+        assertThat(knowledgeBaseRepository.findByCategory("Student forbidden base")).isEmpty();
+        assertThat(knowledgeAssetRepository.findById(asset.getId())).isPresent();
+        assertThat(auditLogRepository.findAll())
+                .noneSatisfy(log -> assertThat(log.getActorAccount()).isEqualTo("knowledge-student@test.local"));
+    }
+
+    @Test
+    void teacherManagesKnowledgeAssetsExpertsAndCatalog() throws Exception {
+        userAccountRepository.save(UserAccount.create(
+                "U-KNOWLEDGE-TEACHER",
+                "knowledge-teacher@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.TEACHER,
+                "Knowledge teacher",
+                "Course teacher",
+                100
+        ));
+        knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Teacher managed base",
+                "Created by administrator",
+                "Course generation"
+        ));
+        Cookie sessionCookie = login("knowledge-teacher@test.local");
+
+        mockMvc.perform(post("/api/knowledge/knowledge-assets")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "Teacher managed base",
+                                  "name": "teacher-resource.md",
+                                  "sizeLabel": "1 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "Teacher resource preview",
+                                  "contentText": "Teacher resource content",
+                                  "uploadedBy": "Knowledge teacher",
+                                  "enabled": true
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.contentText").value("Teacher resource content"));
+
+        mockMvc.perform(post("/api/knowledge/experts")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "id": "teacher-created-expert",
+                                  "name": "Teacher created expert",
+                                  "role": "Support course work",
+                                  "scenario": "Course scenario",
+                                  "accent": "#0f7b73",
+                                  "systemPrompt": "Teacher system prompt",
+                                  "userPrompt": "Teacher user prompt",
+                                  "active": true,
+                                  "skills": [
+                                    {
+                                      "id": "teacher-created-skill",
+                                      "name": "Teacher skill",
+                                      "stage": "Course stage",
+                                      "description": "Teacher skill description"
+                                    }
+                                  ],
+                                  "knowledgeCategories": ["Teacher managed base"]
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.systemPrompt").value("Teacher system prompt"));
+
+        mockMvc.perform(post("/api/knowledge/knowledge-bases")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "Teacher created base",
+                                  "description": "Teachers can manage course knowledge structure",
+                                  "usedBy": "Course generation"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.category").value("Teacher created base"));
+
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getActorAccount().equals("knowledge-teacher@test.local"))
+                .extracting("action")
+                .contains("KNOWLEDGE_ASSET_CREATE", "KNOWLEDGE_BASE_CREATE");
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getActorAccount().equals("knowledge-teacher@test.local"))
+                .allSatisfy(log -> assertThat(log.getActorRole()).isEqualTo("TEACHER"));
+    }
+
+    @Test
+    void storesAndDownloadsOriginalKnowledgeFile() throws Exception {
+        KnowledgeBase base = knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Binary resources",
+                "Original files are stored outside the database",
+                "Course generation"
+        ));
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+        byte[] fileBytes = "verified knowledge file".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "course-notes.txt",
+                "text/plain",
+                fileBytes
+        );
+
+        String responseBody = mockMvc.perform(multipart("/api/knowledge/knowledge-assets/files")
+                        .file(file)
+                        .param("category", base.getCategory())
+                        .param("preview", "Course notes preview")
+                        .param("contentText", "Course notes text")
+                        .param("uploadedBy", "Knowledge administrator")
+                        .param("enabled", "true")
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.fileAvailable").value(true))
+                .andExpect(jsonPath("$.originalName").value("course-notes.txt"))
+                .andExpect(jsonPath("$.fileSizeBytes").value(fileBytes.length))
+                .andExpect(jsonPath("$.sha256").isNotEmpty())
+                .andExpect(jsonPath("$.contentText").value("verified knowledge file"))
+                .andExpect(jsonPath("$.extractionStatus").value("READY"))
+                .andExpect(jsonPath("$.extractionMessage").value("已提取可读文本"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String assetId = objectMapper.readTree(responseBody).path("id").asText();
+
+        mockMvc.perform(get("/api/knowledge/knowledge-assets/{assetId}/file", assetId)
+                        .cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("course-notes.txt")))
+                .andExpect(content().bytes(fileBytes));
+
+        mockMvc.perform(delete("/api/knowledge/knowledge-assets/{assetId}", assetId)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isNoContent());
+        assertThat(knowledgeAssetRepository.findById(assetId)).isEmpty();
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactlyInAnyOrder(
+                        "KNOWLEDGE_ASSET_UPLOAD",
+                        "KNOWLEDGE_ASSET_DOWNLOAD",
+                        "KNOWLEDGE_ASSET_DELETE"
+                );
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .allSatisfy(log -> assertThat(log.getSummary()).doesNotContain("verified knowledge file"));
+    }
+
+    @Test
+    void recordsFileAttachmentAndReplacementWithoutFileContents() throws Exception {
+        KnowledgeBase base = knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Attach resources",
+                "Metadata-first assets",
+                "Course generation"
+        ));
+        KnowledgeAsset asset = knowledgeAssetRepository.save(KnowledgeAsset.create(
+                base.getId(),
+                "attachment-target.txt",
+                "0 B",
+                "TXT",
+                "Attachment target",
+                "PRIVATE_METADATA_TEXT_DO_NOT_AUDIT",
+                "Knowledge administrator"
+        ));
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+
+        MockMultipartFile firstFile = new MockMultipartFile(
+                "file", "first.txt", "text/plain", "PRIVATE_FIRST_FILE_BODY".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/{assetId}/file", asset.getId())
+                        .file(firstFile)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.originalName").value("first.txt"));
+
+        MockMultipartFile replacementFile = new MockMultipartFile(
+                "file", "replacement.txt", "text/plain", "PRIVATE_REPLACEMENT_FILE_BODY".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/{assetId}/file", asset.getId())
+                        .file(replacementFile)
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.originalName").value("replacement.txt"));
+
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(asset.getId()))
+                .extracting("action")
+                .containsExactlyInAnyOrder("KNOWLEDGE_ASSET_FILE_ATTACH", "KNOWLEDGE_ASSET_FILE_REPLACE");
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(asset.getId()))
+                .allSatisfy(log -> assertThat(log.getSummary())
+                        .doesNotContain("PRIVATE_METADATA_TEXT_DO_NOT_AUDIT")
+                        .doesNotContain("PRIVATE_FIRST_FILE_BODY")
+                        .doesNotContain("PRIVATE_REPLACEMENT_FILE_BODY"));
+    }
+
+    @Test
+    void rejectsExecutableKnowledgeFile() throws Exception {
+        knowledgeBaseRepository.save(KnowledgeBase.create(
+                "Safe resources",
+                "Only allowlisted formats are accepted",
+                "Course generation"
+        ));
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+        MockMultipartFile file = new MockMultipartFile("file", "payload.exe", "application/octet-stream", new byte[]{1, 2, 3});
+
+        mockMvc.perform(multipart("/api/knowledge/knowledge-assets/files")
+                        .file(file)
+                        .param("category", "Safe resources")
+                        .param("preview", "Unsafe file")
+                        .param("uploadedBy", "Knowledge administrator")
+                        .with(csrf())
+                        .cookie(sessionCookie))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_KNOWLEDGE_FILE"));
+    }
+
+    private void createExpert(Cookie sessionCookie, String expertId, String expertName) throws Exception {
+        mockMvc.perform(post("/api/admin/experts")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "id": "%s",
+                                  "name": "%s",
+                                  "role": "验证长专家名知识库命名。",
+                                  "scenario": "专家创建测试",
+                                  "accent": "#0f7b73",
+                                  "active": true,
+                                  "skills": [
+                                    {
+                                      "id": "%s-skill",
+                                      "name": "命名检查",
+                                      "stage": "测试",
+                                      "description": "验证专属知识库名称不会碰撞。"
+                                    }
+                                  ],
+                                  "knowledgeCategories": []
+                                }
+                                """.formatted(expertId, expertName, expertId)))
+                .andExpect(status().isCreated());
+    }
+
+    private static void assertLongCategory(String category, String expertId) {
+        assertThat(category.codePointCount(0, category.length())).isLessThanOrEqualTo(100);
+        assertThat(category).endsWith("专属知识库-" + expertId);
+    }
+
+    private Cookie login(String account) throws Exception {
+        return mockMvc.perform(post("/api/auth/login")
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"account\":\"" + account + "\",\"password\":\"correct-password\"}"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getCookie("SUFE_SESSION");
+    }
+}

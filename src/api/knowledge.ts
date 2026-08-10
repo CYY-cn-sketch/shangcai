@@ -1,0 +1,508 @@
+export type KnowledgeBaseRecord = {
+  id: string;
+  category: string;
+  description: string;
+  usedBy: string;
+  active: boolean;
+  scopeType: "COURSE_SHARED" | "EXPERT_PRIVATE";
+  ownerExpertId?: string | null;
+  assetCount: number;
+};
+
+export type KnowledgeAssetRecord = {
+  id: string;
+  category: string;
+  name: string;
+  sizeLabel: string;
+  fileType: string;
+  preview: string;
+  contentText?: string | null;
+  uploadedBy: string;
+  enabled: boolean;
+  fileAvailable: boolean;
+  originalName?: string | null;
+  mimeType?: string | null;
+  fileSizeBytes?: number | null;
+  sha256?: string | null;
+  extractionStatus: "READY" | "EMPTY" | "OCR_REQUIRED" | "ASR_REQUIRED" | "UNSUPPORTED" | "FAILED";
+  extractionMessage?: string | null;
+  downloadUrl?: string | null;
+  lexiangSyncStatus:
+    | "NOT_APPLICABLE"
+    | "NOT_CONFIGURED"
+    | "PENDING"
+    | "SYNCING"
+    | "SYNCED"
+    | "PULLED"
+    | "CONFLICT"
+    | "REMOTE_MISSING"
+    | "UNSUPPORTED"
+    | "FAILED";
+  lexiangEntryId?: string | null;
+  lexiangSyncError?: string | null;
+  lexiangSyncedAt?: string | null;
+  createdAt: string;
+};
+
+export type LexiangPullRunRecord = {
+  id?: string | null;
+  configured?: boolean;
+  status: "NOT_CONFIGURED" | "PENDING" | "RUNNING" | "SUCCESS" | "SUCCEEDED" | "COMPLETED" | "PARTIAL" | "FAILED";
+  startedAt?: string | null;
+  completedAt?: string | null;
+  addedCount: number;
+  updatedCount: number;
+  missingCount: number;
+  conflictCount: number;
+  failedCount: number;
+  message?: string | null;
+};
+
+export type LexiangKnowledgeMappingRecord = {
+  baseId: string;
+  spaceId: string;
+  parentEntryId: string;
+  enabled: boolean;
+  updatedAt?: string | null;
+};
+
+export type SaveLexiangKnowledgeMappingInput = Pick<
+  LexiangKnowledgeMappingRecord,
+  "baseId" | "spaceId" | "parentEntryId" | "enabled"
+>;
+
+export type KnowledgeExpertSkill = {
+  id: string;
+  name: string;
+  stage: string;
+  description: string;
+};
+
+export type KnowledgeExpertRecord = {
+  id: string;
+  name: string;
+  role: string;
+  scenario: string;
+  accent: string;
+  active: boolean;
+  sourceSkillName?: string | null;
+  sourceSkillContent?: string | null;
+  sourceSkillUploadedBy?: string | null;
+  systemPrompt?: string | null;
+  userPrompt?: string | null;
+  skills: KnowledgeExpertSkill[];
+  knowledgeCategories: string[];
+};
+
+export type ExpertSkillUploadRecord = {
+  id: string;
+  folderName: string;
+  mainFilePath: string;
+  fileCount: number;
+  parsedName: string;
+  parsedRole: string;
+  parsedScenario: string;
+  parsedAccent: string;
+  parsedSkillName?: string | null;
+  parsedSkillDescription?: string | null;
+  parsedSystemPrompt?: string | null;
+  parsedUserPrompt?: string | null;
+  parsedKnowledgeRule?: string | null;
+  parsedOutputFormat?: string | null;
+  parsedBoundaries?: string | null;
+  status: "PARSED" | "ENABLED";
+  expertId?: string | null;
+  uploadedBy: string;
+  confirmedBy?: string | null;
+  createdAt: string;
+  confirmedAt?: string | null;
+  files: ExpertSkillUploadFileRecord[];
+};
+
+export type ExpertSkillUploadFileRecord = {
+  id: string;
+  relativePath: string;
+  fileRole: "CONFIG" | "PROMPT" | "KNOWLEDGE_CANDIDATE" | "SOURCE_CODE" | "REFERENCE";
+  contentPreview?: string | null;
+  mimeType: string;
+  fileSizeBytes: number;
+  sha256: string;
+  importedAssetId?: string | null;
+  downloadUrl: string;
+};
+
+export type ExpertSkillSourceRecord = {
+  sourceType: "UPLOADED" | "STARTER" | "PROFILE";
+  folderName: string;
+  mainFilePath?: string | null;
+  uploadedBy?: string | null;
+  updatedAt?: string | null;
+  files: ExpertSkillSourceFileRecord[];
+};
+
+export type ExpertSkillSourceFileRecord = {
+  id: string;
+  relativePath: string;
+  fileRole: "CONFIG" | "PROMPT" | "KNOWLEDGE_CANDIDATE" | "SOURCE_CODE" | "REFERENCE";
+  contentText?: string | null;
+  contentTruncated: boolean;
+  mimeType: string;
+  fileSizeBytes: number;
+  sha256: string;
+  importedAssetId?: string | null;
+  downloadUrl?: string | null;
+};
+
+export type ExpertSkillKnowledgeSelection =
+  | { mode: "EXISTING"; knowledgeBaseId: string }
+  | {
+      mode: "CREATE";
+      newKnowledgeBase: {
+        category: string;
+        description: string;
+        usedBy: string;
+        active: boolean;
+      };
+    }
+  | { mode: "NONE" };
+
+export type ConfirmExpertSkillUploadInput = {
+  targetExpertId?: string;
+  name: string;
+  role: string;
+  scenario: string;
+  accent: string;
+  skillName: string;
+  skillDescription: string;
+  systemPrompt: string;
+  userPrompt: string;
+  knowledgeRule?: string;
+  outputFormat?: string;
+  boundaries?: string;
+  knowledge: ExpertSkillKnowledgeSelection;
+  importFileIds: string[];
+  active: boolean;
+};
+
+export type ExpertSkillConfirmationRecord = {
+  expert: KnowledgeExpertRecord;
+  upload: ExpertSkillUploadRecord;
+  knowledgeBase?: Omit<KnowledgeBaseRecord, "assetCount"> | null;
+  importedAssets: Array<{
+    id: string;
+    sourceFileId?: string | null;
+    name: string;
+    originalName?: string | null;
+    sha256: string;
+  }>;
+};
+
+export type SaveKnowledgeBaseInput = Pick<KnowledgeBaseRecord, "category" | "description" | "usedBy"> & {
+  active: boolean;
+};
+
+export type SaveKnowledgeAssetInput = Omit<
+  KnowledgeAssetRecord,
+  | "id"
+  | "createdAt"
+  | "fileAvailable"
+  | "originalName"
+  | "mimeType"
+  | "fileSizeBytes"
+  | "sha256"
+  | "extractionStatus"
+  | "extractionMessage"
+  | "downloadUrl"
+  | "lexiangSyncStatus"
+  | "lexiangEntryId"
+  | "lexiangSyncError"
+  | "lexiangSyncedAt"
+>;
+
+export type UploadKnowledgeAssetInput = {
+  category: string;
+  preview: string;
+  contentText?: string;
+  uploadedBy: string;
+  enabled: boolean;
+  file: File;
+};
+
+export type SaveKnowledgeExpertInput = Omit<KnowledgeExpertRecord, "sourceSkillName" | "sourceSkillContent" | "sourceSkillUploadedBy" | "systemPrompt" | "userPrompt"> & {
+  sourceSkillName?: string;
+  sourceSkillContent?: string;
+  sourceSkillUploadedBy?: string;
+  systemPrompt?: string;
+  userPrompt?: string;
+};
+
+type CsrfResponse = { headerName: string; token: string };
+type ErrorResponse = { message?: string };
+
+export class KnowledgeApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function parseError(response: Response) {
+  const result = (await response.json().catch(() => ({}))) as ErrorResponse;
+  return new KnowledgeApiError(result.message || `请求失败：HTTP ${response.status}`, response.status);
+}
+
+async function getCsrfToken() {
+  const response = await fetch("/api/auth/csrf", { credentials: "include", headers: { Accept: "application/json" } });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as CsrfResponse;
+}
+
+async function readJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, { credentials: "include", headers: { Accept: "application/json" } });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as T;
+}
+
+async function readOptionalJson<T>(path: string): Promise<T | null> {
+  const response = await fetch(path, { credentials: "include", headers: { Accept: "application/json" } });
+  if (!response.ok) throw await parseError(response);
+  if (response.status === 204) return null;
+  return (await response.json()) as T;
+}
+
+async function mutateJson<T>(path: string, method: "POST" | "PUT" | "PATCH", input: unknown): Promise<T> {
+  const csrf = await getCsrfToken();
+  const response = await fetch(path, {
+    method,
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as T;
+}
+
+async function deleteResource(path: string) {
+  const csrf = await getCsrfToken();
+  const response = await fetch(path, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { [csrf.headerName]: csrf.token },
+  });
+  if (!response.ok) throw await parseError(response);
+}
+
+export function listKnowledgeBases() {
+  return readJson<KnowledgeBaseRecord[]>("/api/knowledge/knowledge-bases");
+}
+
+export function createKnowledgeBase(input: Omit<SaveKnowledgeBaseInput, "active">) {
+  return mutateJson<KnowledgeBaseRecord>("/api/knowledge/knowledge-bases", "POST", input);
+}
+
+export function updateKnowledgeBase(id: string, input: SaveKnowledgeBaseInput) {
+  return mutateJson<KnowledgeBaseRecord>(`/api/knowledge/knowledge-bases/${encodeURIComponent(id)}`, "PATCH", input);
+}
+
+export function deleteKnowledgeBase(id: string) {
+  return deleteResource(`/api/knowledge/knowledge-bases/${encodeURIComponent(id)}`);
+}
+
+export function listKnowledgeAssets() {
+  return readJson<KnowledgeAssetRecord[]>("/api/knowledge/knowledge-assets");
+}
+
+export function createKnowledgeAsset(input: SaveKnowledgeAssetInput) {
+  return mutateJson<KnowledgeAssetRecord>("/api/knowledge/knowledge-assets", "POST", input);
+}
+
+export async function uploadKnowledgeAsset(input: UploadKnowledgeAssetInput) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.set("category", input.category);
+  form.set("preview", input.preview);
+  if (input.contentText) form.set("contentText", input.contentText);
+  form.set("uploadedBy", input.uploadedBy);
+  form.set("enabled", String(input.enabled));
+  form.set("file", input.file, input.file.name);
+  const response = await fetch("/api/knowledge/knowledge-assets/files", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as KnowledgeAssetRecord;
+}
+
+export async function uploadExpertPrivateKnowledgeAsset(expertId: string, file: File) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.set("file", file, file.name);
+  const response = await fetch(
+    `/api/knowledge/experts/${encodeURIComponent(expertId)}/knowledge-assets/files`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        [csrf.headerName]: csrf.token,
+      },
+      body: form,
+    },
+  );
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as KnowledgeAssetRecord;
+}
+
+export async function attachKnowledgeAssetFile(id: string, file: File) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.set("file", file, file.name);
+  const response = await fetch(`/api/knowledge/knowledge-assets/${encodeURIComponent(id)}/file`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as KnowledgeAssetRecord;
+}
+
+export function updateKnowledgeAsset(id: string, input: Omit<SaveKnowledgeAssetInput, "category" | "uploadedBy">) {
+  return mutateJson<KnowledgeAssetRecord>(`/api/knowledge/knowledge-assets/${encodeURIComponent(id)}`, "PATCH", input);
+}
+
+export function deleteKnowledgeAsset(id: string) {
+  return deleteResource(`/api/knowledge/knowledge-assets/${encodeURIComponent(id)}`);
+}
+
+export function syncKnowledgeAssetWithLexiang(id: string) {
+  return mutateJson<KnowledgeAssetRecord>(
+    `/api/knowledge/knowledge-assets/${encodeURIComponent(id)}/lexiang-sync`,
+    "POST",
+    {},
+  );
+}
+
+export function getLatestLexiangPullRun() {
+  return readOptionalJson<LexiangPullRunRecord>("/api/knowledge/lexiang/pull-runs/latest");
+}
+
+export function pullLexiangKnowledge() {
+  return mutateJson<LexiangPullRunRecord>("/api/knowledge/lexiang/pull", "POST", {});
+}
+
+export function listLexiangKnowledgeMappings() {
+  return readJson<LexiangKnowledgeMappingRecord[]>("/api/knowledge/lexiang/mappings");
+}
+
+export function updateLexiangKnowledgeMapping(input: SaveLexiangKnowledgeMappingInput) {
+  return mutateJson<LexiangKnowledgeMappingRecord>("/api/knowledge/lexiang/mappings", "PUT", input);
+}
+
+export function deleteExpertPrivateKnowledgeAsset(expertId: string, assetId: string) {
+  return deleteResource(
+    `/api/knowledge/experts/${encodeURIComponent(expertId)}/knowledge-assets/${encodeURIComponent(assetId)}`,
+  );
+}
+
+export function knowledgeAssetDownloadUrl(id: string) {
+  return `/api/knowledge/knowledge-assets/${encodeURIComponent(id)}/file`;
+}
+
+export function listKnowledgeExperts() {
+  return readJson<KnowledgeExpertRecord[]>("/api/knowledge/experts");
+}
+
+export async function saveKnowledgeExpert(input: SaveKnowledgeExpertInput) {
+  const path = `/api/knowledge/experts/${encodeURIComponent(input.id)}`;
+  const updateInput = { ...input } as Partial<SaveKnowledgeExpertInput>;
+  delete updateInput.id;
+  try {
+    return await mutateJson<KnowledgeExpertRecord>(path, "PATCH", updateInput);
+  } catch (error) {
+    if (!(error instanceof KnowledgeApiError) || error.status !== 404) throw error;
+    return mutateJson<KnowledgeExpertRecord>("/api/knowledge/experts", "POST", input);
+  }
+}
+
+export function deleteKnowledgeExpert(id: string, deletePrivateKnowledge = false) {
+  const query = deletePrivateKnowledge ? "?deletePrivateKnowledge=true" : "";
+  return deleteResource(`/api/knowledge/experts/${encodeURIComponent(id)}${query}`);
+}
+
+export async function uploadExpertSkillArchive(archive: File) {
+  if (!/\.zip$/i.test(archive.name)) throw new KnowledgeApiError("请选择 .zip 格式的 Skill 压缩包", 400);
+  if (archive.size > 20 * 1024 * 1024) throw new KnowledgeApiError("Skill ZIP 压缩包不能超过 20 MB", 400);
+
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.append("archive", archive, archive.name);
+  const response = await fetch("/api/knowledge/expert-skill-uploads/archive", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as ExpertSkillUploadRecord;
+}
+
+export async function uploadExpertSkillFolder(files: File[]) {
+  if (!files.length) throw new KnowledgeApiError("请选择包含 SKILL.md 的完整 Skill 文件夹", 400);
+  if (files.length > 50) throw new KnowledgeApiError("Skill 文件夹最多上传 50 个文件", 400);
+
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file, file.name));
+  files.forEach((file) => form.append("paths", file.webkitRelativePath || file.name));
+  const response = await fetch("/api/knowledge/expert-skill-uploads", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: form,
+  });
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as ExpertSkillUploadRecord;
+}
+
+export function listExpertSkillUploads() {
+  return readJson<ExpertSkillUploadRecord[]>("/api/knowledge/expert-skill-uploads");
+}
+
+export function getExpertSkillSource(expertId: string) {
+  return readJson<ExpertSkillSourceRecord>(
+    `/api/knowledge/expert-skill-uploads/experts/${encodeURIComponent(expertId)}/files`,
+  );
+}
+
+export function discardExpertSkillUpload(id: string) {
+  return deleteResource(`/api/knowledge/expert-skill-uploads/${encodeURIComponent(id)}`);
+}
+
+export function confirmExpertSkillUpload(id: string, input: ConfirmExpertSkillUploadInput) {
+  return mutateJson<ExpertSkillConfirmationRecord>(
+    `/api/knowledge/expert-skill-uploads/${encodeURIComponent(id)}/confirm`,
+    "POST",
+    input,
+  );
+}

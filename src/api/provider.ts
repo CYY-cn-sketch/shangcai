@@ -1,0 +1,143 @@
+export type ProviderErrorResponse = {
+  code?: string;
+  message?: string;
+};
+
+export type LexiangPptContextInput = {
+  projectId: string;
+  conversationId: string;
+  expertId: string;
+  query: string;
+};
+
+export type LexiangReferenceDoc = {
+  title: string;
+  url?: string;
+  content?: string;
+};
+
+export type LexiangPptContext = {
+  configured: boolean;
+  content: string;
+  sessionId?: string;
+  references: LexiangReferenceDoc[];
+};
+
+export type DeepSeekExpertReplyInput = {
+  ideaId: string;
+  expertId: string;
+  clientMessageId: string;
+  skillName?: string;
+  artifactType?: string;
+  artifactMode?: "AUTO" | "REQUIRED";
+};
+
+export type DeepSeekExpertReply = {
+  content: string;
+  model?: string;
+  assistantMessageId?: string;
+  blocks?: Array<{ title: string; items: string[] }>;
+  artifactType?: string;
+};
+
+export type DeepSeekChatStatus = {
+  status: "RUNNING" | "COMPLETED" | "FAILED";
+  assistantMessageId?: string;
+  errorMessage?: string;
+};
+
+type CsrfResponse = {
+  headerName: string;
+  token: string;
+};
+
+async function parseError(response: Response) {
+  const result = (await response.json().catch(() => ({}))) as ProviderErrorResponse;
+  return result.message || result.code || `请求失败：HTTP ${response.status}`;
+}
+
+async function getCsrfToken() {
+  const response = await fetch("/api/auth/csrf", {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return (await response.json()) as CsrfResponse;
+}
+
+export async function requestLexiangPptContext(input: LexiangPptContextInput): Promise<LexiangPptContext> {
+  const csrf = await getCsrfToken();
+  const response = await fetch("/api/provider/lexiang/qa", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: JSON.stringify({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      expertId: input.expertId,
+      query: input.query,
+      targets: [],
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const result = (await response.json()) as {
+    content?: string;
+    sessionId?: string;
+    referenceDocs?: LexiangReferenceDoc[];
+  };
+  return {
+    configured: true,
+    content: result.content || "",
+    sessionId: result.sessionId,
+    references: result.referenceDocs || [],
+  };
+}
+
+export async function requestDeepSeekExpertReply(
+  input: DeepSeekExpertReplyInput,
+): Promise<DeepSeekExpertReply> {
+  const csrf = await getCsrfToken();
+  const response = await fetch("/api/provider/deepseek/chat", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      [csrf.headerName]: csrf.token,
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  const result = (await response.json()) as DeepSeekExpertReply;
+  if (!result.content?.trim()) {
+    throw new Error("AI 服务未返回可用内容，请稍后重试");
+  }
+  return {
+    content: result.content.trim(),
+    model: result.model,
+    ...(result.assistantMessageId ? { assistantMessageId: result.assistantMessageId } : {}),
+    ...(Array.isArray(result.blocks) ? { blocks: result.blocks } : {}),
+    ...(result.artifactType ? { artifactType: result.artifactType } : {}),
+  };
+}
+
+export async function getDeepSeekChatStatus(ideaId: string, clientMessageId: string) {
+  const params = new URLSearchParams({ ideaId, clientMessageId });
+  const response = await fetch(`/api/provider/deepseek/chat-status?${params.toString()}`, {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await parseError(response));
+  return (await response.json()) as DeepSeekChatStatus;
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Backup SUFE AI database and file data
+After=mysql.service
+
+[Service]
+Type=oneshot
+User=sufe-ai
+Group=sufe-ai
+Environment=SUFE_BACKUP_DIR=/srv/sufe-ai/backups/platform
+Environment=SUFE_DATA_ROOT=/srv/sufe-ai/data
+Environment=RETENTION_DAYS=14
+ExecStart=/opt/sufe-ai/deploy/scripts/backup-platform.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/sufe-ai/data /etc/sufe-ai/mysql-backup.cnf
+ReadWritePaths=/srv/sufe-ai/backups

@@ -1,0 +1,174 @@
+package com.sufe.ai.artifact.domain;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Entity
+@Table(name = "artifact_submission")
+public class ArtifactSubmission {
+
+    @Id
+    @Column(length = 36, nullable = false, updatable = false)
+    private String id;
+
+    @Column(name = "artifact_id", length = 36, nullable = false, updatable = false)
+    private String artifactId;
+
+    @Column(name = "submission_version", nullable = false, updatable = false)
+    private int submissionVersion;
+
+    @Column(name = "artifact_type_snapshot", length = 32, nullable = false, updatable = false)
+    private String artifactTypeSnapshot;
+
+    @Column(name = "artifact_title_snapshot", length = 200, nullable = false, updatable = false)
+    private String artifactTitleSnapshot;
+
+    @Column(name = "artifact_summary_snapshot", columnDefinition = "TEXT", nullable = false, updatable = false)
+    private String artifactSummarySnapshot;
+
+    @Column(name = "content_json_snapshot", columnDefinition = "TEXT", nullable = false, updatable = false)
+    private String contentJsonSnapshot;
+
+    @Column(name = "student_user_id", length = 36, nullable = false, updatable = false)
+    private String studentUserId;
+
+    @Column(name = "student_name", length = 100, nullable = false)
+    private String studentName;
+
+    @Column(name = "group_label", length = 50, nullable = false)
+    private String groupLabel;
+
+    @Column(name = "group_name", length = 150, nullable = false)
+    private String groupName;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 32, nullable = false)
+    private SubmissionStatus status;
+
+    @Column(name = "teacher_comment", columnDefinition = "TEXT")
+    private String teacherComment;
+
+    @Column(name = "reviewer_user_id", length = 36)
+    private String reviewerUserId;
+
+    @Column(name = "is_excellent", nullable = false)
+    private boolean excellent;
+
+    @Column(name = "submitted_at", nullable = false)
+    private Instant submittedAt;
+
+    @Column(name = "reviewed_at")
+    private Instant reviewedAt;
+
+    @Column(name = "ai_diagnosis_json", columnDefinition = "TEXT")
+    private String aiDiagnosisJson;
+
+    @Column(name = "ai_diagnosed_at")
+    private Instant aiDiagnosedAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    protected ArtifactSubmission() {
+    }
+
+    private ArtifactSubmission(
+            ArtifactRecord artifact,
+            int submissionVersion,
+            String studentUserId,
+            String studentName,
+            String groupLabel,
+            String groupName
+    ) {
+        this.id = UUID.randomUUID().toString();
+        this.artifactId = requireText(artifact.getId(), "artifactId");
+        if (submissionVersion < 1) throw new IllegalArgumentException("submissionVersion 必须大于 0");
+        this.submissionVersion = submissionVersion;
+        this.artifactTypeSnapshot = requireText(artifact.getArtifactType(), "artifactTypeSnapshot");
+        this.artifactTitleSnapshot = requireText(artifact.getTitle(), "artifactTitleSnapshot");
+        this.artifactSummarySnapshot = requireText(artifact.getSummary(), "artifactSummarySnapshot");
+        this.contentJsonSnapshot = requireText(artifact.getContentJson(), "contentJsonSnapshot");
+        this.studentUserId = requireText(studentUserId, "studentUserId");
+        this.studentName = requireText(studentName, "studentName");
+        this.groupLabel = requireText(groupLabel, "groupLabel");
+        this.groupName = requireText(groupName, "groupName");
+        this.excellent = false;
+        Instant now = Instant.now();
+        this.status = SubmissionStatus.PENDING;
+        this.submittedAt = now;
+        this.updatedAt = now;
+    }
+
+    public static ArtifactSubmission create(
+            ArtifactRecord artifact,
+            int submissionVersion,
+            String studentUserId,
+            String studentName,
+            String groupLabel,
+            String groupName
+    ) {
+        return new ArtifactSubmission(artifact, submissionVersion, studentUserId, studentName, groupLabel, groupName);
+    }
+
+    public void review(SubmissionStatus status, String teacherComment, String reviewerUserId, Boolean excellent) {
+        if (status == SubmissionStatus.WITHDRAWN) {
+            throw new IllegalArgumentException("教师不能将成果标记为已撤回");
+        }
+        if (status != null) this.status = status;
+        if (teacherComment != null) this.teacherComment = normalizeOptional(teacherComment);
+        if (excellent != null) this.excellent = excellent;
+        this.reviewerUserId = requireText(reviewerUserId, "reviewerUserId");
+        this.reviewedAt = Instant.now();
+        this.updatedAt = this.reviewedAt;
+    }
+
+    public void recordAiDiagnosis(String diagnosisJson) {
+        this.aiDiagnosisJson = requireText(diagnosisJson, "diagnosisJson");
+        this.aiDiagnosedAt = Instant.now();
+        this.updatedAt = this.aiDiagnosedAt;
+    }
+
+    public void withdraw() {
+        this.status = SubmissionStatus.WITHDRAWN;
+        this.teacherComment = "学生已撤回本次提交。";
+        this.reviewedAt = Instant.now();
+        this.updatedAt = this.reviewedAt;
+    }
+
+    private static String requireText(String value, String fieldName) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException(fieldName + " 不能为空");
+        return value.trim();
+    }
+
+    private static String normalizeOptional(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    public String getId() { return id; }
+    public String getArtifactId() { return artifactId; }
+    public int getSubmissionVersion() { return submissionVersion; }
+    public String getArtifactTypeSnapshot() { return artifactTypeSnapshot; }
+    public String getArtifactTitleSnapshot() { return artifactTitleSnapshot; }
+    public String getArtifactSummarySnapshot() { return artifactSummarySnapshot; }
+    public String getContentJsonSnapshot() { return contentJsonSnapshot; }
+    public String getStudentUserId() { return studentUserId; }
+    public String getStudentName() { return studentName; }
+    public String getGroupLabel() { return groupLabel; }
+    public String getGroupName() { return groupName; }
+    public SubmissionStatus getStatus() { return status; }
+    public String getTeacherComment() { return teacherComment; }
+    public String getReviewerUserId() { return reviewerUserId; }
+    public boolean isExcellent() { return excellent; }
+    public Instant getSubmittedAt() { return submittedAt; }
+    public Instant getReviewedAt() { return reviewedAt; }
+    public String getAiDiagnosisJson() { return aiDiagnosisJson; }
+    public Instant getAiDiagnosedAt() { return aiDiagnosedAt; }
+    public Instant getUpdatedAt() { return updatedAt; }
+}

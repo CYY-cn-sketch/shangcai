@@ -1,0 +1,16 @@
+server:
+  address: 127.0.0.1
+  servlet:
+    session:
+      cookie:
+        secure: false
+
+sufe:
+  storage:
+    files-root: ${SUFE_FILE_STORAGE_ROOT:D:/sufe-ai-data/files}
+    artifacts-root: ${SUFE_ARTIFACT_STORAGE_ROOT:D:/sufe-ai-data/artifacts}
+  media-extraction:
+    enabled: ${MEDIA_EXTRACTION_ENABLED:true}
+  bootstrap:
+    demo-data-enabled: true
+    demo-password: ${SUFE_DEMO_PASSWORD}

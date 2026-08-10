@@ -1,0 +1,7 @@
+# Local-only extraction: images/scanned PDFs use OCR, audio uses ASR,
+# and video is limited to audio-track ASR plus sampled-frame OCR.
+faster-whisper==1.2.1
+numpy==2.4.2
+opencv-python-headless==4.13.0.92
+PyMuPDF==1.27.2.2
+rapidocr-onnxruntime==1.2.3

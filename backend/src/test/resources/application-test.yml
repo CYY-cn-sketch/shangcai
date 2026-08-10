@@ -1,0 +1,18 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:sufe-ai-test-${random.uuid};MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+sufe:
+  storage:
+    files-root: ${java.io.tmpdir}/sufe-ai-test-files
+    artifacts-root: ${java.io.tmpdir}/sufe-ai-test-artifacts
+  bootstrap:
+    starter-content-enabled: false

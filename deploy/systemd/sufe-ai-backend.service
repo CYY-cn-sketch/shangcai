@@ -1,0 +1,26 @@
+[Unit]
+Description=SUFE AI Platform Backend
+Wants=network-online.target
+After=network-online.target mysql.service
+
+[Service]
+Type=simple
+User=sufe-ai
+Group=sufe-ai
+WorkingDirectory=/opt/sufe-ai/backend
+EnvironmentFile=/etc/sufe-ai/backend.env
+ExecStart=/usr/bin/java -XX:MaxRAMPercentage=70 -jar /opt/sufe-ai/backend/sufe-ai-backend.jar --spring.profiles.active=production
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/sufe-ai /var/log/sufe-ai
+
+[Install]
+WantedBy=multi-user.target

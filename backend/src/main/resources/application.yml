@@ -1,0 +1,101 @@
+spring:
+  application:
+    name: sufe-ai-backend
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  session:
+    store-type: jdbc
+    timeout: ${SESSION_TIMEOUT:8h}
+    jdbc:
+      initialize-schema: never
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 21MB
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  servlet:
+    session:
+      cookie:
+        name: SUFE_SESSION
+        http-only: true
+        secure: ${SESSION_COOKIE_SECURE:true}
+        same-site: lax
+        max-age: ${SESSION_COOKIE_MAX_AGE:8h}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+sufe:
+  generation:
+    queue:
+      poll-interval-ms: ${GENERATION_QUEUE_POLL_INTERVAL_MS:1000}
+  storage:
+    files-root: ${SUFE_FILE_STORAGE_ROOT:./data/files}
+    artifacts-root: ${SUFE_ARTIFACT_STORAGE_ROOT:./data/artifacts}
+  media-extraction:
+    enabled: ${MEDIA_EXTRACTION_ENABLED:false}
+    python-command: ${MEDIA_EXTRACTION_PYTHON:python}
+    script-path: ${MEDIA_EXTRACTION_SCRIPT:./scripts/media_text_extract.py}
+    whisper-model: ${ASR_WHISPER_MODEL:base}
+    timeout-seconds: ${MEDIA_EXTRACTION_TIMEOUT_SECONDS:240}
+    video-frame-interval-seconds: ${VIDEO_FRAME_INTERVAL_SECONDS:5}
+    video-max-frames: ${VIDEO_MAX_FRAMES:12}
+    pdf-max-pages: ${OCR_PDF_MAX_PAGES:20}
+  bootstrap:
+    demo-data-enabled: false
+    demo-password: ""
+    starter-content-enabled: true
+  providers:
+    workbuddy:
+      enabled: ${WORKBUDDY_ENABLED:false}
+      base-url: ${WORKBUDDY_API_BASE:http://127.0.0.1:49678}
+      jobs-root: ${WORKBUDDY_JOBS_ROOT:./data/workbuddy/jobs}
+      max-concurrency: ${WORKBUDDY_MAX_CONCURRENCY:1}
+      poll-interval-ms: ${WORKBUDDY_POLL_INTERVAL_MS:5000}
+      run-timeout-ms: ${WORKBUDDY_RUN_TIMEOUT_MS:900000}
+    lexiang:
+      enabled: ${LEXIANG_ENABLED:false}
+      api-base: ${LEXIANG_API_BASE:https://lxapi.lexiangla.com}
+      app-key: ${LEXIANG_APP_KEY:}
+      app-secret: ${LEXIANG_APP_SECRET:}
+      staff-id: ${LEXIANG_STAFF_ID:system-bot}
+      knowledge-staff-id: ${LEXIANG_KNOWLEDGE_STAFF_ID:}
+      space-id: ${LEXIANG_SPACE_ID:}
+      max-concurrency: ${LEXIANG_MAX_CONCURRENCY:2}
+      pull:
+        scheduled-enabled: ${LEXIANG_PULL_SCHEDULED_ENABLED:false}
+        fixed-delay-ms: ${LEXIANG_PULL_FIXED_DELAY_MS:300000}
+    deepseek:
+      enabled: ${DEEPSEEK_ENABLED:false}
+      api-base: ${DEEPSEEK_API_BASE:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      flash-model: ${DEEPSEEK_FLASH_MODEL:deepseek-v4-flash}
+      pro-model: ${DEEPSEEK_PRO_MODEL:deepseek-v4-pro}
+      max-output-tokens: ${DEEPSEEK_MAX_OUTPUT_TOKENS:4096}
+      max-history-messages: ${DEEPSEEK_MAX_HISTORY_MESSAGES:20}
+      max-knowledge-chars: ${DEEPSEEK_MAX_KNOWLEDGE_CHARS:12000}

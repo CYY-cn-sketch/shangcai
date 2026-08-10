@@ -1,0 +1,81 @@
+name: Quality Gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SUFE_DEMO_PASSWORD: e2e-password
+      SUFE_E2E_PASSWORD: e2e-password
+      WORKBUDDY_ENABLED: "false"
+      LEXIANG_ENABLED: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend static checks and unit tests
+        run: npm run test:ci
+
+      - name: Backend tests
+        working-directory: backend
+        run: |
+          chmod +x mvnw
+          ./mvnw test
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Start isolated H2 backend
+        working-directory: backend
+        run: |
+          nohup ./mvnw -DskipTests spring-boot:run -Dspring-boot.run.profiles=local > ../backend-e2e.log 2>&1 &
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:8080/actuator/health/readiness > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat ../backend-e2e.log
+          exit 1
+
+      - name: Browser end-to-end tests
+        run: npm run test:e2e
+
+      - name: Upload browser diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-diagnostics
+          path: |
+            playwright-report/
+            test-results/
+            coverage/
+            backend-e2e.log
+          if-no-files-found: ignore
+          retention-days: 14
