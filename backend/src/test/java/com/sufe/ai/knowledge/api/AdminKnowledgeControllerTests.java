@@ -510,13 +510,23 @@ class AdminKnowledgeControllerTests {
                 .andExpect(jsonPath("$[0].preview").value("Safe preview"))
                 .andExpect(jsonPath("$[0].contentText").value(nullValue()));
 
-        mockMvc.perform(get("/api/knowledge/experts").cookie(sessionCookie))
+        String expertsJson = mockMvc.perform(get("/api/knowledge/experts").cookie(sessionCookie))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value("student-visible-expert"))
-                .andExpect(jsonPath("$[0].sourceSkillContent").value(nullValue()))
-                .andExpect(jsonPath("$[0].sourceSkillUploadedBy").value(nullValue()))
-                .andExpect(jsonPath("$[0].systemPrompt").value(nullValue()))
-                .andExpect(jsonPath("$[0].userPrompt").value(nullValue()));
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        JsonNode studentVisibleExpert = null;
+        for (JsonNode expertNode : objectMapper.readTree(expertsJson)) {
+            if ("student-visible-expert".equals(expertNode.path("id").asText())) {
+                studentVisibleExpert = expertNode;
+                break;
+            }
+        }
+        assertThat(studentVisibleExpert).isNotNull();
+        assertThat(studentVisibleExpert.get("sourceSkillContent").isNull()).isTrue();
+        assertThat(studentVisibleExpert.get("sourceSkillUploadedBy").isNull()).isTrue();
+        assertThat(studentVisibleExpert.get("systemPrompt").isNull()).isTrue();
+        assertThat(studentVisibleExpert.get("userPrompt").isNull()).isTrue();
 
         mockMvc.perform(post("/api/knowledge/knowledge-assets")
                         .with(csrf())
