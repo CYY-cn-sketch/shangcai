@@ -196,18 +196,19 @@ test("管理端从专家列表打开详情且不展示平台统一模式", async
   await expect(detail).toContainText("专家调用的课程知识库");
   await expect(detail.getByRole("button", { name: "上传知识资料" })).toBeVisible();
   await expect(detail.locator(".expert-private-files input[type='file']")).toHaveCount(1);
+  const privateAssetMetric = detail
+    .locator(".expert-skill-knowledge-card > article dl > div")
+    .filter({ hasText: /^资料/ });
+  const initialAssetCount = Number.parseInt((await privateAssetMetric.textContent())?.match(/\d+/)?.[0] || "0", 10);
   await detail.locator(".expert-private-files input[type='file']").setInputFiles({
     name: uploadedAsset.name,
     mimeType: "text/plain",
     buffer: Buffer.from(uploadedAsset.contentText),
   });
   await expect(detail.getByText(uploadedAsset.name)).toBeVisible();
-  await expect(detail.getByText("已读取，可检索")).toBeVisible();
+  await expect(detail.getByText("已读取，可检索").first()).toBeVisible();
   await expect(detail.getByText("已上传 1 个文件，系统已完成保存和正文读取。")).toBeVisible();
-  const privateAssetMetric = detail
-    .locator(".expert-skill-knowledge-card > article dl > div")
-    .filter({ hasText: /^资料/ });
-  await expect(privateAssetMetric).toContainText("1 个");
+  await expect(privateAssetMetric).toContainText(`${initialAssetCount + 1} 个`);
   await expect(detail.locator(".expert-detail-knowledge input[type='checkbox']").first()).toBeVisible();
   await expect(detail).toContainText("系统提示词");
   await expect(detail).not.toContainText("回答方式由平台统一注入");

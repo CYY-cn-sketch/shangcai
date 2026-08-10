@@ -109,8 +109,8 @@ test("自然语言要求制作路演展示时直接返回 PPT 阶段成果", asy
   await page.getByRole("button", { name: "发送", exact: true }).click();
 
   await expect(page.getByText("本轮阶段成果")).toBeVisible();
-  await expect(page.getByText("01 项目愿景")).toBeVisible();
-  await expect(page.getByText("02 用户痛点")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "01 项目愿景" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "02 用户痛点" })).toBeVisible();
   await expect(page.getByRole("button", { name: "预览 PPT" })).toBeVisible();
   await expect(page.getByRole("button", { name: "下载 PPTX" })).toBeVisible();
   expect(providerInput).toMatchObject({

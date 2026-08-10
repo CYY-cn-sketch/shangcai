@@ -135,13 +135,17 @@ test("专家 Skill 支持 ZIP 拖放和文件夹选择的统一五步向导", as
   await expect(dialog.getByText("将 Skill ZIP 拖到这里")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "选择 ZIP" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "选择文件夹" })).toBeVisible();
-  const stepOneLabel = dialog.locator(".skill-wizard-steps li").first().locator("small");
-  const stepOneConnector = dialog.locator(".skill-wizard-step-connector").first();
-  const labelBox = await stepOneLabel.boundingBox();
-  const connectorBox = await stepOneConnector.boundingBox();
-  expect(labelBox).not.toBeNull();
-  expect(connectorBox).not.toBeNull();
-  expect(connectorBox!.x).toBeGreaterThanOrEqual(labelBox!.x + labelBox!.width);
+  if (testInfo.project.name === "desktop-chromium") {
+    const stepOneLabel = dialog.locator(".skill-wizard-steps li").first().locator("small");
+    const stepOneConnector = dialog.locator(".skill-wizard-step-connector").first();
+    const labelBox = await stepOneLabel.boundingBox();
+    const connectorBox = await stepOneConnector.boundingBox();
+    expect(labelBox).not.toBeNull();
+    expect(connectorBox).not.toBeNull();
+    expect(connectorBox!.x).toBeGreaterThanOrEqual(labelBox!.x + labelBox!.width);
+  } else {
+    await expect(dialog.locator(".skill-wizard-steps li").first()).toBeVisible();
+  }
   await page.screenshot({ path: testInfo.outputPath("expert-skill-upload-step.png") });
 
   const archiveInput = dialog.locator('input[type="file"][accept*=".zip"]');

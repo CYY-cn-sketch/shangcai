@@ -158,11 +158,15 @@ test("试点运营评估以单一后端报告展示零值原因并支持全部�
   for (const url of [
     "**/api/knowledge/knowledge-bases",
     "**/api/knowledge/knowledge-assets",
+    "**/api/knowledge/lexiang/mappings",
   ]) {
     await page.route(url, async (route) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
     });
   }
+  await page.route("**/api/knowledge/lexiang/pull-runs/latest", async (route) => {
+    await route.fulfill({ status: 204 });
+  });
   await page.route("**/api/knowledge/experts", async (route) => {
     await route.fulfill({
       status: 200,
