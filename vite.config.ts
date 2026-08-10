@@ -10,6 +10,11 @@ export default defineConfig(({ mode }) => {
     base: './',
     envPrefix: 'VITE_',
     plugins: [react()],
+    optimizeDeps: {
+      // pptxgenjs declares an empty `https` compatibility package. It is
+      // disabled by pptxgenjs in browsers and must not be pre-bundled by Vite.
+      exclude: ['https'],
+    },
     build: {
       rollupOptions: {
         output: {

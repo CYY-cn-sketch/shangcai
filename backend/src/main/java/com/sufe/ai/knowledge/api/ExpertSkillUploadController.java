@@ -24,6 +24,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.core.io.Resource;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -44,16 +45,23 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.net.URI;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/knowledge/expert-skill-uploads")
 @PreAuthorize("hasAnyRole('TEACHER', 'ADMIN')")
 public class ExpertSkillUploadController {
+
+    private static final int MAX_SOURCE_PREVIEW_CHARACTERS = 50_000;
 
     private final ExpertSkillUploadParser parser;
     private final ExpertSkillUploadRepository uploadRepository;
@@ -90,6 +98,43 @@ public class ExpertSkillUploadController {
     @GetMapping
     public List<UploadResponse> listUploads() {
         return uploadRepository.findAllByOrderByCreatedAtDesc().stream().map(this::toUploadResponse).toList();
+    }
+
+    @GetMapping("/experts/{expertId}/files")
+    public ResponseEntity<?> listExpertSourceFiles(@PathVariable String expertId) {
+        ExpertProfile expert = expertProfileRepository.findById(expertId).orElse(null);
+        if (expert == null) return notFound("EXPERT_NOT_FOUND", "专家不存在");
+
+        Optional<ExpertSkillUploadRecord> currentUpload = uploadRepository
+                .findFirstByExpertIdAndStatusOrderByConfirmedAtDesc(expertId, ExpertSkillUploadStatus.ENABLED);
+        if (currentUpload.isPresent()) {
+            ExpertSkillUploadRecord upload = currentUpload.orElseThrow();
+            List<ExpertSkillSourceFileResponse> files = uploadFileRepository
+                    .findByUploadIdOrderByRelativePathAsc(upload.getId())
+                    .stream()
+                    .map(this::toSourceFileResponse)
+                    .toList();
+            return ResponseEntity.ok(new ExpertSkillSourceResponse(
+                    "UPLOADED",
+                    upload.getFolderName(),
+                    upload.getMainFilePath(),
+                    upload.getUploadedBy(),
+                    upload.getConfirmedAt(),
+                    files
+            ));
+        }
+
+        List<ExpertSkillSourceFileResponse> files = starterOrLegacySourceFiles(expert);
+        return ResponseEntity.ok(new ExpertSkillSourceResponse(
+                expert.getSourceSkillName() != null && expert.getSourceSkillName().startsWith("starter-content/")
+                        ? "STARTER"
+                        : "PROFILE",
+                sourceFolderName(expert.getSourceSkillName(), expert.getName()),
+                expert.getSourceSkillName(),
+                expert.getSourceSkillUploadedBy(),
+                null,
+                files
+        ));
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -328,6 +373,94 @@ public class ExpertSkillUploadController {
         );
     }
 
+    private ExpertSkillSourceFileResponse toSourceFileResponse(ExpertSkillUploadFile file) {
+        PreviewText preview = previewText(file.getContentText());
+        return new ExpertSkillSourceFileResponse(
+                file.getId(),
+                file.getRelativePath(),
+                file.getFileRole().name(),
+                preview.content(),
+                preview.truncated(),
+                file.getMimeType(),
+                file.getFileSizeBytes(),
+                file.getSha256(),
+                file.getImportedAssetId(),
+                "/api/knowledge/expert-skill-uploads/" + file.getUploadId() + "/files/" + file.getId() + "/content"
+        );
+    }
+
+    private List<ExpertSkillSourceFileResponse> starterOrLegacySourceFiles(ExpertProfile expert) {
+        String mainPath = expert.getSourceSkillName();
+        String mainContent = expert.getSourceSkillContent();
+        if (mainPath == null || mainPath.isBlank() || mainContent == null || mainContent.isBlank()) return List.of();
+
+        List<ExpertSkillSourceFileResponse> files = new ArrayList<>();
+        files.add(classpathTextFile(mainPath, ExpertSkillFileRole.PROMPT, mainContent));
+        if (mainPath.startsWith("starter-content/") && mainPath.endsWith("/SKILL.md")) {
+            String examplePath = mainPath.substring(0, mainPath.length() - "SKILL.md".length()) + "examples/真实使用样例.md";
+            ClassPathResource example = new ClassPathResource(examplePath);
+            if (example.exists()) {
+                try (var input = example.getInputStream()) {
+                    byte[] content = input.readAllBytes();
+                    files.add(classpathTextFile(
+                            examplePath,
+                            ExpertSkillFileRole.REFERENCE,
+                            new String(content, StandardCharsets.UTF_8)
+                    ));
+                } catch (IOException exception) {
+                    throw new IllegalStateException("无法读取专家 Skill 内置样例：" + examplePath, exception);
+                }
+            }
+        }
+        return List.copyOf(files);
+    }
+
+    private ExpertSkillSourceFileResponse classpathTextFile(
+            String relativePath,
+            ExpertSkillFileRole role,
+            String contentText
+    ) {
+        byte[] content = contentText.getBytes(StandardCharsets.UTF_8);
+        PreviewText preview = previewText(contentText);
+        return new ExpertSkillSourceFileResponse(
+                UUID.nameUUIDFromBytes(relativePath.getBytes(StandardCharsets.UTF_8)).toString(),
+                relativePath,
+                role.name(),
+                preview.content(),
+                preview.truncated(),
+                "text/markdown",
+                content.length,
+                sha256(content),
+                null,
+                null
+        );
+    }
+
+    private static PreviewText previewText(String contentText) {
+        if (contentText == null || contentText.isBlank()) return new PreviewText(null, false);
+        String normalized = contentText.trim();
+        if (normalized.length() <= MAX_SOURCE_PREVIEW_CHARACTERS) return new PreviewText(normalized, false);
+        return new PreviewText(normalized.substring(0, MAX_SOURCE_PREVIEW_CHARACTERS), true);
+    }
+
+    private static String sourceFolderName(String sourcePath, String fallbackName) {
+        if (sourcePath == null || sourcePath.isBlank()) return fallbackName;
+        String normalized = sourcePath.replace('\\', '/');
+        int separator = normalized.lastIndexOf('/');
+        if (separator <= 0) return fallbackName;
+        String parent = normalized.substring(0, separator);
+        int parentSeparator = parent.lastIndexOf('/');
+        return parent.substring(parentSeparator + 1);
+    }
+
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前 Java 环境不支持 SHA-256", exception);
+        }
+    }
+
     private ExpertResponse toExpertResponse(ExpertProfile expert) {
         List<SkillResponse> skills = expertSkillRepository.findByExpertIdOrderByCreatedAtAsc(expert.getId()).stream()
                 .map(skill -> new SkillResponse(skill.getId(), skill.getName(), skill.getStage(), skill.getDescription()))
@@ -354,7 +487,15 @@ public class ExpertSkillUploadController {
     }
 
     private static KnowledgeBaseResponse toKnowledgeBaseResponse(KnowledgeBase base) {
-        return new KnowledgeBaseResponse(base.getId(), base.getCategory(), base.getDescription(), base.getUsedBy(), base.isActive());
+        return new KnowledgeBaseResponse(
+                base.getId(),
+                base.getCategory(),
+                base.getDescription(),
+                base.getUsedBy(),
+                base.isActive(),
+                base.getScopeType().name(),
+                base.getOwnerExpertId()
+        );
     }
 
     private ImportedAssetResponse toImportedAssetResponse(KnowledgeAsset asset) {
@@ -445,6 +586,33 @@ public class ExpertSkillUploadController {
     ) {
     }
 
+    public record ExpertSkillSourceResponse(
+            String sourceType,
+            String folderName,
+            String mainFilePath,
+            String uploadedBy,
+            Instant updatedAt,
+            List<ExpertSkillSourceFileResponse> files
+    ) {
+    }
+
+    public record ExpertSkillSourceFileResponse(
+            String id,
+            String relativePath,
+            String fileRole,
+            String contentText,
+            boolean contentTruncated,
+            String mimeType,
+            long fileSizeBytes,
+            String sha256,
+            String importedAssetId,
+            String downloadUrl
+    ) {
+    }
+
+    private record PreviewText(String content, boolean truncated) {
+    }
+
     public record ConfirmationResponse(
             ExpertResponse expert,
             UploadResponse upload,
@@ -453,7 +621,15 @@ public class ExpertSkillUploadController {
     ) {
     }
 
-    public record KnowledgeBaseResponse(String id, String category, String description, String usedBy, boolean active) {
+    public record KnowledgeBaseResponse(
+            String id,
+            String category,
+            String description,
+            String usedBy,
+            boolean active,
+            String scopeType,
+            String ownerExpertId
+    ) {
     }
 
     public record ImportedAssetResponse(String id, String sourceFileId, String name, String originalName, String sha256) {

@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.artifact.domain.ArtifactRecord;
+import com.sufe.ai.artifact.repository.ArtifactRecordRepository;
 import com.sufe.ai.workspace.domain.StudentIdea;
 import com.sufe.ai.workspace.repository.StudentAttachmentRepository;
 import com.sufe.ai.workspace.repository.StudentIdeaRepository;
@@ -57,6 +59,9 @@ class StudentWorkspaceControllerTests {
 
     @Autowired
     private StudentAttachmentRepository attachmentRepository;
+
+    @Autowired
+    private ArtifactRecordRepository artifactRepository;
 
     @BeforeEach
     void setUp() {
@@ -175,6 +180,233 @@ class StudentWorkspaceControllerTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ideas").isEmpty())
                 .andExpect(jsonPath("$.conversations").isEmpty());
+    }
+
+    @Test
+    @WithMockUser(username = STUDENT_ACCOUNT, roles = "STUDENT")
+    void supportsMultipleConversationsWithinOneIdeaAndKeepsMessagesIsolated() throws Exception {
+        StudentIdea idea = ideaRepository.save(StudentIdea.create(
+                STUDENT_ID,
+                "多会话项目",
+                "同一项目按专家保存独立会话",
+                "头脑风暴"
+        ));
+
+        String brainstormBody = mockMvc.perform(post("/api/student/ideas/{ideaId}/conversations", idea.getId())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "title": "头脑风暴会话",
+                                  "selectedExpertId": "brainstorm",
+                                  "selectedSkillId": "brainstorm",
+                                  "modelMode": "Auto",
+                                  "knowledgeSelection": {"categories": [], "uploadIds": []}
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.title").value("头脑风暴会话"))
+                .andReturn().getResponse().getContentAsString();
+        String brainstormId = objectMapper.readTree(brainstormBody).path("id").asText();
+
+        String positioningBody = mockMvc.perform(post("/api/student/ideas/{ideaId}/conversations", idea.getId())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "title": "项目定位会话",
+                                  "selectedExpertId": "positioning",
+                                  "selectedSkillId": "positioning",
+                                  "modelMode": "深度分析",
+                                  "knowledgeSelection": {"categories": ["创业方法"], "uploadIds": []}
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String positioningId = objectMapper.readTree(positioningBody).path("id").asText();
+
+        mockMvc.perform(post("/api/student/conversations/{conversationId}/messages", brainstormId)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "clientMessageId": "brainstorm-message-001",
+                                  "sender": "USER",
+                                  "expertId": "brainstorm",
+                                  "content": "请发散三个候选方向。"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.conversationId").value(brainstormId));
+
+        mockMvc.perform(patch("/api/student/conversations/{conversationId}", positioningId)
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"title\":\"已确认方向的定位会话\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.title").value("已确认方向的定位会话"));
+
+        mockMvc.perform(get("/api/student/workspace"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conversations.length()").value(2))
+                .andExpect(jsonPath("$.conversations[?(@.id == '%s')].messages.length()".formatted(brainstormId)).value(1))
+                .andExpect(jsonPath("$.conversations[?(@.id == '%s')].messages.length()".formatted(positioningId)).value(0));
+    }
+
+    @Test
+    @WithMockUser(username = STUDENT_ACCOUNT, roles = "STUDENT")
+    void confirmsStructuredBrainstormHandoffOnlyOnce() throws Exception {
+        StudentIdea idea = ideaRepository.save(StudentIdea.create(
+                STUDENT_ID,
+                "交接项目",
+                "验证一次确认一次交接",
+                "头脑风暴"
+        ));
+        ArtifactRecord artifact = artifactRepository.save(ArtifactRecord.create(
+                STUDENT_ID,
+                idea.getId(),
+                "handoff-source-message",
+                "BRAINSTORM",
+                "头脑风暴阶段成果",
+                "形成两个候选方向",
+                """
+                        {
+                          "kind": "EXPERT_STAGE_RESULT",
+                          "schemaVersion": 1,
+                          "blocks": [],
+                          "handoff": {
+                            "kind": "BRAINSTORM_TO_POSITIONING",
+                            "schemaVersion": 1,
+                            "sourceExpertId": "brainstorm",
+                            "targetExpertId": "positioning",
+                            "sourceMessageId": "handoff-source-message",
+                            "ideaId": "%s",
+                            "projectTitle": "交接项目",
+                            "projectDescription": "验证一次确认一次交接",
+                            "sourceSummary": "形成两个候选方向",
+                            "ideaDirections": ["方向 A", "方向 B"],
+                            "userAndProblemSignals": ["教师反馈周期长"],
+                            "validationTasks": ["访谈 8 名学生"],
+                            "reviewStatus": "PENDING_STUDENT_CONFIRMATION",
+                            "createdAt": "2026-08-03T09:00:00Z"
+                          }
+                        }
+                        """.formatted(idea.getId())
+        ));
+
+        String first = mockMvc.perform(post("/api/student/artifacts/{artifactId}/handoffs", artifact.getId())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"targetExpertId\":\"positioning\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
+                .andExpect(jsonPath("$.payload.ideaDirections[0]").value("方向 A"))
+                .andReturn().getResponse().getContentAsString();
+
+        String second = mockMvc.perform(post("/api/student/artifacts/{artifactId}/handoffs", artifact.getId())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"targetExpertId\":\"positioning\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(objectMapper.readTree(second).path("id").asText())
+                .isEqualTo(objectMapper.readTree(first).path("id").asText());
+
+        artifact.refresh(
+                "BRAINSTORM",
+                "头脑风暴阶段成果（已更新）",
+                "确认方向 C",
+                """
+                        {
+                          "kind": "EXPERT_STAGE_RESULT",
+                          "schemaVersion": 1,
+                          "blocks": [],
+                          "handoff": {
+                            "kind": "BRAINSTORM_TO_POSITIONING",
+                            "schemaVersion": 1,
+                            "sourceExpertId": "brainstorm",
+                            "targetExpertId": "positioning",
+                            "sourceMessageId": "handoff-source-message",
+                            "ideaId": "%s",
+                            "projectTitle": "交接项目",
+                            "projectDescription": "验证一次确认一次交接",
+                            "sourceSummary": "确认方向 C",
+                            "ideaDirections": ["方向 C"],
+                            "userAndProblemSignals": ["教师反馈周期长"],
+                            "validationTasks": ["访谈 8 名学生"],
+                            "reviewStatus": "PENDING_STUDENT_CONFIRMATION",
+                            "createdAt": "2026-08-03T10:00:00Z"
+                          }
+                        }
+                        """.formatted(idea.getId())
+        );
+        artifactRepository.saveAndFlush(artifact);
+
+        String refreshed = mockMvc.perform(post("/api/student/artifacts/{artifactId}/handoffs", artifact.getId())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"targetExpertId\":\"positioning\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.payload.ideaDirections[0]").value("方向 C"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(refreshed).path("id").asText())
+                .isEqualTo(objectMapper.readTree(first).path("id").asText());
+
+        mockMvc.perform(get("/api/student/handoffs")
+                        .param("ideaId", idea.getId())
+                        .param("targetExpertId", "positioning"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1));
+    }
+
+    @Test
+    @WithMockUser(username = STUDENT_ACCOUNT, roles = "STUDENT")
+    void confirmsBpArtifactForAllExpertsAsSharedStageContext() throws Exception {
+        StudentIdea idea = ideaRepository.save(StudentIdea.create(
+                STUDENT_ID,
+                "共享阶段成果项目",
+                "验证确认后的 BP 可供同一创意下其他专家读取",
+                "商业计划书"
+        ));
+        ArtifactRecord artifact = artifactRepository.save(ArtifactRecord.create(
+                STUDENT_ID,
+                idea.getId(),
+                "shared-bp-message",
+                "BP",
+                "商业计划书正式版",
+                "已确认客户、价值主张和收入结构",
+                """
+                        {
+                          "kind": "EXPERT_STAGE_RESULT",
+                          "schemaVersion": 1,
+                          "blocks": [
+                            {
+                              "title": "商业模式",
+                              "items": ["客户为商学院课程组", "收入来自年度平台订阅"]
+                            }
+                          ]
+                        }
+                        """
+        ));
+
+        mockMvc.perform(post("/api/student/artifacts/{artifactId}/handoffs", artifact.getId())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"targetExpertId\":\"ALL\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.sourceExpertId").value("business"))
+                .andExpect(jsonPath("$.targetExpertId").value("ALL"))
+                .andExpect(jsonPath("$.payload.kind").value("CONFIRMED_STAGE_ARTIFACT"))
+                .andExpect(jsonPath("$.payload.artifactType").value("BP"))
+                .andExpect(jsonPath("$.payload.title").value("商业计划书正式版"))
+                .andExpect(jsonPath("$.payload.content.blocks[0].title").value("商业模式"));
+
+        mockMvc.perform(get("/api/student/handoffs")
+                        .param("ideaId", idea.getId())
+                        .param("targetExpertId", "ALL"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1));
     }
 
     @Test

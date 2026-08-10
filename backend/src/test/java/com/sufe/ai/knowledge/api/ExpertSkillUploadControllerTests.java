@@ -7,7 +7,9 @@ import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadStatus;
 import com.sufe.ai.knowledge.domain.ExpertProfile;
 import com.sufe.ai.knowledge.domain.ExpertKnowledgeRoute;
+import com.sufe.ai.knowledge.domain.KnowledgeAsset;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
+import com.sufe.ai.knowledge.domain.KnowledgeBaseScope;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.ExpertKnowledgeRouteRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
@@ -175,23 +177,174 @@ class ExpertSkillUploadControllerTests {
                                   "outputFormat": "输出三条建议。",
                                   "boundaries": "不执行上传文件。",
                                   "knowledge": {
-                                    "mode": "EXISTING",
-                                    "knowledgeBaseId": "%s"
+                                    "mode": "CREATE",
+                                    "newKnowledgeBase": {
+                                      "category": "现金流专家专属知识库",
+                                      "description": "现金流专家 Skill 专属资料",
+                                      "usedBy": "现金流专家",
+                                      "active": true
+                                    }
                                   },
                                   "importFileIds": [],
                                   "active": true
                                 }
-                                """.formatted(skillKnowledgeBaseId)))
+                                """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.expert.name").value("现金流专家"))
                 .andExpect(jsonPath("$.expert.active").value(true))
                 .andExpect(jsonPath("$.expert.sourceSkillName").value("cashflow/SKILL.md"))
-                .andExpect(jsonPath("$.expert.knowledgeCategories[0]").value("Skill 测试资料"))
+                .andExpect(jsonPath("$.knowledgeBase.category").value("现金流专家专属知识库"))
+                .andExpect(jsonPath("$.knowledgeBase.scopeType").value("EXPERT_PRIVATE"))
                 .andExpect(jsonPath("$.expert.systemPrompt").value(org.hamcrest.Matchers.containsString("## 知识库调用规则")))
                 .andExpect(jsonPath("$.upload.status").value("ENABLED"));
 
         assertThat(expertProfileRepository.findByName("现金流专家")).isPresent();
         assertThat(uploadRepository.findById(uploadId).orElseThrow().getStatus()).isEqualTo(ExpertSkillUploadStatus.ENABLED);
+        ExpertProfile expert = expertProfileRepository.findByName("现金流专家").orElseThrow();
+        assertThat(knowledgeBaseRepository.findByOwnerExpertIdAndScopeType(expert.getId(), KnowledgeBaseScope.EXPERT_PRIVATE))
+                .isPresent();
+
+        mockMvc.perform(get("/api/knowledge/expert-skill-uploads/experts/{expertId}/files", expert.getId())
+                        .cookie(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sourceType").value("UPLOADED"))
+                .andExpect(jsonPath("$.folderName").value("cashflow"))
+                .andExpect(jsonPath("$.files.length()").value(1))
+                .andExpect(jsonPath("$.files[0].relativePath").value("cashflow/SKILL.md"))
+                .andExpect(jsonPath("$.files[0].fileRole").value("PROMPT"))
+                .andExpect(jsonPath("$.files[0].contentText").value(org.hamcrest.Matchers.containsString("现金流专家")))
+                .andExpect(jsonPath("$.files[0].contentTruncated").value(false))
+                .andExpect(jsonPath("$.files[0].downloadUrl").isNotEmpty());
+    }
+
+    @Test
+    void listsBuiltInExpertSkillFilesWithReadableContent() throws Exception {
+        String sourcePath = "starter-content/experts/defense-expert/SKILL.md";
+        String sourceContent = new String(readClasspath(sourcePath), StandardCharsets.UTF_8);
+        ExpertProfile expert = ExpertProfile.create(
+                "defense",
+                "AI 评委/答辩陪练专家",
+                "训练学生用证据回答并复盘。",
+                "模拟答辩",
+                "#8d6814"
+        );
+        expert.update(
+                expert.getName(),
+                expert.getRoleDescription(),
+                expert.getScenario(),
+                expert.getAccent(),
+                sourcePath,
+                sourceContent,
+                "system",
+                "只按证据提问。",
+                "组合本轮答辩输入。",
+                true
+        );
+        expertProfileRepository.saveAndFlush(expert);
+
+        mockMvc.perform(get("/api/knowledge/expert-skill-uploads/experts/defense/files")
+                        .cookie(login()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sourceType").value("STARTER"))
+                .andExpect(jsonPath("$.folderName").value("defense-expert"))
+                .andExpect(jsonPath("$.files.length()").value(2))
+                .andExpect(jsonPath("$.files[0].relativePath").value("starter-content/experts/defense-expert/SKILL.md"))
+                .andExpect(jsonPath("$.files[0].fileRole").value("PROMPT"))
+                .andExpect(jsonPath("$.files[0].contentText").value(org.hamcrest.Matchers.containsString("系统提示词")))
+                .andExpect(jsonPath("$.files[1].relativePath").value(org.hamcrest.Matchers.containsString("真实使用样例.md")))
+                .andExpect(jsonPath("$.files[1].fileRole").value("REFERENCE"))
+                .andExpect(jsonPath("$.files[1].contentText").isNotEmpty());
+    }
+
+    @Test
+    void confirmationRejectsCourseSharedKnowledgeBaseAsSkillDestination() throws Exception {
+        ExpertProfile expert = expertProfileRepository.saveAndFlush(ExpertProfile.create(
+                "shared-base-rejection-expert",
+                "共享库隔离测试专家",
+                "验证 Skill 资料不能导入课程共享库。",
+                "知识库隔离测试",
+                "#0f7b73"
+        ));
+        String uploadJson = mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(new MockMultipartFile("archive", "shared-rejection.zip", "application/zip", zipEntry(
+                                "SKILL.md",
+                                "# 共享库隔离测试专家\n\n## 系统提示词\n只用于隔离测试。"
+                        )))
+                        .with(csrf())
+                        .cookie(login()))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String uploadId = objectMapper.readTree(uploadJson).path("id").asText();
+
+        mockMvc.perform(post("/api/knowledge/expert-skill-uploads/{uploadId}/confirm", uploadId)
+                        .with(csrf())
+                        .cookie(login())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "targetExpertId": "%s",
+                                  "name": "共享库隔离测试专家",
+                                  "role": "验证 Skill 资料不能导入课程共享库。",
+                                  "scenario": "知识库隔离测试",
+                                  "accent": "#0f7b73",
+                                  "skillName": "隔离测试",
+                                  "skillDescription": "验证专属知识库边界。",
+                                  "systemPrompt": "只用于隔离测试。",
+                                  "userPrompt": "组合本轮输入。",
+                                  "knowledge": {"mode": "EXISTING", "knowledgeBaseId": "%s"},
+                                  "importFileIds": [],
+                                  "active": true
+                                }
+                                """.formatted(expert.getId(), skillKnowledgeBaseId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("EXPERT_PRIVATE_KNOWLEDGE_REQUIRED"));
+
+        assertThat(uploadRepository.findById(uploadId).orElseThrow().getStatus())
+                .isEqualTo(ExpertSkillUploadStatus.PARSED);
+    }
+
+    @Test
+    void confirmationTreatsWhitespaceOnlyNameDifferencesAsTheSameExpert() throws Exception {
+        expertProfileRepository.saveAndFlush(ExpertProfile.create(
+                "normalized-name-owner",
+                "商业模式/BP 专家",
+                "已有专家",
+                "名称归一化测试",
+                "#22406a"
+        ));
+        Cookie session = login();
+        String uploadJson = mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
+                        .file(new MockMultipartFile("archive", "duplicate-name.zip", "application/zip", zipEntry(
+                                "SKILL.md",
+                                "# 商业模式 BP 专家\n\n## 系统提示词\n仅用于名称归一化测试。"
+                        )))
+                        .with(csrf())
+                        .cookie(session))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String uploadId = objectMapper.readTree(uploadJson).path("id").asText();
+
+        mockMvc.perform(post("/api/knowledge/expert-skill-uploads/{uploadId}/confirm", uploadId)
+                        .with(csrf())
+                        .cookie(session)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "name": " 商业模式 / BP   专家 ",
+                                  "role": "测试近似重名拦截。",
+                                  "scenario": "名称归一化测试",
+                                  "accent": "#22406a",
+                                  "skillName": "名称归一化",
+                                  "skillDescription": "验证忽略空格。",
+                                  "systemPrompt": "仅用于名称归一化测试。",
+                                  "userPrompt": "组合本轮输入。",
+                                  "knowledge": {"mode": "NONE"},
+                                  "importFileIds": [],
+                                  "active": false
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("EXPERT_EXISTS"));
     }
 
     @Test
@@ -301,6 +454,8 @@ class ExpertSkillUploadControllerTests {
                   default_prompt: 请组合当前输入、历史上下文和已确认事实。
                 """.getBytes(StandardCharsets.UTF_8));
         entries.put("scripts/generate_outline_docx.py", "print('source only')".getBytes(StandardCharsets.UTF_8));
+        entries.put("assets/business-model-canvas.html", "<section>平台原生画布结构参考</section>".getBytes(StandardCharsets.UTF_8));
+        entries.put("assets/business-model-canvas.svg", "<svg><title>画布版式参考</title></svg>".getBytes(StandardCharsets.UTF_8));
         entries.put("references/brainstorming-methods.md", "# 创意发散方法".getBytes(StandardCharsets.UTF_8));
 
         String response = mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
@@ -318,6 +473,12 @@ class ExpertSkillUploadControllerTests {
                         .value("SOURCE_CODE"))
                 .andExpect(jsonPath("$.files[?(@.relativePath == 'scripts/generate_outline_docx.py')].contentPreview")
                         .value(org.hamcrest.Matchers.contains(org.hamcrest.Matchers.nullValue())))
+                .andExpect(jsonPath("$.files[?(@.relativePath == 'assets/business-model-canvas.html')].fileRole")
+                        .value("REFERENCE"))
+                .andExpect(jsonPath("$.files[?(@.relativePath == 'assets/business-model-canvas.html')].contentPreview")
+                        .value(org.hamcrest.Matchers.contains("<section>平台原生画布结构参考</section>")))
+                .andExpect(jsonPath("$.files[?(@.relativePath == 'assets/business-model-canvas.svg')].fileRole")
+                        .value("REFERENCE"))
                 .andExpect(jsonPath("$.files[?(@.relativePath == 'references/brainstorming-methods.md')].fileRole")
                         .value("KNOWLEDGE_CANDIDATE"))
                 .andReturn().getResponse().getContentAsString();
@@ -351,7 +512,36 @@ class ExpertSkillUploadControllerTests {
                 true
         );
         expertProfileRepository.saveAndFlush(existing);
-        expertKnowledgeRouteRepository.saveAndFlush(ExpertKnowledgeRoute.create("brainstorm", "旧知识库"));
+        KnowledgeBase brainstormPrivateBase = knowledgeBaseRepository.saveAndFlush(KnowledgeBase.createExpertPrivate(
+                "创意头脑风暴专家专属知识库",
+                "创意头脑风暴专家 Skill 专属资料",
+                "创意头脑风暴专家",
+                "brainstorm"
+        ));
+        KnowledgeAsset previousSkillAsset = KnowledgeAsset.create(
+                brainstormPrivateBase.getId(),
+                "旧 Skill 资料.md",
+                "1 KB",
+                "Markdown",
+                "旧 Skill 导入资料",
+                "旧内容",
+                "previous@test.local"
+        );
+        previousSkillAsset.markSkillImport();
+        knowledgeAssetRepository.saveAndFlush(previousSkillAsset);
+        KnowledgeAsset directSupplement = KnowledgeAsset.create(
+                brainstormPrivateBase.getId(),
+                "教师补充资料.md",
+                "1 KB",
+                "Markdown",
+                "教师在专家详情中补充",
+                "补充内容",
+                "teacher@test.local"
+        );
+        directSupplement.markExpertDirectUpload();
+        knowledgeAssetRepository.saveAndFlush(directSupplement);
+        expertKnowledgeRouteRepository.saveAndFlush(ExpertKnowledgeRoute.create("brainstorm", "Skill 测试资料"));
+        expertKnowledgeRouteRepository.saveAndFlush(ExpertKnowledgeRoute.create("brainstorm", brainstormPrivateBase.getCategory()));
         Cookie session = login();
         String uploadJson = mockMvc.perform(multipart("/api/knowledge/expert-skill-uploads/archive")
                         .file(new MockMultipartFile("archive", "brainstorm-update.zip", "application/zip", zipEntry("SKILL.md", """
@@ -368,6 +558,10 @@ class ExpertSkillUploadControllerTests {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         String uploadId = objectMapper.readTree(uploadJson).path("id").asText();
+        String brainstormPrivateBaseId = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType("brainstorm", KnowledgeBaseScope.EXPERT_PRIVATE)
+                .orElseThrow()
+                .getId();
 
         mockMvc.perform(post("/api/knowledge/expert-skill-uploads/{uploadId}/confirm", uploadId)
                         .with(csrf())
@@ -388,7 +582,7 @@ class ExpertSkillUploadControllerTests {
                                   "importFileIds": [],
                                   "active": true
                                 }
-                                """.formatted(skillKnowledgeBaseId)))
+                                """.formatted(brainstormPrivateBaseId)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.expert.id").value("brainstorm"))
                 .andExpect(jsonPath("$.expert.systemPrompt").value(org.hamcrest.Matchers.containsString("## 平台运行约束")))
@@ -401,8 +595,11 @@ class ExpertSkillUploadControllerTests {
         assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("brainstorm"))
                 .anySatisfy(skill -> assertThat(skill.getStage()).isEqualTo("已确认上传"));
         assertThat(expertKnowledgeRouteRepository.findByExpertId("brainstorm"))
-                .singleElement()
-                .satisfies(route -> assertThat(route.getCategory()).isEqualTo("Skill 测试资料"));
+                .extracting(ExpertKnowledgeRoute::getCategory)
+                .contains("Skill 测试资料", "创意头脑风暴专家专属知识库");
+        assertThat(knowledgeAssetRepository.findByKnowledgeBaseId(brainstormPrivateBase.getId()))
+                .extracting(KnowledgeAsset::getName)
+                .containsExactly("教师补充资料.md");
     }
 
     @Test
@@ -539,7 +736,7 @@ class ExpertSkillUploadControllerTests {
         String confirmedJson = mockMvc.perform(post("/api/knowledge/expert-skill-uploads/{uploadId}/confirm", uploadId)
                         .with(csrf()).cookie(session).contentType("application/json").content(confirmationBody))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.knowledgeBase.category").value("行业研究专家知识库"))
+                .andExpect(jsonPath("$.knowledgeBase.category").value("行业研究专家专属知识库"))
                 .andExpect(jsonPath("$.importedAssets.length()").value(1))
                 .andExpect(jsonPath("$.importedAssets[0].name").value("report.md"))
                 .andExpect(jsonPath("$.upload.files[?(@.relativePath == 'research/config.json')].importedAssetId")
@@ -554,7 +751,7 @@ class ExpertSkillUploadControllerTests {
                 .andExpect(jsonPath("$.importedAssets.length()").value(1));
 
         assertThat(expertProfileRepository.findByName("行业研究专家")).isPresent();
-        assertThat(knowledgeBaseRepository.findByCategory("行业研究专家知识库")).isPresent();
+        assertThat(knowledgeBaseRepository.findByCategory("行业研究专家专属知识库")).isPresent();
         assertThat(knowledgeAssetRepository.findAll()).filteredOn(asset -> asset.getName().equals("report.md")).hasSize(1);
         assertThat(uploadFileRepository.findByUploadIdOrderByRelativePathAsc(uploadId))
                 .filteredOn(file -> file.getImportedAssetId() != null)
@@ -601,16 +798,27 @@ class ExpertSkillUploadControllerTests {
                                   "skillDescription": "验证失败不留残缺数据。",
                                   "systemPrompt": "仅用于测试。",
                                   "userPrompt": "组合测试输入。",
-                                  "knowledge": {"mode": "EXISTING", "knowledgeBaseId": "%s"},
+                                  "knowledge": {
+                                    "mode": "CREATE",
+                                    "newKnowledgeBase": {
+                                      "category": "回滚测试专家专属知识库",
+                                      "description": "用于验证失败整体回滚",
+                                      "usedBy": "回滚测试专家",
+                                      "active": true
+                                    }
+                                  },
                                   "importFileIds": ["%s"],
                                   "active": true
                                 }
-                                """.formatted(skillKnowledgeBaseId, candidate.getId())))
+                                """.formatted(candidate.getId())))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.code").value("KNOWLEDGE_FILE_STORE_FAILED"));
 
         assertThat(uploadRepository.findById(uploadId).orElseThrow().getStatus()).isEqualTo(ExpertSkillUploadStatus.PARSED);
-        assertThat(knowledgeAssetRepository.findByKnowledgeBaseId(skillKnowledgeBaseId)).isEmpty();
+        KnowledgeBase rollbackBase = knowledgeBaseRepository.findByCategory("回滚测试专家专属知识库").orElseThrow();
+        assertThat(knowledgeAssetRepository.findByKnowledgeBaseId(rollbackBase.getId())).isEmpty();
+        assertThat(uploadFileRepository.findByUploadIdOrderByRelativePathAsc(uploadId))
+                .allSatisfy(file -> assertThat(file.getImportedAssetId()).isNull());
     }
 
     @Test
@@ -651,8 +859,13 @@ class ExpertSkillUploadControllerTests {
 
     @Test
     void rejectsStudentAccessToSkillManagement() throws Exception {
+        Cookie studentSession = login("skill-upload-student@test.local");
         mockMvc.perform(get("/api/knowledge/expert-skill-uploads")
-                        .cookie(login("skill-upload-student@test.local")))
+                        .cookie(studentSession))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/api/knowledge/expert-skill-uploads/experts/defense/files")
+                        .cookie(studentSession))
                 .andExpect(status().isForbidden());
     }
 

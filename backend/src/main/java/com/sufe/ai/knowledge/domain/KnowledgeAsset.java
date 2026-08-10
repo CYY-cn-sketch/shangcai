@@ -2,10 +2,13 @@ package com.sufe.ai.knowledge.domain;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 
 @Entity
@@ -58,6 +61,40 @@ public class KnowledgeAsset {
     @Column(name = "extraction_message", length = 500)
     private String extractionMessage;
 
+    @Column(name = "origin_type", length = 32, nullable = false)
+    private String originType;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "lexiang_sync_status", length = 32, nullable = false)
+    private LexiangSyncStatus lexiangSyncStatus;
+
+    @Column(name = "lexiang_entry_id", length = 64)
+    private String lexiangEntryId;
+
+    @Column(name = "lexiang_synced_sha256", length = 64)
+    private String lexiangSyncedSha256;
+
+    @Column(name = "lexiang_synced_name", length = 200)
+    private String lexiangSyncedName;
+
+    @Column(name = "lexiang_sync_error", length = 500)
+    private String lexiangSyncError;
+
+    @Column(name = "lexiang_synced_at")
+    private Instant lexiangSyncedAt;
+
+    @Column(name = "lexiang_remote_updated_at", length = 32)
+    private String lexiangRemoteUpdatedAt;
+
+    @Column(name = "lexiang_remote_etag", length = 128)
+    private String lexiangRemoteEtag;
+
+    @Column(name = "lexiang_last_seen_at")
+    private Instant lexiangLastSeenAt;
+
+    @Column(name = "lexiang_last_seen_run_id", length = 36)
+    private String lexiangLastSeenRunId;
+
     @Column(nullable = false)
     private boolean enabled;
 
@@ -89,6 +126,8 @@ public class KnowledgeAsset {
         this.contentText = normalizeOptional(contentText);
         this.uploadedBy = KnowledgeBase.requireText(uploadedBy, "uploadedBy");
         this.extractionStatus = this.contentText == null ? "EMPTY" : "READY";
+        this.originType = "COURSE_UPLOAD";
+        this.lexiangSyncStatus = LexiangSyncStatus.NOT_APPLICABLE;
         this.enabled = true;
         this.createdAt = now;
         this.updatedAt = now;
@@ -144,6 +183,194 @@ public class KnowledgeAsset {
         this.updatedAt = Instant.now();
     }
 
+    public void markSkillImport() {
+        this.originType = "SKILL_IMPORT";
+        this.lexiangSyncStatus = LexiangSyncStatus.NOT_APPLICABLE;
+        this.lexiangSyncError = null;
+        this.updatedAt = Instant.now();
+    }
+
+    public void markExpertDirectUpload() {
+        this.originType = "EXPERT_DIRECT_UPLOAD";
+        this.lexiangSyncStatus = LexiangSyncStatus.NOT_APPLICABLE;
+        this.updatedAt = Instant.now();
+    }
+
+    public void queueLexiangSync() {
+        if ("LEXIANG_PULL".equals(originType) && hasFile()) {
+            this.lexiangSyncStatus = LexiangSyncStatus.PENDING;
+            this.lexiangSyncError = null;
+            this.updatedAt = Instant.now();
+            return;
+        }
+        if (!"COURSE_UPLOAD".equals(originType) || !hasFile()) {
+            this.lexiangSyncStatus = LexiangSyncStatus.NOT_APPLICABLE;
+            return;
+        }
+        this.lexiangSyncStatus = LexiangSyncStatus.PENDING;
+        this.lexiangSyncError = null;
+        this.updatedAt = Instant.now();
+    }
+
+    public void markLexiangSyncing() {
+        this.lexiangSyncStatus = LexiangSyncStatus.SYNCING;
+        this.lexiangSyncError = null;
+        this.updatedAt = Instant.now();
+    }
+
+    public void markLexiangSynced(String entryId) {
+        markLexiangSynced(entryId, null);
+    }
+
+    public void markLexiangSynced(String entryId, String remoteUpdatedAt) {
+        this.lexiangEntryId = KnowledgeBase.requireText(entryId, "lexiangEntryId");
+        this.lexiangSyncedSha256 = sha256;
+        this.lexiangSyncedName = name;
+        this.lexiangSyncStatus = LexiangSyncStatus.SYNCED;
+        this.lexiangSyncError = null;
+        this.lexiangSyncedAt = Instant.now();
+        this.lexiangRemoteUpdatedAt = normalizeOptional(remoteUpdatedAt);
+        this.lexiangRemoteEtag = null;
+        this.updatedAt = this.lexiangSyncedAt;
+    }
+
+    public void markLexiangNotConfigured() {
+        markLexiangNotConfigured("乐享知识库尚未配置，文件已安全保存在平台");
+    }
+
+    public void markLexiangNotConfigured(String message) {
+        this.lexiangSyncStatus = LexiangSyncStatus.NOT_CONFIGURED;
+        this.lexiangSyncError = normalizeSyncError(message);
+        this.updatedAt = Instant.now();
+    }
+
+    public void markLexiangUnsupported(String message) {
+        this.lexiangSyncStatus = LexiangSyncStatus.UNSUPPORTED;
+        this.lexiangSyncError = normalizeSyncError(message);
+        this.updatedAt = Instant.now();
+    }
+
+    public void markLexiangFailed(String message) {
+        this.lexiangSyncStatus = LexiangSyncStatus.FAILED;
+        this.lexiangSyncError = normalizeSyncError(message);
+        this.updatedAt = Instant.now();
+    }
+
+    public void applyLexiangPulledFile(
+            String name,
+            String sizeLabel,
+            String fileType,
+            String preview,
+            String contentText,
+            String extractionStatus,
+            String extractionMessage,
+            String storageKey,
+            String originalName,
+            String mimeType,
+            long fileSizeBytes,
+            String sha256,
+            String entryId,
+            String remoteUpdatedAt,
+            String remoteEtag,
+            String runId,
+            Instant seenAt,
+            boolean imported
+    ) {
+        this.name = KnowledgeBase.requireText(name, "name");
+        this.sizeLabel = KnowledgeBase.requireText(sizeLabel, "sizeLabel");
+        this.fileType = KnowledgeBase.requireText(fileType, "fileType");
+        this.preview = KnowledgeBase.requireText(preview, "preview");
+        this.contentText = normalizeOptional(contentText);
+        this.extractionStatus = KnowledgeBase.requireText(extractionStatus, "extractionStatus");
+        this.extractionMessage = normalizeOptional(extractionMessage);
+        attachFile(storageKey, originalName, mimeType, fileSizeBytes, sha256);
+        if (imported) this.originType = "LEXIANG_PULL";
+        this.lexiangEntryId = KnowledgeBase.requireText(entryId, "lexiangEntryId");
+        this.lexiangSyncedSha256 = this.sha256;
+        this.lexiangSyncedName = this.name;
+        this.lexiangRemoteUpdatedAt = normalizeOptional(remoteUpdatedAt);
+        this.lexiangRemoteEtag = normalizeOptional(remoteEtag);
+        this.lexiangLastSeenRunId = KnowledgeBase.requireText(runId, "lexiangLastSeenRunId");
+        this.lexiangLastSeenAt = seenAt == null ? Instant.now() : seenAt;
+        this.lexiangSyncedAt = this.lexiangLastSeenAt;
+        this.lexiangSyncStatus = "LEXIANG_PULL".equals(originType)
+                ? LexiangSyncStatus.PULLED
+                : LexiangSyncStatus.SYNCED;
+        this.lexiangSyncError = null;
+        this.updatedAt = this.lexiangLastSeenAt;
+    }
+
+    public void markLexiangSeen(String remoteUpdatedAt, String runId, Instant seenAt) {
+        this.lexiangRemoteUpdatedAt = normalizeOptional(remoteUpdatedAt);
+        this.lexiangLastSeenRunId = KnowledgeBase.requireText(runId, "lexiangLastSeenRunId");
+        this.lexiangLastSeenAt = seenAt == null ? Instant.now() : seenAt;
+        this.lexiangSyncStatus = "LEXIANG_PULL".equals(originType)
+                ? LexiangSyncStatus.PULLED
+                : LexiangSyncStatus.SYNCED;
+        this.lexiangSyncError = null;
+        this.updatedAt = this.lexiangLastSeenAt;
+    }
+
+    public void markLexiangConflict(String remoteUpdatedAt, String runId, Instant seenAt, String message) {
+        this.lexiangRemoteUpdatedAt = normalizeOptional(remoteUpdatedAt);
+        this.lexiangLastSeenRunId = KnowledgeBase.requireText(runId, "lexiangLastSeenRunId");
+        this.lexiangLastSeenAt = seenAt == null ? Instant.now() : seenAt;
+        this.lexiangSyncStatus = LexiangSyncStatus.CONFLICT;
+        this.lexiangSyncError = normalizeSyncError(message);
+        this.updatedAt = this.lexiangLastSeenAt;
+    }
+
+    public void markLexiangPushConflict(String message) {
+        this.lexiangSyncStatus = LexiangSyncStatus.CONFLICT;
+        this.lexiangSyncError = normalizeSyncError(message);
+        this.updatedAt = Instant.now();
+    }
+
+    public void markLexiangSeenKeepingStatus(String remoteUpdatedAt, String runId, Instant seenAt) {
+        this.lexiangRemoteUpdatedAt = normalizeOptional(remoteUpdatedAt);
+        this.lexiangLastSeenRunId = KnowledgeBase.requireText(runId, "lexiangLastSeenRunId");
+        this.lexiangLastSeenAt = seenAt == null ? Instant.now() : seenAt;
+        this.updatedAt = this.lexiangLastSeenAt;
+    }
+
+    public void markLexiangPullFailed(String runId, Instant seenAt, String message) {
+        this.lexiangLastSeenRunId = KnowledgeBase.requireText(runId, "lexiangLastSeenRunId");
+        this.lexiangLastSeenAt = seenAt == null ? Instant.now() : seenAt;
+        this.lexiangSyncStatus = LexiangSyncStatus.FAILED;
+        this.lexiangSyncError = normalizeSyncError(message);
+        this.updatedAt = this.lexiangLastSeenAt;
+    }
+
+    public void markLexiangRemoteMissing(String message) {
+        this.lexiangSyncStatus = LexiangSyncStatus.REMOTE_MISSING;
+        this.lexiangSyncError = normalizeSyncError(message);
+        this.updatedAt = Instant.now();
+    }
+
+    public boolean hasLocalLexiangConflict() {
+        return lexiangSyncedSha256 == null
+                || lexiangSyncedName == null
+                || !Objects.equals(sha256, lexiangSyncedSha256)
+                || !Objects.equals(name, lexiangSyncedName);
+    }
+
+    private static String normalizeSyncError(String message) {
+        String normalized = message == null || message.isBlank() ? "乐享知识库同步失败" : message.trim();
+        return normalized.length() <= 500 ? normalized : normalized.substring(0, 500);
+    }
+
+    public boolean isSkillImport() {
+        return "SKILL_IMPORT".equals(originType);
+    }
+
+    public boolean isExpertDirectUpload() {
+        return "EXPERT_DIRECT_UPLOAD".equals(originType);
+    }
+
+    public boolean isLexiangPull() {
+        return "LEXIANG_PULL".equals(originType);
+    }
+
     private static String normalizeOptional(String value) {
         return value == null || value.isBlank() ? null : value.trim();
     }
@@ -187,6 +414,17 @@ public class KnowledgeAsset {
     public String getSha256() { return sha256; }
     public String getExtractionStatus() { return extractionStatus; }
     public String getExtractionMessage() { return extractionMessage; }
+    public String getOriginType() { return originType; }
+    public LexiangSyncStatus getLexiangSyncStatus() { return lexiangSyncStatus; }
+    public String getLexiangEntryId() { return lexiangEntryId; }
+    public String getLexiangSyncedSha256() { return lexiangSyncedSha256; }
+    public String getLexiangSyncedName() { return lexiangSyncedName; }
+    public String getLexiangSyncError() { return lexiangSyncError; }
+    public Instant getLexiangSyncedAt() { return lexiangSyncedAt; }
+    public String getLexiangRemoteUpdatedAt() { return lexiangRemoteUpdatedAt; }
+    public String getLexiangRemoteEtag() { return lexiangRemoteEtag; }
+    public Instant getLexiangLastSeenAt() { return lexiangLastSeenAt; }
+    public String getLexiangLastSeenRunId() { return lexiangLastSeenRunId; }
     public boolean hasFile() { return storageKey != null; }
 
     public boolean isEnabled() {

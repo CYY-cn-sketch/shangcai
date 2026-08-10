@@ -78,7 +78,15 @@ describe("ExpertSkillWizard", () => {
         knowledgeCategories: ["课程知识库"],
       },
       upload: { ...upload, status: "ENABLED", expertId: "expert-1" },
-      knowledgeBase: { id: "kb-1", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true },
+      knowledgeBase: {
+        id: "kb-private-new",
+        category: "财务验证专家专属知识库",
+        description: "Skill 专属资料",
+        usedBy: "财务验证专家",
+        active: true,
+        scopeType: "EXPERT_PRIVATE",
+        ownerExpertId: "expert-1",
+      },
       importedAssets: [],
     };
     confirmExpertSkillUpload.mockResolvedValue(result);
@@ -87,7 +95,14 @@ describe("ExpertSkillWizard", () => {
     render(
       <ExpertSkillWizard
         actorLabel="教师端"
-        knowledgeBases={[{ id: "kb-1", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true }]}
+        knowledgeBases={[{
+          id: "kb-shared",
+          category: "课程知识库",
+          description: "课程资料",
+          usedBy: "专家",
+          active: true,
+          scopeType: "COURSE_SHARED",
+        }]}
         experts={[]}
         initialUpload={upload}
         onClose={vi.fn()}
@@ -107,7 +122,15 @@ describe("ExpertSkillWizard", () => {
     expect(confirmExpertSkillUpload).toHaveBeenCalledWith(
       "upload-1",
       expect.objectContaining({
-        knowledge: { mode: "EXISTING", knowledgeBaseId: "kb-1" },
+        knowledge: {
+          mode: "CREATE",
+          newKnowledgeBase: {
+            category: "财务验证专家专属知识库",
+            description: "财务验证专家的 Skill 知识资料，仅供该专家检索使用。",
+            usedBy: "财务验证专家",
+            active: true,
+          },
+        },
         importFileIds: ["knowledge-file"],
         knowledgeRule: "只读取已启用资料。",
         boundaries: "不执行文件。",
@@ -120,7 +143,7 @@ describe("ExpertSkillWizard", () => {
     const user = userEvent.setup();
     const existingExpert = {
       id: "brainstorm",
-      name: upload.parsedName,
+      name: "财务 验证 专家",
       role: "旧定位",
       scenario: "旧场景",
       accent: "#174a7e",
@@ -131,7 +154,15 @@ describe("ExpertSkillWizard", () => {
     const result: ExpertSkillConfirmationRecord = {
       expert: { ...existingExpert, role: upload.parsedRole, scenario: upload.parsedScenario },
       upload: { ...upload, status: "ENABLED", expertId: existingExpert.id },
-      knowledgeBase: { id: "kb-1", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true },
+      knowledgeBase: {
+        id: "kb-private",
+        category: "财务验证专家专属知识库",
+        description: "Skill 专属资料",
+        usedBy: "财务验证专家",
+        active: true,
+        scopeType: "EXPERT_PRIVATE",
+        ownerExpertId: existingExpert.id,
+      },
       importedAssets: [],
     };
     confirmExpertSkillUpload.mockResolvedValue(result);
@@ -139,7 +170,18 @@ describe("ExpertSkillWizard", () => {
     render(
       <ExpertSkillWizard
         actorLabel="管理员端"
-        knowledgeBases={[{ id: "kb-1", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true }]}
+        knowledgeBases={[
+          { id: "kb-shared", category: "课程知识库", description: "课程资料", usedBy: "专家", active: true, scopeType: "COURSE_SHARED" },
+          {
+            id: "kb-private",
+            category: "财务验证专家专属知识库",
+            description: "Skill 专属资料",
+            usedBy: "财务验证专家",
+            active: true,
+            scopeType: "EXPERT_PRIVATE",
+            ownerExpertId: existingExpert.id,
+          },
+        ]}
         experts={[existingExpert]}
         initialUpload={upload}
         onClose={vi.fn()}
@@ -157,7 +199,10 @@ describe("ExpertSkillWizard", () => {
 
     expect(confirmExpertSkillUpload).toHaveBeenCalledWith(
       "upload-1",
-      expect.objectContaining({ targetExpertId: "brainstorm" }),
+      expect.objectContaining({
+        targetExpertId: "brainstorm",
+        knowledge: { mode: "EXISTING", knowledgeBaseId: "kb-private" },
+      }),
     );
   });
 });

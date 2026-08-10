@@ -183,6 +183,7 @@ class GenerationJobCoordinatorTests {
                         "",
                         "system-bot",
                         "",
+                        "",
                         1
                 ),
                 List.of(executor),

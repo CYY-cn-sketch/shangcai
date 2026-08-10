@@ -1,5 +1,6 @@
 package com.sufe.ai.knowledge.service;
 
+import com.sufe.ai.knowledge.domain.KnowledgeBaseScope;
 import com.sufe.ai.knowledge.repository.ExpertKnowledgeRouteRepository;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
@@ -80,17 +81,55 @@ class StarterContentInitializerTests {
         assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("market")).hasSize(3);
         assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("business")).hasSize(3);
         assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("pitch")).hasSize(3);
+        assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("pitch"))
+                .extracting("name")
+                .contains("路演 PPT 大纲")
+                .doesNotContain("10 页 PPT 大纲");
+        assertThat(pitch.getSystemPrompt())
+                .contains("额度耗尽")
+                .contains("不默认、不截断也不补齐为 10 页")
+                .doesNotContain("平台预置模板草稿");
         assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("script")).hasSize(2);
         assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("defense")).hasSize(3);
         assertThat(expertSkillRepository.findByExpertIdOrderByCreatedAtAsc("media")).hasSize(4);
         assertThat(expertKnowledgeRouteRepository.findByExpertId("brainstorm"))
                 .extracting("category")
-                .containsExactlyInAnyOrder("创业方法", "创业案例", "教学大纲");
+                .contains("创业方法", "创业案例", "教学大纲");
         assertThat(expertKnowledgeRouteRepository.findByExpertId("defense"))
                 .extracting("category")
-                .containsExactlyInAnyOrder("答辩题库", "BP 模板", "PPT 模板", "评分标准");
+                .contains("答辩题库", "BP 模板", "PPT 模板", "评分标准");
 
-        assertThat(knowledgeAssetRepository.count()).isEqualTo(10);
+        var pitchPrivateBase = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType("pitch", KnowledgeBaseScope.EXPERT_PRIVATE)
+                .orElseThrow();
+        var mediaPrivateBase = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType("media", KnowledgeBaseScope.EXPERT_PRIVATE)
+                .orElseThrow();
+        var pitchPrivateAsset = knowledgeAssetRepository
+                .findFirstByKnowledgeBaseIdAndNameOrderByCreatedAtAsc(pitchPrivateBase.getId(), "路演PPT结构模板.md")
+                .orElseThrow();
+        var mediaPrivateAsset = knowledgeAssetRepository
+                .findFirstByKnowledgeBaseIdAndNameOrderByCreatedAtAsc(mediaPrivateBase.getId(), "多媒体物料脚本与分镜模板.md")
+                .orElseThrow();
+        assertThat(expertKnowledgeRouteRepository.findByExpertId("pitch"))
+                .extracting("category")
+                .contains(pitchPrivateBase.getCategory());
+        assertThat(expertKnowledgeRouteRepository.findByExpertId("media"))
+                .extracting("category")
+                .contains(mediaPrivateBase.getCategory());
+        assertThat(List.of(pitchPrivateAsset, mediaPrivateAsset))
+                .allSatisfy(asset -> {
+                    assertThat(asset.isEnabled()).isTrue();
+                    assertThat(asset.getExtractionStatus()).isEqualTo("READY");
+                    assertThat(asset.isSkillImport()).isTrue();
+                    assertThat(asset.getContentText()).isNotBlank();
+                    assertThat(asset.hasFile()).isTrue();
+                    assertThat(fileStorageService.load(asset.getStorageKey()).exists()).isTrue();
+                });
+        assertThat(pitchPrivateAsset.getContentText()).contains("路演");
+        assertThat(mediaPrivateAsset.getContentText()).contains("分镜");
+
+        assertThat(knowledgeAssetRepository.count()).isEqualTo(12);
         assertThat(knowledgeAssetRepository.findAll())
                 .allSatisfy(asset -> {
                     assertThat(asset.hasFile()).isTrue();
@@ -100,6 +139,6 @@ class StarterContentInitializerTests {
         starterContentInitializer.run(null);
         assertThat(expertProfileRepository.count()).isEqualTo(8);
         assertThat(expertSkillRepository.count()).isEqualTo(24);
-        assertThat(knowledgeAssetRepository.count()).isEqualTo(10);
+        assertThat(knowledgeAssetRepository.count()).isEqualTo(12);
     }
 }

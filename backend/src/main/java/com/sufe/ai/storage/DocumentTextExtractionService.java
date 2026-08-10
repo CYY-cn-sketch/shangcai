@@ -13,6 +13,7 @@ import org.apache.poi.xslf.usermodel.XSLFTextShape;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.springframework.core.io.Resource;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -33,13 +34,24 @@ public class DocumentTextExtractionService {
     private static final Set<String> IMAGE_EXTENSIONS = Set.of("png", "jpg", "jpeg");
     private static final Set<String> AUDIO_VIDEO_EXTENSIONS = Set.of("mp3", "m4a", "wav", "mp4", "mov", "webm");
 
+    private final MediaTextExtractionService mediaTextExtractionService;
+
+    DocumentTextExtractionService() {
+        this.mediaTextExtractionService = null;
+    }
+
+    @Autowired
+    public DocumentTextExtractionService(MediaTextExtractionService mediaTextExtractionService) {
+        this.mediaTextExtractionService = mediaTextExtractionService;
+    }
+
     public ExtractionResult extract(Resource resource, String originalName) {
         String extension = extensionOf(originalName);
         if (IMAGE_EXTENSIONS.contains(extension)) {
-            return new ExtractionResult("OCR_REQUIRED", null, "图片已安全保存，需配置 OCR 后才能识别正文");
+            return extractMedia(resource, originalName, "OCR_REQUIRED", "图片已安全保存，需配置 OCR 后才能识别正文");
         }
         if (AUDIO_VIDEO_EXTENSIONS.contains(extension)) {
-            return new ExtractionResult("ASR_REQUIRED", null, "音视频已安全保存，需配置 ASR 后才能识别正文");
+            return extractMedia(resource, originalName, "ASR_REQUIRED", "音视频已安全保存，需配置 ASR 后才能识别正文");
         }
         try (InputStream input = resource.getInputStream()) {
             String text = switch (extension) {
@@ -57,7 +69,7 @@ public class DocumentTextExtractionService {
             String normalized = normalize(text);
             if (normalized.isBlank()) {
                 if ("pdf".equals(extension)) {
-                    return new ExtractionResult("OCR_REQUIRED", null, "PDF 中没有可提取文本，扫描页需要 OCR");
+                    return extractMedia(resource, originalName, "OCR_REQUIRED", "PDF 中没有可提取文本，扫描页需要 OCR");
                 }
                 return new ExtractionResult("EMPTY", null, "文件中没有提取到可读文本；扫描件需要 OCR");
             }
@@ -67,6 +79,17 @@ public class DocumentTextExtractionService {
         } catch (Exception exception) {
             return new ExtractionResult("FAILED", null, "文件正文提取失败，请确认文件未损坏或未加密");
         }
+    }
+
+    private ExtractionResult extractMedia(Resource resource, String originalName, String fallbackStatus, String fallbackMessage) {
+        if (mediaTextExtractionService == null || !mediaTextExtractionService.isEnabled()) {
+            return new ExtractionResult(fallbackStatus, null, fallbackMessage);
+        }
+        ExtractionResult result = mediaTextExtractionService.extract(resource, originalName);
+        if (result.ready() && result.contentText().length() > MAX_TEXT_CHARS) {
+            return new ExtractionResult(result.status(), result.contentText().substring(0, MAX_TEXT_CHARS), result.message());
+        }
+        return result;
     }
 
     private static String extractPdf(InputStream input) throws IOException {

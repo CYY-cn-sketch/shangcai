@@ -42,12 +42,13 @@ public class ExpertSkillUploadParser {
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
             "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "json", "yaml", "yml",
             "png", "jpg", "jpeg",
+            "html", "css", "svg",
             "py", "sh", "bash", "ps1", "bat", "cmd", "js", "mjs", "cjs", "ts", "tsx", "jsx"
     );
     private static final Set<String> SOURCE_CODE_EXTENSIONS = Set.of(
             "py", "sh", "bash", "ps1", "bat", "cmd", "js", "mjs", "cjs", "ts", "tsx", "jsx"
     );
-    private static final Set<String> TEXT_EXTENSIONS = Set.of("csv", "txt", "md", "json", "yaml", "yml");
+    private static final Set<String> TEXT_EXTENSIONS = Set.of("csv", "txt", "md", "json", "yaml", "yml", "html", "css", "svg");
     private static final Set<String> KNOWLEDGE_DIRECTORIES = Set.of("references", "knowledge", "docs");
 
     private final ObjectMapper objectMapper;

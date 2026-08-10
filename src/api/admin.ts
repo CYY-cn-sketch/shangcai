@@ -6,6 +6,14 @@ export type AdminAccount = {
   title: string;
   status: "ACTIVE" | "DISABLED";
   quotaRemaining: number;
+  aiCallsUsed: number;
+  aiCallsRemaining: number;
+  lexiangPptQuota: number;
+  lexiangPptUsed: number;
+  lexiangPptRemaining: number;
+  workbuddyVideoQuota: number;
+  workbuddyVideoUsed: number;
+  workbuddyVideoRemaining: number;
   disabledPermissions: string[];
   groupId?: string;
   groupLabel?: string;
@@ -116,6 +124,41 @@ export type AdminOperationsReport = {
     summary: string;
     actor: string;
   }>;
+  evaluation: AdminOperationsEvaluation;
+};
+
+export type AdminOperationsEvaluationRecord = {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  groupLabel?: string | null;
+  status?: string | null;
+  occurredAt?: string | null;
+};
+
+export type AdminOperationsEvaluationCard = {
+  key: string;
+  title: string;
+  value: string;
+  badge: string;
+  definition: string;
+  numerator?: number | null;
+  denominator?: number | null;
+  periodStart?: string | null;
+  periodEnd: string;
+  sources: string[];
+  zeroReason?: string | null;
+  statements: string[];
+  records: AdminOperationsEvaluationRecord[];
+};
+
+export type AdminOperationsEvaluation = {
+  sourceCategories: string[];
+  kpis: AdminOperationsEvaluationCard[];
+  summaries: AdminOperationsEvaluationCard[];
+  reviews: AdminOperationsEvaluationCard[];
+  evidence: AdminOperationsEvaluationCard[];
 };
 
 export type CreateAdminAccount = {
@@ -125,6 +168,8 @@ export type CreateAdminAccount = {
   displayName: string;
   title: string;
   quotaRemaining: number;
+  lexiangPptQuota: number;
+  workbuddyVideoQuota: number;
   groupId?: string;
 };
 
@@ -134,6 +179,8 @@ export type UpdateAdminAccount = {
   title: string;
   status: AdminAccount["status"];
   quotaRemaining: number;
+  lexiangPptQuota: number;
+  workbuddyVideoQuota: number;
   disabledPermissions: string[];
   groupId?: string;
 };

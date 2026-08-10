@@ -68,14 +68,14 @@ public class DemoDataInitializer implements ApplicationRunner {
 
         seedGroups();
         String passwordHash = passwordEncoder.encode(properties.demoPassword());
-        seedUser("A-STU-001", "student@sufe.demo", passwordHash, UserRole.STUDENT, "陈思源", "商学院创业实践课学生", 260, "G-03");
-        seedUser("A-STU-002", "student2@sufe.demo", passwordHash, UserRole.STUDENT, "李若涵", "商学院创业实践课学生", 220, "G-04");
-        seedUser("A-STU-003", "student3@sufe.demo", passwordHash, UserRole.STUDENT, "王梓萱", "商学院创业实践课学生", 240, "G-11");
-        seedUser("A-STU-004", "student4@sufe.demo", passwordHash, UserRole.STUDENT, "赵一诺", "商学院创业实践课学生", 240, "G-11");
-        seedUser("A-STU-005", "student5@sufe.demo", passwordHash, UserRole.STUDENT, "林嘉诚", "商学院创业实践课学生", 220, "G-11");
-        seedUser("A-STU-006", "student6@sufe.demo", passwordHash, UserRole.STUDENT, "黄雨桐", "商学院创业实践课学生", 220, "G-11");
-        seedUser("A-TEA-001", "teacher@sufe.demo", passwordHash, UserRole.TEACHER, "周老师", "创业实践课程教师", 520, null);
-        seedUser("A-ADM-001", "admin@sufe.demo", passwordHash, UserRole.ADMIN, "平台管理员", "教学平台运营管理员", 1500, null);
+        seedUser("A-STU-001", "student@sufe.demo", passwordHash, UserRole.STUDENT, "陈思源", "商学院创业实践课学生", 2000, "G-03");
+        seedUser("A-STU-002", "student2@sufe.demo", passwordHash, UserRole.STUDENT, "李若涵", "商学院创业实践课学生", 2000, "G-04");
+        seedUser("A-STU-003", "student3@sufe.demo", passwordHash, UserRole.STUDENT, "王梓萱", "商学院创业实践课学生", 2000, "G-11");
+        seedUser("A-STU-004", "student4@sufe.demo", passwordHash, UserRole.STUDENT, "赵一诺", "商学院创业实践课学生", 2000, "G-11");
+        seedUser("A-STU-005", "student5@sufe.demo", passwordHash, UserRole.STUDENT, "林嘉诚", "商学院创业实践课学生", 2000, "G-11");
+        seedUser("A-STU-006", "student6@sufe.demo", passwordHash, UserRole.STUDENT, "黄雨桐", "商学院创业实践课学生", 2000, "G-11");
+        seedUser("A-TEA-001", "teacher@sufe.demo", passwordHash, UserRole.TEACHER, "周老师", "创业实践课程教师", 5000, null);
+        seedUser("A-ADM-001", "admin@sufe.demo", passwordHash, UserRole.ADMIN, "平台管理员", "教学平台运营管理员", 10000, null);
         seedMidtermDemoData();
     }
 
@@ -144,7 +144,8 @@ public class DemoDataInitializer implements ApplicationRunner {
         GroupMembership membership = groupMembershipRepository.findByUserId(student.getId()).orElseThrow();
         ProjectGroup group = projectGroupRepository.findById(membership.getGroupId()).orElseThrow();
         artifactSubmissionRepository.save(ArtifactSubmission.create(
-                artifact.getId(),
+                artifact,
+                1,
                 student.getId(),
                 student.getDisplayName(),
                 group.getGroupLabel(),

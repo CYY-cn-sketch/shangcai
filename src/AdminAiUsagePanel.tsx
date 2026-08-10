@@ -86,7 +86,7 @@ export function AdminAiUsagePanel() {
         <div className="ai-usage-toolbar">
           <div>
             <h4 id="ai-usage-title">AI 与生成服务用量</h4>
-            <p>Token 仅采用供应商返回值；乐享 PPT 和 WorkBuddy 视频按真实请求任务计数，不使用前端点击或字符数估算。</p>
+            <p>Token 是模型计量单位，不等同于汉字数；仅采用供应商返回值。乐享 PPT 和 WorkBuddy 视频按真实请求任务计数。</p>
           </div>
           <div className="ai-usage-controls">
             <div className="ai-usage-segmented" role="group" aria-label="统计维度">
@@ -125,27 +125,27 @@ export function AdminAiUsagePanel() {
         <dl className="ai-usage-summary" aria-label="Token 用量汇总" aria-busy={isLoading}>
           <div>
             <dt>总 Token</dt>
-            <dd>{formatNumber(summary?.totalTokens ?? 0)}</dd>
+            <dd><strong>{formatNumber(summary?.totalTokens ?? 0)}</strong><span>Token</span></dd>
           </div>
           <div>
             <dt>输入 Token</dt>
-            <dd>{formatNumber(summary?.inputTokens ?? 0)}</dd>
+            <dd><strong>{formatNumber(summary?.inputTokens ?? 0)}</strong><span>Token</span></dd>
           </div>
           <div>
             <dt>输出 Token</dt>
-            <dd>{formatNumber(summary?.outputTokens ?? 0)}</dd>
+            <dd><strong>{formatNumber(summary?.outputTokens ?? 0)}</strong><span>Token</span></dd>
           </div>
           <div>
             <dt>调用次数</dt>
-            <dd>{formatNumber(summary?.callCount ?? 0)}</dd>
+            <dd><strong>{formatNumber(summary?.callCount ?? 0)}</strong><span>次</span></dd>
           </div>
           <div>
             <dt>使用人数</dt>
-            <dd>{formatNumber(summary?.activeUserCount ?? 0)}</dd>
+            <dd><strong>{formatNumber(summary?.activeUserCount ?? 0)}</strong><span>人</span></dd>
           </div>
           <div>
             <dt>涉及小组</dt>
-            <dd>{formatNumber(summary?.activeGroupCount ?? 0)}</dd>
+            <dd><strong>{formatNumber(summary?.activeGroupCount ?? 0)}</strong><span>组</span></dd>
           </div>
         </dl>
 

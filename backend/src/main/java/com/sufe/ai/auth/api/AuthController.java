@@ -207,6 +207,8 @@ public class AuthController {
                 group == null ? null : group.getGroupLabel(),
                 group == null ? null : group.getProjectName(),
                 user.getQuotaRemaining(),
+                user.getLexiangPptQuota(),
+                user.getWorkbuddyVideoQuota(),
                 accountPermissionDenialRepository.findByUserIdOrderByPermissionKey(user.getId()).stream()
                         .map(AccountPermissionDenial::getPermissionKey)
                         .toList()
@@ -238,6 +240,8 @@ public class AuthController {
             String groupLabel,
             String groupName,
             int quota,
+            int lexiangPptQuota,
+            int workbuddyVideoQuota,
             List<String> disabledPermissions
     ) {
     }

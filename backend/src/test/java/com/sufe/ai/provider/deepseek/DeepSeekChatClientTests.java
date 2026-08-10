@@ -149,4 +149,37 @@ class DeepSeekChatClientTests {
                     assertThat(exception.getMessage()).doesNotContain("sensitive provider detail");
                 });
     }
+
+    @Test
+    void reportsThinkingOutputExhaustionWithoutExposingReasoningContent() {
+        server.expect(once(), requestTo("https://deepseek.test/chat/completions"))
+                .andRespond(withSuccess("""
+                        {
+                          "id":"chatcmpl-test-exhausted",
+                          "model":"deepseek-v4-flash",
+                          "choices":[{
+                            "finish_reason":"length",
+                            "message":{
+                              "content":"",
+                              "reasoning_content":"sensitive internal reasoning"
+                            }
+                          }],
+                          "usage":{"prompt_tokens":1200,"completion_tokens":4096}
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> client.chat(new DeepSeekChatCommand(
+                "user-001",
+                "deepseek-v4-flash",
+                true,
+                "high",
+                List.of(new DeepSeekMessage("user", "生成十页路演大纲"))
+        )))
+                .isInstanceOfSatisfying(DeepSeekClientException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo("DEEPSEEK_OUTPUT_EXHAUSTED");
+                    assertThat(exception.getMessage())
+                            .contains("没有形成正式回复")
+                            .doesNotContain("sensitive internal reasoning");
+                });
+    }
 }

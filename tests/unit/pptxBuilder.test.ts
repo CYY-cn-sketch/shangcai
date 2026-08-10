@@ -1,13 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { buildPptxFile, parsePptSlideOutline } from "../../src/pptxBuilder";
+import { buildPptOutlineContent, buildPptxFile, parsePptSlideOutline } from "../../src/pptxBuilder";
 
 describe("PPTX assembly", () => {
-  it("turns provider-style outline text into ten normalized slides", () => {
+  it("preserves the actual number of provider slides instead of padding to ten", () => {
     const slides = parsePptSlideOutline("第 1 页：课堂痛点｜学生缺少反馈｜使用对比图\n2. 解决方案｜形成教学闭环｜使用流程图");
 
-    expect(slides).toHaveLength(10);
+    expect(slides).toHaveLength(2);
     expect(slides[0]).toEqual(["课堂痛点", "学生缺少反馈", "使用对比图"]);
     expect(slides[1]).toEqual(["解决方案", "形成教学闭环", "使用流程图"]);
+  });
+
+  it("turns DeepSeek artifact blocks into a dynamic slide outline", () => {
+    const content = buildPptOutlineContent([
+      { title: "项目愿景", items: ["让实践过程可追踪", "教学闭环图"] },
+      { title: "验证结果", items: ["展示当前已确认的证据", "指标对比表"] },
+      { title: "下一步", items: ["推进课程试点", "里程碑路线图"] },
+    ]);
+
+    expect(parsePptSlideOutline(content)).toHaveLength(3);
+  });
+
+  it("does not fabricate a preset deck when no slide outline exists", async () => {
+    expect(parsePptSlideOutline("普通的一段说明文字")).toEqual([]);
+    await expect(buildPptxFile({ title: "空白成果", content: "普通的一段说明文字" }))
+      .rejects.toThrow("没有可识别的逐页 PPT 结构");
   });
 
   it("builds a real PPTX file without a provider call", async () => {

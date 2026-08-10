@@ -34,6 +34,15 @@ public class StudentConversation {
     @Column(name = "knowledge_selection_json", columnDefinition = "TEXT", nullable = false)
     private String knowledgeSelectionJson;
 
+    @Column(length = 120, nullable = false)
+    private String title;
+
+    @Column(length = 20, nullable = false)
+    private String status;
+
+    @Column(name = "last_message_at")
+    private Instant lastMessageAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -43,7 +52,7 @@ public class StudentConversation {
     protected StudentConversation() {
     }
 
-    private StudentConversation(String userId, String ideaId) {
+    private StudentConversation(String userId, String ideaId, String title) {
         Instant now = Instant.now();
         this.id = UUID.randomUUID().toString();
         this.userId = requireText(userId, "userId");
@@ -52,12 +61,18 @@ public class StudentConversation {
         this.selectedSkillId = "deck";
         this.modelMode = "Auto";
         this.knowledgeSelectionJson = "{\"categories\":[],\"uploadIds\":[]}";
+        this.title = requireText(title, "title");
+        this.status = "ACTIVE";
         this.createdAt = now;
         this.updatedAt = now;
     }
 
     public static StudentConversation create(String userId, String ideaId) {
-        return new StudentConversation(userId, ideaId);
+        return new StudentConversation(userId, ideaId, "项目对话");
+    }
+
+    public static StudentConversation create(String userId, String ideaId, String title) {
+        return new StudentConversation(userId, ideaId, title);
     }
 
     public void updateSettings(String expertId, String skillId, String modelMode, String knowledgeSelectionJson) {
@@ -66,6 +81,16 @@ public class StudentConversation {
         this.modelMode = requireText(modelMode, "modelMode");
         this.knowledgeSelectionJson = requireText(knowledgeSelectionJson, "knowledgeSelectionJson");
         this.updatedAt = Instant.now();
+    }
+
+    public void update(String title, String expertId, String skillId, String modelMode, String knowledgeSelectionJson) {
+        this.title = requireText(title, "title");
+        updateSettings(expertId, skillId, modelMode, knowledgeSelectionJson);
+    }
+
+    public void markMessageAppended(Instant messageAt) {
+        this.lastMessageAt = messageAt == null ? Instant.now() : messageAt;
+        this.updatedAt = this.lastMessageAt;
     }
 
     private static String requireText(String value, String fieldName) {
@@ -82,6 +107,9 @@ public class StudentConversation {
     public String getSelectedSkillId() { return selectedSkillId; }
     public String getModelMode() { return modelMode; }
     public String getKnowledgeSelectionJson() { return knowledgeSelectionJson; }
+    public String getTitle() { return title; }
+    public String getStatus() { return status; }
+    public Instant getLastMessageAt() { return lastMessageAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

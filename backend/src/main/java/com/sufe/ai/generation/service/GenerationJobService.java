@@ -1,11 +1,11 @@
 package com.sufe.ai.generation.service;
 
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.account.service.AccountQuotaService;
 import com.sufe.ai.generation.domain.ArtifactType;
 import com.sufe.ai.generation.domain.GenerationJob;
 import com.sufe.ai.generation.domain.GenerationProvider;
 import com.sufe.ai.generation.repository.GenerationJobRepository;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -16,41 +16,28 @@ public class GenerationJobService {
 
     private final GenerationJobRepository generationJobRepository;
     private final UserAccountRepository userAccountRepository;
+    private final AccountQuotaService quotaService;
 
     public GenerationJobService(
             GenerationJobRepository generationJobRepository,
-            UserAccountRepository userAccountRepository
+            UserAccountRepository userAccountRepository,
+            AccountQuotaService quotaService
     ) {
         this.generationJobRepository = generationJobRepository;
         this.userAccountRepository = userAccountRepository;
+        this.quotaService = quotaService;
     }
 
     public SubmissionResult submit(String accountName, SubmitCommand command) {
         String userId = resolveUserId(accountName);
         String idempotencyKey = command.idempotencyKey().trim();
 
-        Optional<GenerationJob> existing = generationJobRepository
-                .findByUserIdAndIdempotencyKey(userId, idempotencyKey);
+        Optional<GenerationJob> existing = findReusableJob(userId, idempotencyKey, command);
         if (existing.isPresent()) {
             return new SubmissionResult(existing.get(), false);
         }
 
         validateNewSubmission(command);
-        if (command.artifactType() == ArtifactType.VIDEO) {
-            Optional<GenerationJob> activeVideo = generationJobRepository
-                    .findFirstByUserIdAndIdeaIdAndArtifactTypeAndStatusInOrderByCreatedAtDesc(
-                            userId,
-                            command.ideaId().trim(),
-                            ArtifactType.VIDEO,
-                            List.of(
-                                    com.sufe.ai.generation.domain.GenerationJobStatus.QUEUED,
-                                    com.sufe.ai.generation.domain.GenerationJobStatus.RUNNING
-                            )
-                    );
-            if (activeVideo.isPresent()) {
-                return new SubmissionResult(activeVideo.get(), false);
-            }
-        }
 
         GenerationJob queuedJob = GenerationJob.queued(
                 userId,
@@ -64,15 +51,20 @@ public class GenerationJobService {
                 idempotencyKey,
                 command.costConfirmed()
         );
-
-        // 保持服务方法无外层事务，唯一键冲突回滚后才能安全回读已提交的任务。
-        try {
-            return new SubmissionResult(generationJobRepository.saveAndFlush(queuedJob), true);
-        } catch (DataIntegrityViolationException exception) {
-            return generationJobRepository.findByUserIdAndIdempotencyKey(userId, idempotencyKey)
-                    .map(job -> new SubmissionResult(job, false))
-                    .orElseThrow(() -> exception);
-        }
+        AccountQuotaService.Reservation<GenerationJob> reservation = switch (command.artifactType()) {
+            case PPT -> quotaService.reserveLexiangPpt(
+                    userId,
+                    () -> findReusableJob(userId, idempotencyKey, command),
+                    () -> generationJobRepository.saveAndFlush(queuedJob)
+            );
+            case VIDEO -> quotaService.reserveWorkbuddyVideo(
+                    userId,
+                    () -> findReusableJob(userId, idempotencyKey, command),
+                    () -> generationJobRepository.saveAndFlush(queuedJob)
+            );
+            case WORD -> throw new IllegalArgumentException("WORD 生成适配器尚未启用");
+        };
+        return new SubmissionResult(reservation.value(), reservation.created());
     }
 
     public Optional<GenerationJob> findOwnedJob(String accountName, String jobId) {
@@ -85,6 +77,27 @@ public class GenerationJobService {
         return userAccountRepository.findByAccountIgnoreCase(accountName)
                 .orElseThrow(() -> new IllegalStateException("认证账号不存在"))
                 .getId();
+    }
+
+    private Optional<GenerationJob> findReusableJob(
+            String userId,
+            String idempotencyKey,
+            SubmitCommand command
+    ) {
+        Optional<GenerationJob> existing = generationJobRepository
+                .findByUserIdAndIdempotencyKey(userId, idempotencyKey);
+        if (existing.isPresent() || command.artifactType() != ArtifactType.VIDEO) return existing;
+        if (command.ideaId() == null || command.ideaId().isBlank()) return Optional.empty();
+        return generationJobRepository
+                .findFirstByUserIdAndIdeaIdAndArtifactTypeAndStatusInOrderByCreatedAtDesc(
+                        userId,
+                        command.ideaId().trim(),
+                        ArtifactType.VIDEO,
+                        List.of(
+                                com.sufe.ai.generation.domain.GenerationJobStatus.QUEUED,
+                                com.sufe.ai.generation.domain.GenerationJobStatus.RUNNING
+                        )
+                );
     }
 
     private static GenerationProvider resolveProvider(ArtifactType artifactType) {

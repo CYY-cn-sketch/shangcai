@@ -1,10 +1,12 @@
 package com.sufe.ai.provider.api;
 
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.account.service.AccountQuotaService;
 import com.sufe.ai.provider.config.LexiangProperties;
 import com.sufe.ai.provider.config.DeepSeekProperties;
 import com.sufe.ai.provider.VerifiedProviderUsage;
 import com.sufe.ai.provider.deepseek.DeepSeekChatResult;
+import com.sufe.ai.provider.deepseek.DeepSeekArtifactBlock;
 import com.sufe.ai.provider.deepseek.DeepSeekClientException;
 import com.sufe.ai.provider.deepseek.DeepSeekExpertChatService;
 import com.sufe.ai.provider.lexiang.LexiangAiQaClient;
@@ -13,6 +15,7 @@ import com.sufe.ai.provider.lexiang.LexiangQaResult;
 import com.sufe.ai.provider.lexiang.LexiangReferenceDoc;
 import com.sufe.ai.provider.lexiang.LexiangTarget;
 import com.sufe.ai.generation.domain.GenerationProvider;
+import com.sufe.ai.usage.domain.AiUsageRecord;
 import com.sufe.ai.usage.service.AiUsageService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -48,6 +51,7 @@ public class ProviderGatewayController {
     private final DeepSeekExpertChatService deepSeekExpertChatService;
     private final UserAccountRepository userAccountRepository;
     private final AiUsageService usageService;
+    private final AccountQuotaService quotaService;
 
     public ProviderGatewayController(
             LexiangProperties lexiangProperties,
@@ -55,7 +59,8 @@ public class ProviderGatewayController {
             LexiangAiQaClient lexiangAiQaClient,
             DeepSeekExpertChatService deepSeekExpertChatService,
             UserAccountRepository userAccountRepository,
-            AiUsageService usageService
+            AiUsageService usageService,
+            AccountQuotaService quotaService
     ) {
         this.lexiangProperties = lexiangProperties;
         this.deepSeekProperties = deepSeekProperties;
@@ -63,6 +68,7 @@ public class ProviderGatewayController {
         this.deepSeekExpertChatService = deepSeekExpertChatService;
         this.userAccountRepository = userAccountRepository;
         this.usageService = usageService;
+        this.quotaService = quotaService;
     }
 
     @PostMapping("/workbuddy/runs")
@@ -92,6 +98,19 @@ public class ProviderGatewayController {
             return unavailable("LEXIANG_DISABLED", "乐享网关未启用或凭据未配置，未发起供应商调用");
         }
         String userId = resolveUserId(authentication);
+        AiUsageRecord reservation = quotaService.reserveLexiangPpt(
+                userId,
+                Optional::empty,
+                () -> usageService.recordReportedUsage(new AiUsageService.ReportedUsage(
+                        userId,
+                        GenerationProvider.LEXIANG,
+                        null,
+                        "PPT_KNOWLEDGE_GENERATION",
+                        "lexiang-quota-reservation-" + UUID.randomUUID(),
+                        0,
+                        0
+                ))
+        ).value();
         LexiangQaResult result = lexiangAiQaClient.ask(new LexiangQaCommand(
                 userId,
                 request.projectId(),
@@ -103,9 +122,7 @@ public class ProviderGatewayController {
                         : request.targets().stream().map(target -> new LexiangTarget(target.type(), target.id())).toList()
         ));
         if (result.verifiedUsage().isPresent()) {
-            recordVerifiedUsage(userId, GenerationProvider.LEXIANG, "PPT_KNOWLEDGE_GENERATION", result.verifiedUsage());
-        } else {
-            recordSuccessfulCall(userId, GenerationProvider.LEXIANG, "PPT_KNOWLEDGE_GENERATION");
+            replaceReservedUsage(reservation.getId(), userId, result.verifiedUsage().orElseThrow());
         }
         return ResponseEntity.ok(new LexiangQaResponse(result.content(), result.sessionId(), result.referenceDocs()));
     }
@@ -135,10 +152,17 @@ public class ProviderGatewayController {
                     request.expertId(),
                     request.clientMessageId(),
                     request.skillName(),
-                    request.artifactType()
+                    request.artifactType(),
+                    request.artifactMode()
             );
             recordVerifiedUsage(userId, GenerationProvider.DEEPSEEK, "EXPERT_CHAT", result.verifiedUsage());
-            return ResponseEntity.ok(new DeepSeekChatResponse(result.content(), result.model(), result.assistantMessageId()));
+            return ResponseEntity.ok(new DeepSeekChatResponse(
+                    result.content(),
+                    result.model(),
+                    result.assistantMessageId(),
+                    result.blocks(),
+                    result.artifactType()
+            ));
         } catch (DeepSeekClientException exception) {
             return ResponseEntity.status(exception.getResponseStatus())
                     .body(new ErrorResponse(exception.getErrorCode(), exception.getMessage()));
@@ -189,19 +213,24 @@ public class ProviderGatewayController {
         });
     }
 
-    private void recordSuccessfulCall(String userId, GenerationProvider provider, String operation) {
+    private void replaceReservedUsage(String reservationId, String userId, VerifiedProviderUsage usage) {
         try {
-            usageService.recordReportedUsage(new AiUsageService.ReportedUsage(
+            usageService.replaceReservation(reservationId, new AiUsageService.ReportedUsage(
                     userId,
-                    provider,
-                    null,
-                    operation,
-                    provider.name().toLowerCase() + "-" + UUID.randomUUID(),
-                    0,
-                    0
+                    GenerationProvider.LEXIANG,
+                    usage.modelName(),
+                    "PPT_KNOWLEDGE_GENERATION",
+                    usage.requestId(),
+                    usage.inputTokens(),
+                    usage.outputTokens()
             ));
         } catch (RuntimeException exception) {
-            LOGGER.error("供应商调用次数落库失败: provider={}, errorType={}", provider, exception.getClass().getSimpleName());
+            LOGGER.error(
+                    "乐享供应商用量替换失败: reservationId={}, providerRequestId={}, errorType={}",
+                    reservationId,
+                    usage.requestId(),
+                    exception.getClass().getSimpleName()
+            );
         }
     }
 
@@ -252,11 +281,18 @@ public class ProviderGatewayController {
             @NotBlank @Size(max = 64) String expertId,
             @NotBlank @Size(max = 64) String clientMessageId,
             @Size(max = 100) String skillName,
-            @Pattern(regexp = "BRAINSTORM|POSITIONING|MARKET|BP|PPT|SCRIPT|DEFENSE|MEDIA") String artifactType
+            @Pattern(regexp = "BRAINSTORM|POSITIONING|MARKET|BP|PPT|SCRIPT|DEFENSE|MEDIA") String artifactType,
+            @Pattern(regexp = "AUTO|REQUIRED") String artifactMode
     ) {
     }
 
-    public record DeepSeekChatResponse(String content, String model, String assistantMessageId) {
+    public record DeepSeekChatResponse(
+            String content,
+            String model,
+            String assistantMessageId,
+            List<DeepSeekArtifactBlock> blocks,
+            String artifactType
+    ) {
     }
 
     public record DeepSeekChatStatusResponse(String status, String assistantMessageId, String errorMessage) {

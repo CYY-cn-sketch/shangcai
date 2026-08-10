@@ -10,6 +10,7 @@ import com.sufe.ai.account.repository.AccountPermissionDenialRepository;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.account.service.AccountQuotaService;
 import com.sufe.ai.audit.service.AuditLogService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -49,6 +50,7 @@ public class AdminAccountController {
     private final PasswordEncoder passwordEncoder;
     private final AuditLogService auditLogService;
     private final FindByIndexNameSessionRepository<?> sessionRepository;
+    private final AccountQuotaService quotaService;
 
     public AdminAccountController(
             UserAccountRepository userAccountRepository,
@@ -57,7 +59,8 @@ public class AdminAccountController {
             AccountPermissionDenialRepository accountPermissionDenialRepository,
             PasswordEncoder passwordEncoder,
             AuditLogService auditLogService,
-            FindByIndexNameSessionRepository<?> sessionRepository
+            FindByIndexNameSessionRepository<?> sessionRepository,
+            AccountQuotaService quotaService
     ) {
         this.userAccountRepository = userAccountRepository;
         this.projectGroupRepository = projectGroupRepository;
@@ -66,6 +69,7 @@ public class AdminAccountController {
         this.passwordEncoder = passwordEncoder;
         this.auditLogService = auditLogService;
         this.sessionRepository = sessionRepository;
+        this.quotaService = quotaService;
     }
 
     @GetMapping("/accounts")
@@ -98,7 +102,13 @@ public class AdminAccountController {
                 request.role(),
                 request.displayName(),
                 request.title(),
-                request.quotaRemaining()
+                request.quotaRemaining(),
+                request.lexiangPptQuota() == null
+                        ? UserAccount.defaultLexiangPptQuota(request.role())
+                        : request.lexiangPptQuota(),
+                request.workbuddyVideoQuota() == null
+                        ? UserAccount.defaultWorkbuddyVideoQuota(request.role())
+                        : request.workbuddyVideoQuota()
         );
         try {
             user = userAccountRepository.saveAndFlush(user);
@@ -143,6 +153,8 @@ public class AdminAccountController {
                 request.displayName(),
                 request.title(),
                 request.quotaRemaining(),
+                request.lexiangPptQuota() == null ? user.getLexiangPptQuota() : request.lexiangPptQuota(),
+                request.workbuddyVideoQuota() == null ? user.getWorkbuddyVideoQuota() : request.workbuddyVideoQuota(),
                 request.status()
         );
         user = userAccountRepository.saveAndFlush(user);
@@ -292,6 +304,7 @@ public class AdminAccountController {
                 .map(GroupMembership::getGroupId)
                 .flatMap(projectGroupRepository::findById)
                 .orElse(null);
+        AccountQuotaService.QuotaSnapshot quotas = quotaService.snapshot(user.getId());
         return new AccountResponse(
                 user.getId(),
                 user.getAccount(),
@@ -300,6 +313,14 @@ public class AdminAccountController {
                 user.getTitle(),
                 user.getStatus(),
                 user.getQuotaRemaining(),
+                quotas.aiCalls().used(),
+                quotas.aiCalls().remaining(),
+                user.getLexiangPptQuota(),
+                quotas.lexiangPpt().used(),
+                quotas.lexiangPpt().remaining(),
+                user.getWorkbuddyVideoQuota(),
+                quotas.workbuddyVideo().used(),
+                quotas.workbuddyVideo().remaining(),
                 accountPermissionDenialRepository.findByUserIdOrderByPermissionKey(user.getId()).stream()
                         .map(AccountPermissionDenial::getPermissionKey)
                         .toList(),
@@ -343,6 +364,14 @@ public class AdminAccountController {
             String title,
             UserStatus status,
             int quotaRemaining,
+            long aiCallsUsed,
+            long aiCallsRemaining,
+            int lexiangPptQuota,
+            long lexiangPptUsed,
+            long lexiangPptRemaining,
+            int workbuddyVideoQuota,
+            long workbuddyVideoUsed,
+            long workbuddyVideoRemaining,
             List<String> disabledPermissions,
             String groupId,
             String groupLabel,
@@ -366,6 +395,8 @@ public class AdminAccountController {
             @NotBlank @Size(max = 100) String displayName,
             @NotBlank @Size(max = 150) String title,
             @Min(0) int quotaRemaining,
+            @Min(0) Integer lexiangPptQuota,
+            @Min(0) Integer workbuddyVideoQuota,
             @Size(max = 36) String groupId
     ) {
         public CreateAccountRequest {
@@ -381,6 +412,8 @@ public class AdminAccountController {
             @NotBlank @Size(max = 150) String title,
             @NotNull UserStatus status,
             @Min(0) int quotaRemaining,
+            @Min(0) Integer lexiangPptQuota,
+            @Min(0) Integer workbuddyVideoQuota,
             @Size(max = 64) List<@NotBlank @Size(max = 100) String> disabledPermissions,
             @Size(max = 36) String groupId
     ) {

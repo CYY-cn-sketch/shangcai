@@ -158,37 +158,44 @@ public class ArtifactService {
     @Transactional
     public SubmissionView submitArtifact(String accountName, String artifactId) {
         UserAccount student = resolveUser(accountName);
-        ArtifactRecord artifact = requireOwnedArtifact(student.getId(), artifactId);
+        ArtifactRecord artifact = artifactRepository.findOwnedByIdForUpdate(artifactId, student.getId())
+                .orElseThrow(() -> new ArtifactNotFoundException("成果记录不存在"));
         GroupMembership membership = membershipRepository.findByUserId(student.getId())
                 .orElseThrow(() -> new ArtifactConflictException("当前学生账号尚未分配项目小组"));
         ProjectGroup group = groupRepository.findById(membership.getGroupId())
                 .orElseThrow(() -> new ArtifactConflictException("项目小组不存在"));
-        ArtifactSubmission submission = submissionRepository.findByArtifactId(artifactId).orElse(null);
-        if (submission == null) {
-            submission = ArtifactSubmission.create(
-                    artifactId,
-                    student.getId(),
-                    student.getDisplayName(),
-                    group.getGroupLabel(),
-                    group.getProjectName()
-            );
-        } else {
-            submission.resubmit(student.getDisplayName(), group.getGroupLabel(), group.getProjectName());
+        ArtifactSubmission latest = submissionRepository
+                .findFirstByArtifactIdOrderBySubmissionVersionDesc(artifactId)
+                .orElse(null);
+        if (latest != null && latest.getStatus() == SubmissionStatus.PENDING) {
+            return new SubmissionView(latest, artifact);
         }
+        if (latest != null && latest.getStatus() == SubmissionStatus.APPROVED) {
+            throw new ArtifactConflictException("已通过成果不能直接重提，请生成新的成果后再提交");
+        }
+        int nextVersion = latest == null ? 1 : latest.getSubmissionVersion() + 1;
+        ArtifactSubmission submission = ArtifactSubmission.create(
+                artifact,
+                nextVersion,
+                student.getId(),
+                student.getDisplayName(),
+                group.getGroupLabel(),
+                group.getProjectName()
+        );
         return new SubmissionView(submissionRepository.save(submission), artifact);
     }
 
     @Transactional(readOnly = true)
     public List<SubmissionView> listStudentSubmissions(String accountName) {
         String userId = resolveUser(accountName).getId();
-        return submissionRepository.findAllByStudentUserIdOrderBySubmittedAtDesc(userId).stream()
+        return submissionRepository.findAllByStudentUserIdOrderBySubmittedAtDescSubmissionVersionDesc(userId).stream()
                 .map(this::toSubmissionView)
                 .toList();
     }
 
     @Transactional(readOnly = true)
     public List<SubmissionView> listTeacherSubmissions() {
-        return submissionRepository.findAllByOrderBySubmittedAtDesc().stream()
+        return submissionRepository.findAllByOrderBySubmittedAtDescSubmissionVersionDesc().stream()
                 .map(this::toSubmissionView)
                 .toList();
     }
@@ -196,13 +203,20 @@ public class ArtifactService {
     @Transactional
     public SubmissionView reviewSubmission(String accountName, String submissionId, ReviewCommand command) {
         UserAccount reviewer = resolveUser(accountName);
-        ArtifactSubmission submission = submissionRepository.findById(submissionId)
-                .orElseThrow(() -> new ArtifactNotFoundException("提交记录不存在"));
+        ArtifactSubmission submission = findSubmissionWithArtifactLock(submissionId);
+        requireLatestSubmission(submission);
         if (submission.getStatus() == SubmissionStatus.WITHDRAWN) {
             throw new ArtifactConflictException("已撤回成果不能继续审核");
         }
         submission.review(command.status(), command.teacherComment(), reviewer.getId(), command.excellent());
         return toSubmissionView(submission);
+    }
+
+    @Transactional
+    public void recordAiDiagnosisForLatest(String submissionId, String diagnosisJson) {
+        ArtifactSubmission submission = findSubmissionWithArtifactLock(submissionId);
+        requireLatestSubmission(submission);
+        submission.recordAiDiagnosis(diagnosisJson);
     }
 
     @Transactional
@@ -263,6 +277,24 @@ public class ArtifactService {
         ArtifactRecord artifact = artifactRepository.findById(submission.getArtifactId())
                 .orElseThrow(() -> new ArtifactNotFoundException("成果记录不存在"));
         return new SubmissionView(submission, artifact);
+    }
+
+    private void requireLatestSubmission(ArtifactSubmission submission) {
+        ArtifactSubmission latest = submissionRepository
+                .findFirstByArtifactIdOrderBySubmissionVersionDesc(submission.getArtifactId())
+                .orElseThrow(() -> new ArtifactNotFoundException("提交记录不存在"));
+        if (!latest.getId().equals(submission.getId())) {
+            throw new ArtifactConflictException("该提交已被更新版本取代，不能继续审核");
+        }
+    }
+
+    private ArtifactSubmission findSubmissionWithArtifactLock(String submissionId) {
+        String artifactId = submissionRepository.findArtifactIdById(submissionId)
+                .orElseThrow(() -> new ArtifactNotFoundException("提交记录不存在"));
+        artifactRepository.findByIdForUpdate(artifactId)
+                .orElseThrow(() -> new ArtifactNotFoundException("成果记录不存在"));
+        return submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ArtifactNotFoundException("提交记录不存在"));
     }
 
     private ArtifactRecord requireAccessibleArtifact(UserAccount actor, String artifactId) {

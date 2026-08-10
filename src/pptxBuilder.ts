@@ -4,45 +4,83 @@ export type PptxBuildInput = {
   title: string;
   content?: string;
   references?: Array<{ title: string }>;
+  contentSource?: "LEXIANG" | "DEEPSEEK";
 };
 
-const defaultSlides: PptSlideOutline[] = [
-  ["项目愿景", "用 AI 降低学生完成创业实践任务的门槛", "展示课程场景与教学价值"],
-  ["用户痛点", "学生缺少持续、个性化、可复盘的过程反馈", "呈现学生、教师和学院三类需求"],
-  ["解决方案", "连接创意、定位、BP、PPT、答辩与教师审核", "绘制教学闭环流程图"],
-  ["市场机会", "高校实践教学正在进入全过程数字化阶段", "说明试点窗口与建设必要性"],
-  ["差异定位", "核心差异是课程知识、教师审核和成果沉淀", "使用竞品对比矩阵"],
-  ["运行模式", "以课程试点带动平台持续使用与内容积累", "展示角色、任务和数据流"],
-  ["产品路径", "从高频课堂任务切入，逐步扩展专家能力", "展示阶段路线图"],
-  ["试点方案", "按课程周次组织学生生成、教师反馈和复盘", "呈现试点范围与验收指标"],
-  ["成效指标", "同时衡量学生完成度、教师效率与成果质量", "使用过程指标和结果指标表"],
-  ["行动计划", "完成配置确认、课程试用、数据复盘与验收", "展示里程碑和责任人"],
-];
+export type PptArtifactBlock = { title: string; items: string[] };
+
+const MAX_SLIDES = 30;
+
+function cleanSlideText(value: string) {
+  return value
+    .replace(/^[-*+\s]+/, "")
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .trim();
+}
+
+function toSlideOutline(line: string): PptSlideOutline {
+  const cleaned = cleanSlideText(line)
+    .replace(/^第?\s*\d+\s*页[：:｜|、.)]?\s*/, "")
+    .replace(/^\d+[.、)]\s*/, "");
+  const parts = cleaned
+    .split(/[｜|]/)
+    .map(cleanSlideText)
+    .filter(Boolean);
+  return [
+    parts[0] || cleaned.slice(0, 18) || "PPT 页面",
+    parts[1] || "基于当前项目内容形成的页面观点",
+    parts[2] || parts[3] || "根据本页观点配置证据、图表或视觉素材",
+  ];
+}
+
+export function buildPptOutlineContent(blocks?: PptArtifactBlock[], fallbackContent?: string) {
+  const usableBlocks = (blocks || []).filter((block) => block.title.trim() || block.items.some((item) => item.trim()));
+  if (usableBlocks.length === 0) return fallbackContent?.trim() || "";
+
+  const pageItems = usableBlocks.flatMap((block) => block.items.filter((item) => /第?\s*\d+\s*页|^\d+[.、)]/.test(item.trim())));
+  if (pageItems.length > 0) return pageItems.slice(0, MAX_SLIDES).join("\n");
+
+  return usableBlocks
+    .slice(0, MAX_SLIDES)
+    .map((block, index) => {
+      const items = block.items.map(cleanSlideText).filter(Boolean);
+      const title = cleanSlideText(block.title).replace(/^第?\s*\d+\s*页[：:]?\s*/, "") || `第 ${index + 1} 页`;
+      const statement = items[0] || "基于当前项目内容形成的页面观点";
+      const visual = items[1] || "根据本页观点配置证据、图表或视觉素材";
+      return `第 ${index + 1} 页：${title}｜${statement}｜${visual}`;
+    })
+    .join("\n");
+}
 
 export function parsePptSlideOutline(content?: string): PptSlideOutline[] {
-  const parsed = (content || "")
+  const lines = (content || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => /第?\s*\d+\s*页|^\d+[.、)]/.test(line))
-    .slice(0, 10)
-    .map<PptSlideOutline>((line) => {
-      const cleaned = line
-        .replace(/^[-*\s]*/, "")
-        .replace(/^第?\s*\d+\s*页[：:｜|、.)]?\s*/, "")
-        .replace(/^\d+[.、)]\s*/, "");
-      const parts = cleaned
-        .split(/[｜|]/)
-        .map((part) => part.trim())
-        .filter(Boolean);
-      return [
-        parts[0] || cleaned.slice(0, 18) || "PPT 页面",
-        parts[1] || parts[2] || "基于当前项目内容形成的页面观点",
-        parts[2] || parts[3] || "补充图表、数据或课堂证据",
-      ];
-    });
+    .filter(Boolean);
+  const numberedSlides = lines
+    .filter((line) => /^(?:[-*+]\s*)?(?:第?\s*\d+\s*页|\d+[.、)])/.test(line))
+    .slice(0, MAX_SLIDES)
+    .map(toSlideOutline);
+  if (numberedSlides.length > 0) return numberedSlides;
 
-  if (parsed.length === 0) return defaultSlides.map((slide) => [...slide]);
-  return [...parsed, ...defaultSlides.slice(parsed.length)].slice(0, 10);
+  const headingIndexes = lines
+    .map((line, index) => (/^#{1,6}\s+/.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+  if (headingIndexes.length === 0) return [];
+
+  return headingIndexes.slice(0, MAX_SLIDES).map((headingIndex, index) => {
+    const nextHeadingIndex = headingIndexes[index + 1] ?? lines.length;
+    const body = lines
+      .slice(headingIndex + 1, nextHeadingIndex)
+      .map(cleanSlideText)
+      .filter(Boolean);
+    return [
+      cleanSlideText(lines[headingIndex].replace(/^#{1,6}\s+/, "")),
+      body[0] || "基于当前项目内容形成的页面观点",
+      body[1] || "根据本页观点配置证据、图表或视觉素材",
+    ];
+  });
 }
 
 function safeFileName(value: string) {
@@ -54,9 +92,14 @@ export async function buildPptxFile(input: PptxBuildInput): Promise<File> {
   const { default: PptxGenJS } = await import("pptxgenjs");
   const pptx = new PptxGenJS();
   const slides = parsePptSlideOutline(input.content);
+  if (slides.length === 0) {
+    throw new Error("当前 AI 成果没有可识别的逐页 PPT 结构，请先让路演 PPT 专家生成页面大纲");
+  }
   const sourceLabel = input.references?.length
     ? `参考资料：${input.references.slice(0, 3).map((item) => item.title).join("、")}`
-    : "内容来源：平台当前项目上下文与课程预置结构";
+    : input.contentSource === "LEXIANG"
+      ? "内容来源：乐享知识库"
+      : "内容来源：当前 DeepSeek 路演成果";
 
   pptx.layout = "LAYOUT_WIDE";
   pptx.author = "上海财经大学商学院";

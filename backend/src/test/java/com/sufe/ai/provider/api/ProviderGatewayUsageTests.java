@@ -97,7 +97,7 @@ class ProviderGatewayUsageTests {
                                 "lexiang-request-001", "lexiang-confirmed-model", 200, 80
                         ))
                 ));
-        when(deepSeekExpertChatService.chat(anyString(), anyString(), anyString(), anyString(), any(), any()))
+        when(deepSeekExpertChatService.chat(anyString(), anyString(), anyString(), anyString(), any(), any(), any()))
                 .thenReturn(new DeepSeekChatResult(
                         "专家分析内容",
                         "deepseek-v4-flash",
@@ -140,7 +140,7 @@ class ProviderGatewayUsageTests {
                                 """))
                 .andExpect(status().isOk());
 
-        List<AiUsageRecord> records = usageRepository.findAllByOrderByRecordedAtDesc();
+        List<AiUsageRecord> records = recordsForTestUser();
         assertThat(records).hasSize(2);
         assertThat(records).extracting(AiUsageRecord::getProvider)
                 .containsExactlyInAnyOrder(
@@ -153,6 +153,13 @@ class ProviderGatewayUsageTests {
                     assertThat(record.getRequestId()).isEqualTo("deepseek-request-001");
                     assertThat(record.getInputTokens()).isEqualTo(160);
                     assertThat(record.getOutputTokens()).isEqualTo(60);
+                });
+        assertThat(records).filteredOn(record -> record.getProvider() == GenerationProvider.LEXIANG)
+                .singleElement()
+                .satisfies(record -> {
+                    assertThat(record.getRequestId()).isEqualTo("lexiang-request-001");
+                    assertThat(record.getInputTokens()).isEqualTo(200);
+                    assertThat(record.getOutputTokens()).isEqualTo(80);
                 });
     }
 
@@ -176,7 +183,7 @@ class ProviderGatewayUsageTests {
                                 """))
                 .andExpect(status().isOk());
 
-        assertThat(usageRepository.findAllByOrderByRecordedAtDesc())
+        assertThat(recordsForTestUser())
                 .singleElement()
                 .satisfies(record -> {
                     assertThat(record.getProvider()).isEqualTo(GenerationProvider.LEXIANG);
@@ -184,6 +191,12 @@ class ProviderGatewayUsageTests {
                     assertThat(record.getInputTokens()).isZero();
                     assertThat(record.getOutputTokens()).isZero();
                 });
+    }
+
+    private List<AiUsageRecord> recordsForTestUser() {
+        return usageRepository.findAllByOrderByRecordedAtDesc().stream()
+                .filter(record -> "U-PROVIDER-USAGE".equals(record.getUserId()))
+                .toList();
     }
 
     private Cookie login() throws Exception {

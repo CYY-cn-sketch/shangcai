@@ -10,6 +10,7 @@ import com.sufe.ai.knowledge.domain.ExpertSkillUploadRecord;
 import com.sufe.ai.knowledge.domain.ExpertSkillUploadStatus;
 import com.sufe.ai.knowledge.domain.KnowledgeAsset;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
+import com.sufe.ai.knowledge.domain.KnowledgeBaseScope;
 import com.sufe.ai.knowledge.repository.ExpertKnowledgeRouteRepository;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
@@ -21,12 +22,15 @@ import com.sufe.ai.storage.FileStorageService;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -95,7 +99,11 @@ public class ExpertSkillConfirmationService {
         ExpertProfile targetExpert = targetExpertId == null ? null : expertProfileRepository.findById(targetExpertId)
                 .orElseThrow(() -> failure(ExpertSkillConfirmationException.Kind.INVALID,
                         "TARGET_EXPERT_NOT_FOUND", "要更新的已有专家不存在"));
-        ExpertProfile nameOwner = expertProfileRepository.findByName(name).orElse(null);
+        String normalizedName = normalizeExpertName(name);
+        ExpertProfile nameOwner = expertProfileRepository.findAll().stream()
+                .filter(expert -> normalizeExpertName(expert.getName()).equals(normalizedName))
+                .findFirst()
+                .orElse(null);
         if (nameOwner != null && (targetExpert == null || !nameOwner.getId().equals(targetExpert.getId()))) {
             throw failure(ExpertSkillConfirmationException.Kind.CONFLICT, "EXPERT_EXISTS", "专家名称已被其他专家使用，请修改后再确认");
         }
@@ -120,8 +128,10 @@ public class ExpertSkillConfirmationService {
 
         List<String> copiedStorageKeys = new ArrayList<>();
         try {
-            KnowledgeBase knowledgeBase = resolveKnowledgeBase(command.knowledge(), selectedFiles.isEmpty());
             String expertId = targetExpert == null ? "skill-" + UUID.randomUUID() : targetExpert.getId();
+            List<String> preservedSharedCategories = targetExpert == null
+                    ? List.of()
+                    : sharedKnowledgeCategories(expertId);
             ExpertProfile expert = targetExpert == null
                     ? ExpertProfile.create(expertId, name, role, scenario, accent)
                     : targetExpert;
@@ -145,6 +155,14 @@ public class ExpertSkillConfirmationService {
                     command.active()
             );
             expertProfileRepository.saveAndFlush(expert);
+            KnowledgeBase knowledgeBase = resolveKnowledgeBase(
+                    expert,
+                    command.knowledge(),
+                    selectedFiles.isEmpty()
+            );
+            if (targetExpert != null) {
+                replaceCurrentPrivateKnowledgeAssets(knowledgeBase);
+            }
             expertSkillRepository.deleteByExpertIdAndStage(expert.getId(), "已确认上传");
             expertSkillRepository.saveAndFlush(ExpertSkill.create(
                     upload.getId() + "-skill",
@@ -154,19 +172,18 @@ public class ExpertSkillConfirmationService {
                     skillDescription
             ));
 
-            if (targetExpert != null) {
-                routeRepository.deleteByExpertId(expert.getId());
-                routeRepository.flush();
-            }
-            if (knowledgeBase != null) {
-                routeRepository.saveAndFlush(ExpertKnowledgeRoute.create(expert.getId(), knowledgeBase.getCategory()));
-            }
+            routeRepository.deleteByExpertId(expert.getId());
+            routeRepository.flush();
+            LinkedHashSet<String> routeCategories = new LinkedHashSet<>(preservedSharedCategories);
+            routeCategories.add(knowledgeBase.getCategory());
+            routeCategories.forEach(category -> routeRepository.save(ExpertKnowledgeRoute.create(expert.getId(), category)));
+            routeRepository.flush();
 
             List<KnowledgeAsset> importedAssets = new ArrayList<>();
             if (!selectedFiles.isEmpty()) {
-                if (knowledgeBase == null) {
+                if (!knowledgeBase.isOwnedByExpert(expert.getId())) {
                     throw failure(ExpertSkillConfirmationException.Kind.INVALID,
-                            "KNOWLEDGE_BASE_REQUIRED", "导入知识资料前必须选择或新建知识库");
+                            "EXPERT_PRIVATE_KNOWLEDGE_REQUIRED", "Skill 知识资料只能导入当前专家的专属知识库");
                 }
                 for (ExpertSkillUploadFile source : selectedFiles) {
                     FileStorageService.StoredFile copied = copyKnowledgeFile(source);
@@ -180,6 +197,7 @@ public class ExpertSkillConfirmationService {
                             truncateOptional(source.getContentText(), 20_000),
                             actorAccount
                     );
+                    asset.markSkillImport();
                     asset.attachFile(copied.storageKey(), copied.originalName(), copied.mimeType(), copied.size(), copied.sha256());
                     if (!knowledgeBase.isActive()) asset.setEnabled(false);
                     knowledgeAssetRepository.saveAndFlush(asset);
@@ -230,13 +248,17 @@ public class ExpertSkillConfirmationService {
         List<ExpertSkillUploadFile> files = uploadFileRepository.findByUploadIdOrderByRelativePathAsc(upload.getId());
         List<String> assetIds = files.stream().map(ExpertSkillUploadFile::getImportedAssetId).filter(id -> id != null).toList();
         List<KnowledgeAsset> assets = knowledgeAssetRepository.findAllById(assetIds);
-        KnowledgeBase base = routeRepository.findByExpertId(expert.getId()).stream().findFirst()
-                .flatMap(route -> knowledgeBaseRepository.findByCategory(route.getCategory()))
+        KnowledgeBase base = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType(expert.getId(), KnowledgeBaseScope.EXPERT_PRIVATE)
                 .orElse(null);
         return new ConfirmationResult(upload, expert, base, files, assets);
     }
 
-    private KnowledgeBase resolveKnowledgeBase(KnowledgeSelection selection, boolean noFilesSelected) {
+    private KnowledgeBase resolveKnowledgeBase(
+            ExpertProfile expert,
+            KnowledgeSelection selection,
+            boolean noFilesSelected
+    ) {
         if (selection == null || selection.mode() == null) {
             throw failure(ExpertSkillConfirmationException.Kind.INVALID, "KNOWLEDGE_SELECTION_REQUIRED", "请选择知识库配置方式");
         }
@@ -245,25 +267,91 @@ public class ExpertSkillConfirmationService {
                 if (!noFilesSelected) {
                     throw failure(ExpertSkillConfirmationException.Kind.INVALID, "KNOWLEDGE_BASE_REQUIRED", "导入知识资料前必须选择或新建知识库");
                 }
-                yield null;
+                yield findOrCreatePrivateKnowledgeBase(expert, null);
             }
-            case EXISTING -> knowledgeBaseRepository.findById(requireText(selection.knowledgeBaseId(), "已有知识库"))
-                    .orElseThrow(() -> failure(ExpertSkillConfirmationException.Kind.INVALID,
-                            "KNOWLEDGE_BASE_NOT_FOUND", "选择的知识库不存在"));
+            case EXISTING -> {
+                KnowledgeBase base = knowledgeBaseRepository
+                        .findById(requireText(selection.knowledgeBaseId(), "已有知识库"))
+                        .orElseThrow(() -> failure(ExpertSkillConfirmationException.Kind.INVALID,
+                                "KNOWLEDGE_BASE_NOT_FOUND", "选择的知识库不存在"));
+                if (!base.isOwnedByExpert(expert.getId())) {
+                    throw failure(
+                            ExpertSkillConfirmationException.Kind.INVALID,
+                            "EXPERT_PRIVATE_KNOWLEDGE_REQUIRED",
+                            "只能选择当前专家自己的专属知识库"
+                    );
+                }
+                yield base;
+            }
             case CREATE -> {
                 NewKnowledgeBase input = selection.newKnowledgeBase();
                 if (input == null) {
                     throw failure(ExpertSkillConfirmationException.Kind.INVALID, "NEW_KNOWLEDGE_BASE_REQUIRED", "请填写新知识库信息");
                 }
-                KnowledgeBase base = KnowledgeBase.create(
-                        requireText(input.category(), "知识库名称"),
-                        requireText(input.description(), "知识库说明"),
-                        requireText(input.usedBy(), "使用范围")
-                );
-                if (!input.active()) base.update(base.getCategory(), base.getDescription(), base.getUsedBy(), false);
-                yield knowledgeBaseRepository.saveAndFlush(base);
+                yield findOrCreatePrivateKnowledgeBase(expert, input);
             }
         };
+    }
+
+    private KnowledgeBase findOrCreatePrivateKnowledgeBase(ExpertProfile expert, NewKnowledgeBase input) {
+        KnowledgeBase existing = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType(expert.getId(), KnowledgeBaseScope.EXPERT_PRIVATE)
+                .orElse(null);
+        if (input != null) requireText(input.category(), "知识库名称");
+        String category = existing == null
+                ? KnowledgeBase.expertPrivateCategory(expert.getName(), expert.getId())
+                : existing.getCategory();
+        String description = input == null
+                ? truncate(expert.getName() + "的 Skill 知识资料，仅供该专家检索使用。", 500)
+                : requireText(input.description(), "知识库说明");
+        String usedBy = input == null ? expert.getName() : requireText(input.usedBy(), "使用范围");
+        boolean active = input == null || input.active();
+        if (existing != null) {
+            if (input != null) {
+                existing.update(category, description, usedBy, active);
+                return knowledgeBaseRepository.saveAndFlush(existing);
+            }
+            return existing;
+        }
+        KnowledgeBase created = KnowledgeBase.createExpertPrivate(
+                category,
+                description,
+                usedBy,
+                expert.getId()
+        );
+        if (!active) created.update(category, description, usedBy, false);
+        return knowledgeBaseRepository.saveAndFlush(created);
+    }
+
+    private List<String> sharedKnowledgeCategories(String expertId) {
+        return routeRepository.findByExpertId(expertId).stream()
+                .map(ExpertKnowledgeRoute::getCategory)
+                .filter(category -> knowledgeBaseRepository.findByCategory(category)
+                        .map(KnowledgeBase::isCourseShared)
+                        .orElse(false))
+                .distinct()
+                .toList();
+    }
+
+    private void replaceCurrentPrivateKnowledgeAssets(KnowledgeBase privateBase) {
+        List<KnowledgeAsset> previousAssets = knowledgeAssetRepository.findByKnowledgeBaseId(privateBase.getId()).stream()
+                .filter(KnowledgeAsset::isSkillImport)
+                .toList();
+        if (previousAssets.isEmpty()) return;
+        List<String> previousStorageKeys = previousAssets.stream()
+                .map(KnowledgeAsset::getStorageKey)
+                .filter(key -> key != null && !key.isBlank())
+                .toList();
+        knowledgeAssetRepository.deleteAll(previousAssets);
+        knowledgeAssetRepository.flush();
+        if (!previousStorageKeys.isEmpty() && TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    previousStorageKeys.forEach(fileStorageService::delete);
+                }
+            });
+        }
     }
 
     private FileStorageService.StoredFile copyKnowledgeFile(ExpertSkillUploadFile source) {
@@ -297,6 +385,10 @@ public class ExpertSkillConfirmationService {
 
     private static String normalizeOptional(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static String normalizeExpertName(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
     }
 
     private static String fileName(String path) {

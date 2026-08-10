@@ -119,6 +119,15 @@ public class DeepSeekChatClient {
         ChatChoice choice = response.choices().getFirst();
         if (choice == null || choice.message() == null || choice.message().content() == null
                 || choice.message().content().isBlank()) {
+            if (choice != null && choice.message() != null
+                    && ((choice.message().reasoningContent() != null && !choice.message().reasoningContent().isBlank())
+                    || "length".equals(choice.finishReason()))) {
+                throw new DeepSeekClientException(
+                        "DEEPSEEK_OUTPUT_EXHAUSTED",
+                        "DeepSeek 本轮思考占满了输出长度，没有形成正式回复；请重新发送或改用 Auto/快速生成",
+                        HttpStatus.BAD_GATEWAY
+                );
+            }
             throw protocolError("响应缺少生成内容");
         }
 
@@ -174,11 +183,14 @@ public class DeepSeekChatClient {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    private record ChatChoice(ChatMessage message) {
+    private record ChatChoice(ChatMessage message, @JsonProperty("finish_reason") String finishReason) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    private record ChatMessage(String content) {
+    private record ChatMessage(
+            String content,
+            @JsonProperty("reasoning_content") String reasoningContent
+    ) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

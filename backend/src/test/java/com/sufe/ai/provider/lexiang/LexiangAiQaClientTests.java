@@ -346,6 +346,7 @@ class LexiangAiQaClientTests {
                 "test-app-key",
                 "test-app-secret",
                 "system-bot",
+                "knowledge-manager",
                 "space-default",
                 2
         );

@@ -15,6 +15,7 @@ import com.sufe.ai.usage.domain.AiUsageRecord;
 import com.sufe.ai.usage.repository.AiUsageRecordRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -61,6 +62,33 @@ public class AiUsageService {
             return existing.get();
         }
 
+        AiUsageRecord reported = createRecord(command, requestId);
+        try {
+            return usageRepository.saveAndFlush(reported);
+        } catch (DataIntegrityViolationException exception) {
+            return usageRepository.findByProviderAndRequestId(command.provider(), requestId)
+                    .orElseThrow(() -> exception);
+        }
+    }
+
+    @Transactional
+    public AiUsageRecord replaceReservation(String reservationId, ReportedUsage command) {
+        AiUsageRecord reservation = usageRepository.findById(reservationId)
+                .orElseThrow(() -> new IllegalStateException("供应商额度预占记录不存在"));
+        if (!reservation.getUserId().equals(command.userId())
+                || reservation.getProvider() != command.provider()
+                || !reservation.getOperation().equals(command.operation())) {
+            throw new IllegalArgumentException("供应商额度预占记录与返回用量不匹配");
+        }
+        String requestId = requireText(command.requestId(), "requestId");
+        Optional<AiUsageRecord> existing = usageRepository.findByProviderAndRequestId(command.provider(), requestId);
+        usageRepository.delete(reservation);
+        usageRepository.flush();
+        if (existing.isPresent()) return existing.get();
+        return usageRepository.saveAndFlush(createRecord(command, requestId));
+    }
+
+    private AiUsageRecord createRecord(ReportedUsage command, String requestId) {
         UserAccount user = userAccountRepository.findById(command.userId())
                 .orElseThrow(() -> new IllegalArgumentException("用量记录对应的用户不存在"));
         ProjectGroup group = membershipRepository.findByUserId(user.getId())
@@ -68,7 +96,7 @@ public class AiUsageService {
                 .flatMap(groupRepository::findById)
                 .orElse(null);
 
-        AiUsageRecord reported = AiUsageRecord.create(
+        return AiUsageRecord.create(
                 user.getId(),
                 user.getDisplayName(),
                 group == null ? null : group.getId(),
@@ -81,12 +109,6 @@ public class AiUsageService {
                 command.inputTokens(),
                 command.outputTokens()
         );
-        try {
-            return usageRepository.saveAndFlush(reported);
-        } catch (DataIntegrityViolationException exception) {
-            return usageRepository.findByProviderAndRequestId(command.provider(), requestId)
-                    .orElseThrow(() -> exception);
-        }
     }
 
     public UsageReport report(UsageRange range) {

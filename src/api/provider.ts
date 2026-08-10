@@ -29,12 +29,15 @@ export type DeepSeekExpertReplyInput = {
   clientMessageId: string;
   skillName?: string;
   artifactType?: string;
+  artifactMode?: "AUTO" | "REQUIRED";
 };
 
 export type DeepSeekExpertReply = {
   content: string;
   model?: string;
   assistantMessageId?: string;
+  blocks?: Array<{ title: string; items: string[] }>;
+  artifactType?: string;
 };
 
 export type DeepSeekChatStatus = {
@@ -123,6 +126,8 @@ export async function requestDeepSeekExpertReply(
     content: result.content.trim(),
     model: result.model,
     ...(result.assistantMessageId ? { assistantMessageId: result.assistantMessageId } : {}),
+    ...(Array.isArray(result.blocks) ? { blocks: result.blocks } : {}),
+    ...(result.artifactType ? { artifactType: result.artifactType } : {}),
   };
 }
 

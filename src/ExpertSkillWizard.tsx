@@ -20,6 +20,8 @@ type KnowledgeBaseOption = {
   description: string;
   usedBy: string;
   active?: boolean;
+  scopeType?: "COURSE_SHARED" | "EXPERT_PRIVATE";
+  ownerExpertId?: string | null;
 };
 
 type ExpertDraft = {
@@ -69,8 +71,9 @@ const fileRoleLabels = {
 } as const;
 
 function matchingExpertId(experts: KnowledgeExpertRecord[], name: string) {
-  const normalizedName = name.trim().toLocaleLowerCase();
-  return experts.find((expert) => expert.name.trim().toLocaleLowerCase() === normalizedName)?.id || "";
+  const normalizeName = (value: string) => value.replace(/\s+/g, "").toLocaleLowerCase();
+  const normalizedName = normalizeName(name);
+  return experts.find((expert) => normalizeName(expert.name) === normalizedName)?.id || "";
 }
 
 export function ExpertSkillWizard(props: {
@@ -91,17 +94,18 @@ export function ExpertSkillWizard(props: {
   const [step, setStep] = useState(props.initialUpload ? 2 : 1);
   const [draft, setDraft] = useState<ExpertDraft | null>(initialDraft);
   const initialTargetExpertId = initialDraft ? matchingExpertId(props.experts, initialDraft.name) : "";
+  const initialPrivateKnowledgeBase = props.knowledgeBases.find(
+    (base) => base.scopeType === "EXPERT_PRIVATE" && base.ownerExpertId === initialTargetExpertId,
+  );
   const [saveMode, setSaveMode] = useState<"CREATE" | "UPDATE">(initialTargetExpertId ? "UPDATE" : "CREATE");
   const [targetExpertId, setTargetExpertId] = useState(initialTargetExpertId);
   const [knowledgeMode, setKnowledgeMode] = useState<"EXISTING" | "CREATE" | "NONE">(
-    props.knowledgeBases.some((base) => base.id) ? "EXISTING" : "CREATE",
+    initialPrivateKnowledgeBase?.id ? "EXISTING" : "CREATE",
   );
-  const [existingKnowledgeBaseId, setExistingKnowledgeBaseId] = useState(
-    props.knowledgeBases.find((base) => base.id && base.active !== false)?.id || props.knowledgeBases.find((base) => base.id)?.id || "",
-  );
+  const [existingKnowledgeBaseId, setExistingKnowledgeBaseId] = useState(initialPrivateKnowledgeBase?.id || "");
   const [newKnowledgeBase, setNewKnowledgeBase] = useState(() => ({
-    category: initialDraft ? `${initialDraft.name}知识库` : "",
-    description: initialDraft ? `${initialDraft.name}使用的课程资料、案例和参考文件。` : "",
+    category: initialDraft ? `${initialDraft.name}专属知识库` : "",
+    description: initialDraft ? `${initialDraft.name}的 Skill 知识资料，仅供该专家检索使用。` : "",
     usedBy: initialDraft?.name || "",
     active: true,
   }));
@@ -118,6 +122,12 @@ export function ExpertSkillWizard(props: {
   const candidateFiles = useMemo(
     () => upload?.files.filter((file) => file.fileRole === "KNOWLEDGE_CANDIDATE" && !file.importedAssetId) || [],
     [upload],
+  );
+  const ownedPrivateKnowledgeBases = useMemo(
+    () => props.knowledgeBases.filter(
+      (base) => base.id && base.scopeType === "EXPERT_PRIVATE" && base.ownerExpertId === targetExpertId,
+    ),
+    [props.knowledgeBases, targetExpertId],
   );
   const totalBytes = upload?.files.reduce((sum, file) => sum + file.fileSizeBytes, 0) || 0;
 
@@ -167,19 +177,50 @@ export function ExpertSkillWizard(props: {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [busy, cancelUpload]);
 
+  function selectKnowledgeForTarget(expertId: string) {
+    const ownedBase = props.knowledgeBases.find(
+      (base) => base.id && base.scopeType === "EXPERT_PRIVATE" && base.ownerExpertId === expertId,
+    );
+    setExistingKnowledgeBaseId(ownedBase?.id || "");
+    setKnowledgeMode(ownedBase?.id ? "EXISTING" : "CREATE");
+  }
+
+  function selectSaveMode(nextMode: "CREATE" | "UPDATE") {
+    setSaveMode(nextMode);
+    if (nextMode === "CREATE") {
+      setTargetExpertId("");
+      setExistingKnowledgeBaseId("");
+      setKnowledgeMode((current) => current === "EXISTING" ? "CREATE" : current);
+      return;
+    }
+    const matchedExpertId = draft ? matchingExpertId(props.experts, draft.name) : "";
+    setTargetExpertId(matchedExpertId);
+    selectKnowledgeForTarget(matchedExpertId);
+  }
+
+  function selectTargetExpert(expertId: string) {
+    setTargetExpertId(expertId);
+    selectKnowledgeForTarget(expertId);
+  }
+
   function initializeUpload(nextUpload: ExpertSkillUploadRecord) {
     const nextDraft = fromUpload(nextUpload);
     setUpload(nextUpload);
     setDraft(nextDraft);
     const matchedExpertId = matchingExpertId(props.experts, nextDraft.name);
+    const matchedPrivateKnowledgeBase = props.knowledgeBases.find(
+      (base) => base.id && base.scopeType === "EXPERT_PRIVATE" && base.ownerExpertId === matchedExpertId,
+    );
     setSaveMode(matchedExpertId ? "UPDATE" : "CREATE");
     setTargetExpertId(matchedExpertId);
+    setKnowledgeMode(matchedPrivateKnowledgeBase?.id ? "EXISTING" : "CREATE");
+    setExistingKnowledgeBaseId(matchedPrivateKnowledgeBase?.id || "");
     setSelectedFileIds(
       nextUpload.files.filter((file) => file.fileRole === "KNOWLEDGE_CANDIDATE" && !file.importedAssetId).map((file) => file.id),
     );
     setNewKnowledgeBase({
-      category: `${nextDraft.name}知识库`,
-      description: `${nextDraft.name}使用的课程资料、案例和参考文件。`,
+      category: `${nextDraft.name}专属知识库`,
+      description: `${nextDraft.name}的 Skill 知识资料，仅供该专家检索使用。`,
       usedBy: nextDraft.name,
       active: true,
     });
@@ -261,8 +302,8 @@ export function ExpertSkillWizard(props: {
       }
     }
     if (step === 3) {
-      if (knowledgeMode === "EXISTING" && !existingKnowledgeBaseId) {
-        setError("请选择一个已有知识库。");
+      if (knowledgeMode === "EXISTING" && !ownedPrivateKnowledgeBases.some((base) => base.id === existingKnowledgeBaseId)) {
+        setError("请选择当前专家自己的专属知识库。");
         return false;
       }
       if (knowledgeMode === "CREATE" && ![newKnowledgeBase.category, newKnowledgeBase.description, newKnowledgeBase.usedBy].every((value) => value.trim())) {
@@ -401,21 +442,21 @@ export function ExpertSkillWizard(props: {
       <div className="skill-wizard-expert-step">
         <div className="skill-wizard-choice-grid skill-wizard-save-mode" role="radiogroup" aria-label="专家保存方式">
           <label className={saveMode === "CREATE" ? "selected" : ""}>
-            <input type="radio" name="expert-save-mode" checked={saveMode === "CREATE"} onChange={() => setSaveMode("CREATE")} />
+            <input type="radio" name="expert-save-mode" checked={saveMode === "CREATE"} onChange={() => selectSaveMode("CREATE")} />
             <strong>新建专家</strong><span>使用解析结果创建新的专家档案</span>
           </label>
           <label className={saveMode === "UPDATE" ? "selected" : ""}>
-            <input type="radio" name="expert-save-mode" checked={saveMode === "UPDATE"} onChange={() => setSaveMode("UPDATE")} />
+            <input type="radio" name="expert-save-mode" checked={saveMode === "UPDATE"} onChange={() => selectSaveMode("UPDATE")} />
             <strong>更新现有专家</strong><span>替换所选专家的配置，不重复创建</span>
           </label>
         </div>
         {saveMode === "UPDATE" && (
           <label className="skill-wizard-field skill-wizard-target-expert"><span>需要更新的专家</span>
-            <select value={targetExpertId} onChange={(event) => setTargetExpertId(event.target.value)}>
+            <select value={targetExpertId} onChange={(event) => selectTargetExpert(event.target.value)}>
               <option value="">请选择现有专家</option>
               {props.experts.map((expert) => <option key={expert.id} value={expert.id}>{expert.name}{expert.active ? "" : "（未启用）"}</option>)}
             </select>
-            <small>系统仅在专家名称完全一致时自动匹配；提交前请人工确认目标。</small>
+            <small>系统会忽略专家名称中的空格自动匹配；提交前请人工确认目标。</small>
           </label>
         )}
         <div className="skill-wizard-form-grid">
@@ -435,10 +476,10 @@ export function ExpertSkillWizard(props: {
       <div className="skill-wizard-knowledge-step">
         <div className="skill-wizard-choice-grid" role="radiogroup" aria-label="知识库配置方式">
           {([
-            ["EXISTING", "绑定已有知识库", "使用平台中已经维护的知识目录"],
-            ["CREATE", "新建知识库并导入", "在本次确认中一次性创建并导入"],
-            ["NONE", "不绑定知识库", "本次仍创建专家，但不导入知识资料"],
-          ] as const).map(([value, title, description]) => (
+            ["EXISTING", "复用专家专属库", "更新专家时继续使用该专家自己的专属知识库"],
+            ["CREATE", "新建专属库并导入", "为新专家建立独立知识库并导入勾选资料"],
+            ["NONE", "暂不导入资料", "保存专家并建立空的专属知识库"],
+          ] as const).filter(([value]) => value !== "EXISTING" || ownedPrivateKnowledgeBases.length > 0).map(([value, title, description]) => (
             <label key={value} className={knowledgeMode === value ? "selected" : ""}>
               <input type="radio" name="knowledge-mode" value={value} checked={knowledgeMode === value} onChange={() => setKnowledgeMode(value)} />
               <strong>{title}</strong><span>{description}</span>
@@ -446,10 +487,10 @@ export function ExpertSkillWizard(props: {
           ))}
         </div>
         {knowledgeMode === "EXISTING" && (
-          <label className="skill-wizard-field"><span>已有知识库</span>
+          <label className="skill-wizard-field"><span>当前专家专属知识库</span>
             <select value={existingKnowledgeBaseId} onChange={(event) => setExistingKnowledgeBaseId(event.target.value)}>
               <option value="">请选择</option>
-              {props.knowledgeBases.filter((base) => base.id).map((base) => <option key={base.id} value={base.id}>{base.category}{base.active === false ? "（已停用）" : ""}</option>)}
+              {ownedPrivateKnowledgeBases.map((base) => <option key={base.id} value={base.id}>{base.category}{base.active === false ? "（已停用）" : ""}</option>)}
             </select>
           </label>
         )}
@@ -458,7 +499,17 @@ export function ExpertSkillWizard(props: {
             <label><span>知识库名称</span><input value={newKnowledgeBase.category} onChange={(event) => setNewKnowledgeBase((current) => ({ ...current, category: event.target.value }))} /></label>
             <label><span>使用范围</span><input value={newKnowledgeBase.usedBy} onChange={(event) => setNewKnowledgeBase((current) => ({ ...current, usedBy: event.target.value }))} /></label>
             <label className="wide"><span>知识库说明</span><textarea rows={2} value={newKnowledgeBase.description} onChange={(event) => setNewKnowledgeBase((current) => ({ ...current, description: event.target.value }))} /></label>
-            <label className="skill-wizard-switch wide"><input type="checkbox" checked={newKnowledgeBase.active} onChange={(event) => setNewKnowledgeBase((current) => ({ ...current, active: event.target.checked }))} /><span>创建后立即启用知识库</span></label>
+            <label className="skill-wizard-switch skill-wizard-visible-toggle wide">
+              <input
+                type="checkbox"
+                checked={newKnowledgeBase.active}
+                onChange={(event) => setNewKnowledgeBase((current) => ({ ...current, active: event.target.checked }))}
+              />
+              <span>
+                <strong>创建后立即启用知识库</strong>
+                <small>启用后该专家可检索此专属知识库；关闭后知识库仍会保存。</small>
+              </span>
+            </label>
           </div>
         )}
         {knowledgeMode !== "NONE" && (
@@ -472,7 +523,7 @@ export function ExpertSkillWizard(props: {
             )) : <p className="skill-wizard-empty">没有识别到知识资料候选，可只绑定知识库后继续。</p>}
           </section>
         )}
-        {knowledgeMode === "NONE" && <p className="skill-wizard-draft-note">本次将创建专家，但不会绑定知识库或导入资料；后续仍可在专家详情中调整。</p>}
+        {knowledgeMode === "NONE" && <p className="skill-wizard-draft-note">本次不会导入知识资料；系统仍会为专家建立独立的空知识库，后续可通过新的 Skill 更新。</p>}
       </div>
     );
   }
@@ -494,7 +545,7 @@ export function ExpertSkillWizard(props: {
     if (!draft || !upload) return null;
     const selectedBase = props.knowledgeBases.find((base) => base.id === existingKnowledgeBaseId);
     const targetExpert = props.experts.find((expert) => expert.id === targetExpertId);
-    const baseName = knowledgeMode === "EXISTING" ? selectedBase?.category : knowledgeMode === "CREATE" ? newKnowledgeBase.category : "未配置";
+    const baseName = knowledgeMode === "EXISTING" ? selectedBase?.category : knowledgeMode === "CREATE" ? newKnowledgeBase.category : "自动创建空的专家专属知识库";
     return (
       <div className="skill-wizard-confirm-step">
         <dl>

@@ -16,7 +16,7 @@ export type BrainstormToPositioningHandoff = {
   ideaDirections: string[];
   userAndProblemSignals: string[];
   validationTasks: string[];
-  reviewStatus: "PENDING_STUDENT_CONFIRMATION";
+  reviewStatus: "PENDING_STUDENT_CONFIRMATION" | "CONFIRMED";
   createdAt: string;
 };
 
@@ -27,7 +27,31 @@ export type BrainstormArtifactContent = {
   handoff: BrainstormToPositioningHandoff;
 };
 
+export type ConfirmedStageArtifactPayload = {
+  kind: "CONFIRMED_STAGE_ARTIFACT";
+  schemaVersion: 1;
+  sourceExpertId: string;
+  sourceMessageId?: string;
+  ideaId: string;
+  artifactType: string;
+  title: string;
+  summary: string;
+  content: unknown;
+};
+
+export type ExpertHandoffPayload = BrainstormToPositioningHandoff | ConfirmedStageArtifactPayload;
+
+type ConfirmedHandoffLike = {
+  ideaId: string;
+  targetExpertId: string;
+  status: string;
+  payload: ExpertHandoffPayload;
+  confirmedAt: string;
+  updatedAt?: string;
+};
+
 type ArtifactLike = {
+  id?: string;
   ideaId: string;
   artifactType: string;
   content: unknown;
@@ -119,12 +143,58 @@ export function readBrainstormHandoff(value: unknown): BrainstormToPositioningHa
     !handoff.userAndProblemSignals.every((item) => typeof item === "string") ||
     !Array.isArray(handoff.validationTasks) ||
     !handoff.validationTasks.every((item) => typeof item === "string") ||
-    handoff.reviewStatus !== "PENDING_STUDENT_CONFIRMATION" ||
+    !["PENDING_STUDENT_CONFIRMATION", "CONFIRMED"].includes(String(handoff.reviewStatus)) ||
     typeof handoff.createdAt !== "string"
   ) {
     return undefined;
   }
   return handoff as BrainstormToPositioningHandoff;
+}
+
+export function readConfirmedStageArtifact(value: unknown): ConfirmedStageArtifactPayload | undefined {
+  if (
+    !isRecord(value) ||
+    value.kind !== "CONFIRMED_STAGE_ARTIFACT" ||
+    value.schemaVersion !== 1 ||
+    typeof value.sourceExpertId !== "string" ||
+    typeof value.ideaId !== "string" ||
+    typeof value.artifactType !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.summary !== "string"
+  ) {
+    return undefined;
+  }
+  if (value.sourceMessageId !== undefined && typeof value.sourceMessageId !== "string") return undefined;
+  return value as ConfirmedStageArtifactPayload;
+}
+
+export function getConfirmedArtifactType(value: ExpertHandoffPayload) {
+  const confirmed = readConfirmedStageArtifact(value);
+  if (confirmed) return confirmed.artifactType;
+  return value.kind === "BRAINSTORM_TO_POSITIONING" ? "BRAINSTORM" : undefined;
+}
+
+export function findLatestConfirmedStageArtifact<T extends ConfirmedHandoffLike>(
+  handoffs: T[],
+  ideaId: string,
+  artifactType: string,
+  targetExpertId = "ALL",
+) {
+  return [...handoffs]
+    .filter(
+      (handoff) =>
+        handoff.status === "CONFIRMED" &&
+        handoff.ideaId === ideaId &&
+        (handoff.targetExpertId === "ALL" || handoff.targetExpertId === targetExpertId),
+    )
+    .sort((left, right) =>
+      (right.confirmedAt || right.updatedAt || "").localeCompare(left.confirmedAt || left.updatedAt || ""),
+    )
+    .map((handoff) => ({ handoff, artifact: readConfirmedStageArtifact(handoff.payload) }))
+    .find(
+      (candidate): candidate is { handoff: T; artifact: ConfirmedStageArtifactPayload } =>
+        candidate.artifact?.artifactType === artifactType,
+    );
 }
 
 export function findLatestBrainstormHandoff(artifacts: ArtifactLike[], ideaId: string) {
@@ -133,6 +203,20 @@ export function findLatestBrainstormHandoff(artifacts: ArtifactLike[], ideaId: s
     .sort((left, right) => (right.updatedAt || right.createdAt || "").localeCompare(left.updatedAt || left.createdAt || ""))
     .map((artifact) => readBrainstormHandoff(artifact.content))
     .find((handoff): handoff is BrainstormToPositioningHandoff => Boolean(handoff));
+}
+
+export function findLatestBrainstormHandoffCandidate(artifacts: ArtifactLike[], ideaId: string) {
+  return artifacts
+    .filter((artifact) => artifact.ideaId === ideaId && artifact.artifactType === "BRAINSTORM")
+    .sort((left, right) => (right.updatedAt || right.createdAt || "").localeCompare(left.updatedAt || left.createdAt || ""))
+    .map((artifact) => ({ artifact, handoff: readBrainstormHandoff(artifact.content) }))
+    .find((candidate) => Boolean(candidate.artifact.id && candidate.handoff)) as
+      | { artifact: ArtifactLike & { id: string }; handoff: BrainstormToPositioningHandoff }
+      | undefined;
+}
+
+export function markBrainstormHandoffConfirmed(handoff: BrainstormToPositioningHandoff) {
+  return { ...handoff, reviewStatus: "CONFIRMED" as const };
 }
 
 function formatItems(items: string[], emptyText: string) {
@@ -157,5 +241,5 @@ ${formatItems(handoff.userAndProblemSignals, "上一阶段未形成明确用户�
 待验证任务：
 ${formatItems(handoff.validationTasks, "上一阶段未形成验证任务")}
 
-注意：以上内容尚待学生确认。请先让学生确认、删改或补充，再据此收敛第一用户、核心问题、价值主张和差异化；不得把假设表述成已验证事实。`;
+注意：以上内容已由学生确认交接。请据此收敛第一用户、核心问题、价值主张和差异化；仍须保留“已验证/待验证”边界，不得把假设表述成已验证事实。`;
 }

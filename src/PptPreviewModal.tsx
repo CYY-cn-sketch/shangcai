@@ -7,14 +7,14 @@ type PptPreviewAsset = {
   pptKnowledgeContent?: string;
   pptKnowledgeReferences?: Array<{ title: string; url?: string }>;
   pptUsesLexiang?: boolean;
+  pptContentSource?: "LEXIANG" | "DEEPSEEK";
   pptUrl?: string;
   pptFileName?: string;
 };
 
-const previewImages = Array.from(
-  { length: 10 },
-  (_, index) => `/demo-assets/ppt-preview/slide-${String(index + 1).padStart(2, "0")}.png`,
-);
+function previewImageFor(index: number) {
+  return `/demo-assets/ppt-preview/slide-${String((index % 10) + 1).padStart(2, "0")}.png`;
+}
 
 function triggerDownload(href: string, filename: string) {
   const link = document.createElement("a");
@@ -30,8 +30,10 @@ function triggerDownload(href: string, filename: string) {
 export function PptPreviewModal(props: { asset: PptPreviewAsset; onClose: () => void }) {
   const [activeSlide, setActiveSlide] = useState(0);
   const generatedSlides = parsePptSlideOutline(props.asset.pptKnowledgeContent);
-  const activeMeta = generatedSlides[activeSlide] || generatedSlides[0];
-  const sourceLabel = props.asset.pptUsesLexiang ? "乐享内容 + 平台组装" : "平台预置结构";
+  const activeMeta = generatedSlides[activeSlide] || generatedSlides[0] || ["PPT 页面", "等待生成页面观点", "等待配置视觉素材"];
+  const usesLexiang = props.asset.pptContentSource === "LEXIANG" || (!props.asset.pptContentSource && props.asset.pptUsesLexiang);
+  const sourceLabel = usesLexiang ? "乐享内容 + 平台组装" : "DeepSeek 内容 + 平台组装";
+  const previewImages = generatedSlides.map((_, index) => previewImageFor(index));
   const references = props.asset.pptKnowledgeReferences || [];
   const visibleReferences = references.slice(0, 3);
   const hiddenReferenceCount = Math.max(0, references.length - visibleReferences.length);
@@ -44,9 +46,9 @@ export function PptPreviewModal(props: { asset: PptPreviewAsset; onClose: () => 
             <span className="eyebrow">{sourceLabel}</span>
             <h3>{props.asset.title}</h3>
             <p>
-              {props.asset.pptUsesLexiang
+              {usesLexiang
                 ? "页面观点来自乐享知识库，PPTX 文件由平台组装并持久化；预览图片仅用于展示版式。"
-                : "乐享不可用时，平台会使用预置课程结构组装真实 PPTX，不会伪装成供应商生成结果。"}
+                : "乐享未配置、额度不足或调用失败时，平台使用本轮 DeepSeek 生成的逐页内容组装并持久化 PPTX。"}
             </p>
           </div>
           <button className="modal-close-button" type="button" onClick={props.onClose} aria-label="关闭">
@@ -81,14 +83,14 @@ export function PptPreviewModal(props: { asset: PptPreviewAsset; onClose: () => 
               ) : (
                 <article className="ppt-reference-card muted">
                   <span>引用来源</span>
-                  <p>暂无外部来源，当前页使用平台预置课程结构。</p>
+                  <p>{usesLexiang ? "乐享本次未返回可展示的引用来源。" : "当前页来自本轮 DeepSeek 路演成果。"}</p>
                 </article>
               )}
             </div>
           </section>
           <section className="ppt-thumb-strip" aria-label="PPT 页面缩略图">
             {previewImages.map((image, index) => (
-              <button className={activeSlide === index ? "active" : ""} key={image} type="button" onClick={() => setActiveSlide(index)}>
+              <button className={activeSlide === index ? "active" : ""} key={`${image}-${index}`} type="button" onClick={() => setActiveSlide(index)}>
                 <img src={image} alt={`第 ${index + 1} 页缩略图`} />
                 <span>{String(index + 1).padStart(2, "0")}</span>
                 <strong>{generatedSlides[index]?.[0] || `第 ${index + 1} 页`}</strong>

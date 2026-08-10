@@ -18,10 +18,17 @@ foreach ($line in Get-Content -LiteralPath $envFile -Encoding UTF8) {
     [Environment]::SetEnvironmentVariable($parts[0], $parts[1], "Process")
 }
 
-$jar = Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot "target") -Filter "*.jar" |
-    Where-Object { $_.Name -notlike "*.original" } |
+$targetDir = Join-Path $PSScriptRoot "target"
+$jar = Get-ChildItem -LiteralPath $targetDir -Filter "*-exec.jar" |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
+
+if (-not $jar) {
+    $jar = Get-ChildItem -LiteralPath $targetDir -Filter "*.jar" |
+        Where-Object { $_.Name -notlike "*.original" } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+}
 
 if (-not $jar) {
     throw "Backend jar not found. Run .\mvnw.cmd package first."

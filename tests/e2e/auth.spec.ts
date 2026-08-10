@@ -65,3 +65,29 @@ test("教师账号进入教师端且页面保持可访问名称", async ({ page 
   expect(failures.httpFailures).toEqual([]);
   expect(failures.consoleErrors).toEqual([]);
 });
+
+test("login retention expires after eight hours", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("账号").fill("student@sufe.demo");
+  await page.getByLabel("密码").fill(password);
+  await submitLogin(page);
+
+  const expiry = await page.evaluate(() => {
+    const raw = window.localStorage.getItem("sufe.auth.device-retention");
+    return raw ? (JSON.parse(raw) as { expiresAt: number }).expiresAt : null;
+  });
+  expect(expiry).not.toBeNull();
+  expect(expiry! - Date.now()).toBeGreaterThan(7 * 60 * 60 * 1000);
+
+  await page.reload();
+  await expect(page.locator(".app-shell")).toBeVisible({ timeout: 15_000 });
+
+  await page.evaluate(() => {
+    const expired = JSON.stringify({ expiresAt: Date.now() - 1 });
+    window.sessionStorage.setItem("sufe.auth.tab-retention", expired);
+    window.localStorage.setItem("sufe.auth.device-retention", expired);
+  });
+  await page.reload();
+  await expect(page.locator(".login-page")).toBeVisible();
+  await expect(page.locator(".app-shell")).toHaveCount(0);
+});

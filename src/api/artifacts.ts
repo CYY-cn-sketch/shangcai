@@ -14,6 +14,7 @@ export type RemoteArtifact = {
 export type RemoteSubmission = {
   id: string;
   artifactId: string;
+  submissionVersion: number;
   ideaId: string;
   sourceMessageId?: string;
   student: string;

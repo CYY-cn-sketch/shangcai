@@ -3,12 +3,12 @@ package com.sufe.ai.generation.service;
 import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.account.service.AccountQuotaService;
 import com.sufe.ai.generation.domain.ArtifactType;
 import com.sufe.ai.generation.domain.GenerationJob;
 import com.sufe.ai.generation.domain.GenerationProvider;
 import com.sufe.ai.generation.repository.GenerationJobRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataIntegrityViolationException;
 
 import java.util.Optional;
 
@@ -25,7 +25,8 @@ class GenerationJobServiceTests {
     void reusesTheActiveVideoJobEvenIfASecondRequestUsesAnotherKey() {
         GenerationJobRepository generationJobRepository = mock(GenerationJobRepository.class);
         UserAccountRepository userAccountRepository = mock(UserAccountRepository.class);
-        GenerationJobService service = new GenerationJobService(generationJobRepository, userAccountRepository);
+        AccountQuotaService quotaService = mock(AccountQuotaService.class);
+        GenerationJobService service = new GenerationJobService(generationJobRepository, userAccountRepository, quotaService);
         UserAccount user = UserAccount.create(
                 "user-video", "video@test.local", "unused", UserRole.STUDENT, "Video user", "student", 100);
         GenerationJob activeJob = GenerationJob.queued(
@@ -53,10 +54,11 @@ class GenerationJobServiceTests {
     }
 
     @Test
-    void returnsWinningJobWhenConcurrentSubmitHitsUniqueConstraint() {
+    void returnsWinningJobWhenQuotaReservationFindsConcurrentSubmit() {
         GenerationJobRepository generationJobRepository = mock(GenerationJobRepository.class);
         UserAccountRepository userAccountRepository = mock(UserAccountRepository.class);
-        GenerationJobService service = new GenerationJobService(generationJobRepository, userAccountRepository);
+        AccountQuotaService quotaService = mock(AccountQuotaService.class);
+        GenerationJobService service = new GenerationJobService(generationJobRepository, userAccountRepository, quotaService);
         UserAccount user = UserAccount.create(
                 "user-001",
                 "student@test.local",
@@ -80,10 +82,9 @@ class GenerationJobServiceTests {
 
         when(userAccountRepository.findByAccountIgnoreCase(user.getAccount())).thenReturn(Optional.of(user));
         when(generationJobRepository.findByUserIdAndIdempotencyKey(user.getId(), "same-key"))
-                .thenReturn(Optional.empty())
-                .thenReturn(Optional.of(winningJob));
-        when(generationJobRepository.saveAndFlush(any(GenerationJob.class)))
-                .thenThrow(new DataIntegrityViolationException("duplicate key"));
+                .thenReturn(Optional.empty());
+        when(quotaService.<GenerationJob>reserveLexiangPpt(any(), any(), any()))
+                .thenReturn(new AccountQuotaService.Reservation<>(winningJob, false));
 
         GenerationJobService.SubmissionResult result = service.submit(
                 user.getAccount(),

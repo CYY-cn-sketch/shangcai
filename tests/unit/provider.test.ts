@@ -10,7 +10,12 @@ describe("requestDeepSeekExpertReply", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(Response.json({ headerName: "X-XSRF-TOKEN", token: "csrf-test" }))
-      .mockResolvedValueOnce(Response.json({ content: "专家回复", model: "deepseek-v4-flash" }));
+      .mockResolvedValueOnce(Response.json({
+        content: "专家回复",
+        model: "deepseek-v4-flash",
+        artifactType: "POSITIONING",
+        blocks: [{ title: "一句话定位", items: ["为创业实践课堂提供阶段成果闭环。"] }],
+      }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
@@ -18,8 +23,15 @@ describe("requestDeepSeekExpertReply", () => {
         ideaId: "idea-001",
         expertId: "positioning",
         clientMessageId: "message-001",
+        artifactType: "POSITIONING",
+        artifactMode: "AUTO",
       }),
-    ).resolves.toEqual({ content: "专家回复", model: "deepseek-v4-flash" });
+    ).resolves.toEqual({
+      content: "专家回复",
+      model: "deepseek-v4-flash",
+      artifactType: "POSITIONING",
+      blocks: [{ title: "一句话定位", items: ["为创业实践课堂提供阶段成果闭环。"] }],
+    });
 
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/provider/deepseek/chat", {
       method: "POST",
@@ -33,6 +45,8 @@ describe("requestDeepSeekExpertReply", () => {
         ideaId: "idea-001",
         expertId: "positioning",
         clientMessageId: "message-001",
+        artifactType: "POSITIONING",
+        artifactMode: "AUTO",
       }),
     });
     expect(JSON.stringify(fetchMock.mock.calls[1])).not.toContain("apiKey");

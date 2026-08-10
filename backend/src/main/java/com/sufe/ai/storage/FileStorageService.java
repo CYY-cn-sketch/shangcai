@@ -27,12 +27,13 @@ public class FileStorageService {
     public static final long MAX_FILE_SIZE = 20L * 1024 * 1024;
 
     private static final Set<String> KNOWLEDGE_EXTENSIONS = Set.of(
-            "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg"
+            "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg",
+            "mp3", "m4a", "wav", "mp4", "mov", "webm"
     );
 
     private static final Set<String> SKILL_EXTENSIONS = Set.of(
             "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "txt", "md", "json", "yaml", "yml",
-            "png", "jpg", "jpeg",
+            "png", "jpg", "jpeg", "html", "css", "svg",
             "py", "sh", "bash", "ps1", "bat", "cmd", "js", "mjs", "cjs", "ts", "tsx", "jsx"
     );
 
@@ -55,6 +56,9 @@ public class FileStorageService {
             Map.entry("json", "application/json"),
             Map.entry("yaml", "application/yaml"),
             Map.entry("yml", "application/yaml"),
+            Map.entry("html", "text/html"),
+            Map.entry("css", "text/css"),
+            Map.entry("svg", "image/svg+xml"),
             Map.entry("png", "image/png"),
             Map.entry("jpg", "image/jpeg"),
             Map.entry("jpeg", "image/jpeg"),

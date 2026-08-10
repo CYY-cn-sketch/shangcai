@@ -4,6 +4,8 @@ export type KnowledgeBaseRecord = {
   description: string;
   usedBy: string;
   active: boolean;
+  scopeType: "COURSE_SHARED" | "EXPERT_PRIVATE";
+  ownerExpertId?: string | null;
   assetCount: number;
 };
 
@@ -25,8 +27,49 @@ export type KnowledgeAssetRecord = {
   extractionStatus: "READY" | "EMPTY" | "OCR_REQUIRED" | "ASR_REQUIRED" | "UNSUPPORTED" | "FAILED";
   extractionMessage?: string | null;
   downloadUrl?: string | null;
+  lexiangSyncStatus:
+    | "NOT_APPLICABLE"
+    | "NOT_CONFIGURED"
+    | "PENDING"
+    | "SYNCING"
+    | "SYNCED"
+    | "PULLED"
+    | "CONFLICT"
+    | "REMOTE_MISSING"
+    | "UNSUPPORTED"
+    | "FAILED";
+  lexiangEntryId?: string | null;
+  lexiangSyncError?: string | null;
+  lexiangSyncedAt?: string | null;
   createdAt: string;
 };
+
+export type LexiangPullRunRecord = {
+  id?: string | null;
+  configured?: boolean;
+  status: "NOT_CONFIGURED" | "PENDING" | "RUNNING" | "SUCCESS" | "SUCCEEDED" | "COMPLETED" | "PARTIAL" | "FAILED";
+  startedAt?: string | null;
+  completedAt?: string | null;
+  addedCount: number;
+  updatedCount: number;
+  missingCount: number;
+  conflictCount: number;
+  failedCount: number;
+  message?: string | null;
+};
+
+export type LexiangKnowledgeMappingRecord = {
+  baseId: string;
+  spaceId: string;
+  parentEntryId: string;
+  enabled: boolean;
+  updatedAt?: string | null;
+};
+
+export type SaveLexiangKnowledgeMappingInput = Pick<
+  LexiangKnowledgeMappingRecord,
+  "baseId" | "spaceId" | "parentEntryId" | "enabled"
+>;
 
 export type KnowledgeExpertSkill = {
   id: string;
@@ -86,6 +129,28 @@ export type ExpertSkillUploadFileRecord = {
   sha256: string;
   importedAssetId?: string | null;
   downloadUrl: string;
+};
+
+export type ExpertSkillSourceRecord = {
+  sourceType: "UPLOADED" | "STARTER" | "PROFILE";
+  folderName: string;
+  mainFilePath?: string | null;
+  uploadedBy?: string | null;
+  updatedAt?: string | null;
+  files: ExpertSkillSourceFileRecord[];
+};
+
+export type ExpertSkillSourceFileRecord = {
+  id: string;
+  relativePath: string;
+  fileRole: "CONFIG" | "PROMPT" | "KNOWLEDGE_CANDIDATE" | "SOURCE_CODE" | "REFERENCE";
+  contentText?: string | null;
+  contentTruncated: boolean;
+  mimeType: string;
+  fileSizeBytes: number;
+  sha256: string;
+  importedAssetId?: string | null;
+  downloadUrl?: string | null;
 };
 
 export type ExpertSkillKnowledgeSelection =
@@ -148,6 +213,10 @@ export type SaveKnowledgeAssetInput = Omit<
   | "extractionStatus"
   | "extractionMessage"
   | "downloadUrl"
+  | "lexiangSyncStatus"
+  | "lexiangEntryId"
+  | "lexiangSyncError"
+  | "lexiangSyncedAt"
 >;
 
 export type UploadKnowledgeAssetInput = {
@@ -196,7 +265,14 @@ async function readJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function mutateJson<T>(path: string, method: "POST" | "PATCH", input: unknown): Promise<T> {
+async function readOptionalJson<T>(path: string): Promise<T | null> {
+  const response = await fetch(path, { credentials: "include", headers: { Accept: "application/json" } });
+  if (!response.ok) throw await parseError(response);
+  if (response.status === 204) return null;
+  return (await response.json()) as T;
+}
+
+async function mutateJson<T>(path: string, method: "POST" | "PUT" | "PATCH", input: unknown): Promise<T> {
   const csrf = await getCsrfToken();
   const response = await fetch(path, {
     method,
@@ -268,6 +344,26 @@ export async function uploadKnowledgeAsset(input: UploadKnowledgeAssetInput) {
   return (await response.json()) as KnowledgeAssetRecord;
 }
 
+export async function uploadExpertPrivateKnowledgeAsset(expertId: string, file: File) {
+  const csrf = await getCsrfToken();
+  const form = new FormData();
+  form.set("file", file, file.name);
+  const response = await fetch(
+    `/api/knowledge/experts/${encodeURIComponent(expertId)}/knowledge-assets/files`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        [csrf.headerName]: csrf.token,
+      },
+      body: form,
+    },
+  );
+  if (!response.ok) throw await parseError(response);
+  return (await response.json()) as KnowledgeAssetRecord;
+}
+
 export async function attachKnowledgeAssetFile(id: string, file: File) {
   const csrf = await getCsrfToken();
   const form = new FormData();
@@ -293,6 +389,36 @@ export function deleteKnowledgeAsset(id: string) {
   return deleteResource(`/api/knowledge/knowledge-assets/${encodeURIComponent(id)}`);
 }
 
+export function syncKnowledgeAssetWithLexiang(id: string) {
+  return mutateJson<KnowledgeAssetRecord>(
+    `/api/knowledge/knowledge-assets/${encodeURIComponent(id)}/lexiang-sync`,
+    "POST",
+    {},
+  );
+}
+
+export function getLatestLexiangPullRun() {
+  return readOptionalJson<LexiangPullRunRecord>("/api/knowledge/lexiang/pull-runs/latest");
+}
+
+export function pullLexiangKnowledge() {
+  return mutateJson<LexiangPullRunRecord>("/api/knowledge/lexiang/pull", "POST", {});
+}
+
+export function listLexiangKnowledgeMappings() {
+  return readJson<LexiangKnowledgeMappingRecord[]>("/api/knowledge/lexiang/mappings");
+}
+
+export function updateLexiangKnowledgeMapping(input: SaveLexiangKnowledgeMappingInput) {
+  return mutateJson<LexiangKnowledgeMappingRecord>("/api/knowledge/lexiang/mappings", "PUT", input);
+}
+
+export function deleteExpertPrivateKnowledgeAsset(expertId: string, assetId: string) {
+  return deleteResource(
+    `/api/knowledge/experts/${encodeURIComponent(expertId)}/knowledge-assets/${encodeURIComponent(assetId)}`,
+  );
+}
+
 export function knowledgeAssetDownloadUrl(id: string) {
   return `/api/knowledge/knowledge-assets/${encodeURIComponent(id)}/file`;
 }
@@ -313,8 +439,9 @@ export async function saveKnowledgeExpert(input: SaveKnowledgeExpertInput) {
   }
 }
 
-export function deleteKnowledgeExpert(id: string) {
-  return deleteResource(`/api/knowledge/experts/${encodeURIComponent(id)}`);
+export function deleteKnowledgeExpert(id: string, deletePrivateKnowledge = false) {
+  const query = deletePrivateKnowledge ? "?deletePrivateKnowledge=true" : "";
+  return deleteResource(`/api/knowledge/experts/${encodeURIComponent(id)}${query}`);
 }
 
 export async function uploadExpertSkillArchive(archive: File) {
@@ -360,6 +487,12 @@ export async function uploadExpertSkillFolder(files: File[]) {
 
 export function listExpertSkillUploads() {
   return readJson<ExpertSkillUploadRecord[]>("/api/knowledge/expert-skill-uploads");
+}
+
+export function getExpertSkillSource(expertId: string) {
+  return readJson<ExpertSkillSourceRecord>(
+    `/api/knowledge/expert-skill-uploads/experts/${encodeURIComponent(expertId)}/files`,
+  );
 }
 
 export function discardExpertSkillUpload(id: string) {

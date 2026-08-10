@@ -1,61 +1,35 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Eye, Upload } from "lucide-react";
 import {
-  listKnowledgeExperts,
   type ExpertSkillConfirmationRecord,
   type KnowledgeExpertRecord,
 } from "./api/knowledge";
 import { ExpertSkillWizard } from "./ExpertSkillWizard";
 
-type KnowledgeBaseOption = { id?: string; category: string; description: string; usedBy: string; active?: boolean };
+type KnowledgeBaseOption = {
+  id?: string;
+  category: string;
+  description: string;
+  usedBy: string;
+  active?: boolean;
+  scopeType?: "COURSE_SHARED" | "EXPERT_PRIVATE";
+  ownerExpertId?: string | null;
+};
 
 export function ExpertSkillManager(props: {
   actorLabel: string;
   knowledgeBases: KnowledgeBaseOption[];
-  refreshKey?: number;
+  experts: KnowledgeExpertRecord[];
   onConfirmed: (result: ExpertSkillConfirmationRecord) => void | Promise<void>;
   onOpenExpert: (expertId: string) => void;
-  onMessage: (message: string) => void;
 }) {
-  const { onMessage } = props;
-  const [experts, setExperts] = useState<KnowledgeExpertRecord[]>([]);
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
   const openerRef = useRef<HTMLButtonElement | null>(null);
 
   function closeWizard() {
     setWizardOpen(false);
-    void reload();
     window.requestAnimationFrame(() => openerRef.current?.focus());
   }
-
-  async function reload() {
-    setLoading(true);
-    try {
-      setExperts(await listKnowledgeExperts());
-    } catch (caught) {
-      onMessage(caught instanceof Error ? caught.message : "专家列表读取失败。");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    let active = true;
-    listKnowledgeExperts()
-      .then((records) => {
-        if (active) setExperts(records);
-      })
-      .catch((caught) => {
-        if (active) onMessage(caught instanceof Error ? caught.message : "专家列表读取失败。");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [onMessage, props.refreshKey]);
 
   return (
     <>
@@ -69,9 +43,9 @@ export function ExpertSkillManager(props: {
             <Upload size={16} />上传并配置 Skill
           </button>
         </div>
-        <div className="expert-skill-list" aria-busy={loading}>
-          <header><strong>已配置专家</strong><small>{loading ? "读取中…" : `${experts.length} 个`}</small></header>
-          {experts.length ? experts.map((expert) => (
+        <div className="expert-skill-list">
+          <header><strong>已配置专家</strong><small>{props.experts.length} 个</small></header>
+          {props.experts.length ? props.experts.map((expert) => (
             <button key={expert.id} type="button" onClick={(event) => { openerRef.current = event.currentTarget; props.onOpenExpert(expert.id); }}>
               <span className="expert-skill-list-accent" style={{ background: expert.accent }} aria-hidden="true" />
               <span className="expert-skill-list-copy">
@@ -82,18 +56,17 @@ export function ExpertSkillManager(props: {
               <span className="expert-skill-list-meta">{expert.knowledgeCategories.length} 个知识库</span>
               <span className="expert-skill-list-action"><Eye size={15} />查看详情</span>
             </button>
-          )) : <p>{loading ? "正在读取专家列表…" : "暂无专家，请上传 Skill 完成首个专家配置。"}</p>}
+          )) : <p>暂无专家，请上传 Skill 完成首个专家配置。</p>}
         </div>
       </section>
       {wizardOpen && (
         <ExpertSkillWizard
           actorLabel={props.actorLabel}
           knowledgeBases={props.knowledgeBases}
-          experts={experts}
+          experts={props.experts}
           onClose={closeWizard}
           onConfirmed={async (result) => {
             await props.onConfirmed(result);
-            setExperts((current) => [result.expert, ...current.filter((expert) => expert.id !== result.expert.id)]);
           }}
         />
       )}

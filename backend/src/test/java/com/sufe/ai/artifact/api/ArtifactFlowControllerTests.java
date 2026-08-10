@@ -9,7 +9,9 @@ import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.GroupMembershipRepository;
 import com.sufe.ai.account.repository.ProjectGroupRepository;
 import com.sufe.ai.account.repository.UserAccountRepository;
+import com.sufe.ai.artifact.domain.ArtifactSubmission;
 import com.sufe.ai.artifact.repository.ArtifactDownloadLogRepository;
+import com.sufe.ai.artifact.repository.ArtifactSubmissionRepository;
 import com.sufe.ai.workspace.domain.StudentIdea;
 import com.sufe.ai.workspace.repository.StudentIdeaRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -74,6 +76,9 @@ class ArtifactFlowControllerTests {
 
     @Autowired
     private ArtifactDownloadLogRepository downloadLogRepository;
+
+    @Autowired
+    private ArtifactSubmissionRepository submissionRepository;
 
     private String ideaId;
 
@@ -191,6 +196,140 @@ class ArtifactFlowControllerTests {
     }
 
     @Test
+    void versionsResubmissionsWithoutOverwritingFeedbackOrSnapshots() throws Exception {
+        String artifactBody = mockMvc.perform(post("/api/student/artifacts")
+                        .with(student())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(artifactRequest("BP", "message-versioned", "商业计划书 v1", "第一版摘要", "第一版证据")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String artifactId = objectMapper.readTree(artifactBody).path("id").asText();
+
+        String versionOneBody = mockMvc.perform(post("/api/student/artifacts/{artifactId}/submit", artifactId)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.submissionVersion").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String versionOneId = objectMapper.readTree(versionOneBody).path("id").asText();
+
+        mockMvc.perform(post("/api/student/artifacts/{artifactId}/submit", artifactId)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(versionOneId))
+                .andExpect(jsonPath("$.submissionVersion").value(1));
+
+        mockMvc.perform(patch("/api/teacher/submissions/{submissionId}", versionOneId)
+                        .with(teacher())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "status": "REVISION",
+                                  "teacherComment": "第一版需要补充访谈证据。",
+                                  "excellent": true
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVISION"));
+        ArtifactSubmission versionOne = submissionRepository.findById(versionOneId).orElseThrow();
+        versionOne.recordAiDiagnosis("{\"summary\":\"第一版诊断\",\"problems\":[],\"scores\":[]}");
+        submissionRepository.saveAndFlush(versionOne);
+
+        String refreshedArtifactBody = mockMvc.perform(post("/api/student/artifacts")
+                        .with(student())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(artifactRequest("BP", "message-versioned", "商业计划书 v2", "第二版摘要", "第二版证据")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(refreshedArtifactBody).path("id").asText()).isEqualTo(artifactId);
+
+        String versionTwoBody = mockMvc.perform(post("/api/student/artifacts/{artifactId}/submit", artifactId)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.submissionVersion").value(2))
+                .andExpect(jsonPath("$.artifactTitle").value("商业计划书 v2"))
+                .andReturn().getResponse().getContentAsString();
+        String versionTwoId = objectMapper.readTree(versionTwoBody).path("id").asText();
+        assertThat(versionTwoId).isNotEqualTo(versionOneId);
+
+        mockMvc.perform(patch("/api/teacher/submissions/{submissionId}", versionOneId)
+                        .with(teacher())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"teacherComment\":\"不应覆盖旧版\"}"))
+                .andExpect(status().isConflict());
+
+        JsonNode studentHistory = objectMapper.readTree(mockMvc.perform(get("/api/student/submissions").with(student()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString());
+        JsonNode studentVersionOne = submissionById(studentHistory, versionOneId);
+        JsonNode studentVersionTwo = submissionById(studentHistory, versionTwoId);
+        assertThat(studentVersionOne.path("submissionVersion").asInt()).isEqualTo(1);
+        assertThat(studentVersionOne.path("teacherComment").asText()).isEqualTo("第一版需要补充访谈证据。");
+        assertThat(studentVersionOne.path("aiDiagnosis").path("summary").asText()).isEqualTo("第一版诊断");
+        assertThat(studentVersionOne.path("excellent").asBoolean()).isTrue();
+        assertThat(studentVersionOne.path("reviewedAt").asText()).isNotBlank();
+        assertThat(submissionRepository.findById(versionOneId).orElseThrow().getReviewerUserId()).isEqualTo(TEACHER_ID);
+        assertThat(studentVersionOne.path("artifactTitle").asText()).isEqualTo("商业计划书 v1");
+        assertThat(studentVersionOne.path("content").get(0).path("items").get(0).asText()).isEqualTo("第一版证据");
+        assertThat(studentVersionTwo.path("submissionVersion").asInt()).isEqualTo(2);
+        assertThat(studentVersionTwo.path("ideaId").asText()).isEqualTo(ideaId);
+        assertThat(studentVersionTwo.path("content").get(0).path("items").get(0).asText()).isEqualTo("第二版证据");
+
+        JsonNode teacherHistory = objectMapper.readTree(mockMvc.perform(get("/api/teacher/submissions").with(teacher()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString());
+        assertThat(submissionById(teacherHistory, versionOneId).path("ideaId").asText()).isEqualTo(ideaId);
+        assertThat(submissionById(teacherHistory, versionTwoId).path("submissionVersion").asInt()).isEqualTo(2);
+
+        mockMvc.perform(patch("/api/teacher/submissions/{submissionId}", versionTwoId)
+                        .with(teacher())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content("{\"status\":\"APPROVED\"}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/student/artifacts/{artifactId}/submit", artifactId)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void createsNextVersionAfterStudentWithdrawsLatestSubmission() throws Exception {
+        String artifactBody = mockMvc.perform(post("/api/student/artifacts")
+                        .with(student())
+                        .with(csrf())
+                        .contentType("application/json")
+                        .content(artifactRequest("BP", "message-withdraw-version")))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String artifactId = objectMapper.readTree(artifactBody).path("id").asText();
+        String versionOneBody = mockMvc.perform(post("/api/student/artifacts/{artifactId}/submit", artifactId)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String versionOneId = objectMapper.readTree(versionOneBody).path("id").asText();
+        mockMvc.perform(patch("/api/student/submissions/{submissionId}/withdraw", versionOneId)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("WITHDRAWN"));
+
+        mockMvc.perform(post("/api/student/artifacts/{artifactId}/submit", artifactId)
+                        .with(student())
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.submissionVersion").value(2))
+                .andExpect(jsonPath("$.id").value(org.hamcrest.Matchers.not(versionOneId)));
+    }
+
+    @Test
     void rejectsUnavailablePptFileAndStudentTeacherRouteAccess() throws Exception {
         String artifactBody = mockMvc.perform(post("/api/student/artifacts")
                         .with(student())
@@ -284,18 +423,41 @@ class ArtifactFlowControllerTests {
     }
 
     private String artifactRequest(String artifactType, String sourceMessageId) throws Exception {
+        return artifactRequest(
+                artifactType,
+                sourceMessageId,
+                "成果链路创意 - 商业计划书 BP",
+                "已形成完整商业计划书。",
+                "验证用户痛点与商业闭环"
+        );
+    }
+
+    private String artifactRequest(
+            String artifactType,
+            String sourceMessageId,
+            String title,
+            String summary,
+            String contentItem
+    ) throws Exception {
         JsonNode content = objectMapper.createArrayNode()
                 .add(objectMapper.createObjectNode()
                         .put("title", "核心结论")
-                        .set("items", objectMapper.createArrayNode().add("验证用户痛点与商业闭环")));
+                        .set("items", objectMapper.createArrayNode().add(contentItem)));
         return objectMapper.writeValueAsString(Map.of(
                 "ideaId", ideaId,
                 "sourceMessageId", sourceMessageId,
                 "artifactType", artifactType,
-                "title", "成果链路创意 - 商业计划书 BP",
-                "summary", "已形成完整商业计划书。",
+                "title", title,
+                "summary", summary,
                 "content", content
         ));
+    }
+
+    private static JsonNode submissionById(JsonNode submissions, String submissionId) {
+        for (JsonNode submission : submissions) {
+            if (submissionId.equals(submission.path("id").asText())) return submission;
+        }
+        throw new AssertionError("提交记录不存在：" + submissionId);
     }
 
     private static byte[] validPptxBytes() throws Exception {

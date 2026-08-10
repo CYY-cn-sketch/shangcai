@@ -1,0 +1,190 @@
+.defense-turn.evaluation {
+  width: 100%;
+  max-width: 1080px;
+}
+
+.defense-turn.evaluation .buddy-bubble {
+  flex: 1;
+  min-width: 0;
+  padding: 14px 16px 35px;
+}
+
+.defense-evaluation-message {
+  display: grid;
+  gap: 16px;
+  color: var(--text);
+}
+
+.defense-evaluation-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.defense-evaluation-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--blue);
+}
+
+.defense-evaluation-title > svg {
+  flex: 0 0 auto;
+  color: var(--gold);
+}
+
+.defense-evaluation-title div {
+  display: grid;
+  gap: 3px;
+}
+
+.defense-evaluation-title strong {
+  font-size: 17px;
+}
+
+.defense-evaluation-title span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.defense-total-score {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 104px;
+  padding: 8px 12px;
+  border: 1px solid rgba(197, 154, 61, 0.44);
+  border-radius: 10px;
+  background: #fffaf0;
+  color: var(--blue);
+  font-variant-numeric: tabular-nums;
+}
+
+.defense-total-score strong {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.defense-total-score span {
+  margin-left: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.defense-total-score.missing {
+  border-color: var(--line);
+  background: #f6f8fb;
+}
+
+.defense-dimension-scores {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+}
+
+.defense-dimension-score {
+  display: grid;
+  grid-template-columns: minmax(86px, auto) minmax(90px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+}
+
+.defense-dimension-score span,
+.defense-dimension-score strong {
+  font-size: 13px;
+}
+
+.defense-dimension-score span {
+  color: var(--text);
+  font-weight: 750;
+}
+
+.defense-dimension-score strong {
+  color: var(--blue);
+  font-variant-numeric: tabular-nums;
+}
+
+.defense-dimension-score meter {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--blue);
+}
+
+.defense-score-warning {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(177, 116, 0, 0.32);
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #79520b;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.defense-evaluation-details {
+  display: grid;
+  gap: 0;
+}
+
+.defense-evaluation-details > section {
+  padding: 14px 0;
+  border-top: 1px solid rgba(149, 181, 217, 0.28);
+}
+
+.defense-evaluation-details > section:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.defense-evaluation-details h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 8px;
+  color: var(--blue);
+  font-size: 14px;
+}
+
+.defense-evaluation-details h4 svg {
+  flex: 0 0 auto;
+  color: var(--gold);
+}
+
+.defense-evaluation-details ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 21px;
+}
+
+.defense-evaluation-details li {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+@media (max-width: 760px) {
+  .defense-evaluation-summary {
+    align-items: flex-start;
+  }
+
+  .defense-total-score {
+    min-width: 88px;
+  }
+
+  .defense-total-score strong {
+    font-size: 25px;
+  }
+
+  .defense-dimension-scores {
+    grid-template-columns: 1fr;
+  }
+}

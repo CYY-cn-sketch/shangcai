@@ -79,7 +79,7 @@ public class StudentWorkspaceService {
     ) {
         String userId = resolveUserId(accountName);
         requireOwnedIdea(userId, ideaId);
-        StudentConversation conversation = conversationRepository.findByUserIdAndIdeaId(userId, ideaId)
+        StudentConversation conversation = conversationRepository.findFirstByUserIdAndIdeaIdOrderByUpdatedAtDesc(userId, ideaId)
                 .orElseGet(() -> StudentConversation.create(userId, ideaId));
         conversation.updateSettings(
                 command.selectedExpertId(),
@@ -88,6 +88,50 @@ public class StudentWorkspaceService {
                 command.knowledgeSelectionJson()
         );
         return conversationRepository.save(conversation);
+    }
+
+    @Transactional
+    public StudentConversation createConversation(
+            String accountName,
+            String ideaId,
+            CreateConversationCommand command
+    ) {
+        String userId = resolveUserId(accountName);
+        requireOwnedIdea(userId, ideaId);
+        StudentConversation conversation = StudentConversation.create(userId, ideaId, command.title());
+        conversation.updateSettings(
+                command.selectedExpertId(),
+                command.selectedSkillId(),
+                command.modelMode(),
+                command.knowledgeSelectionJson()
+        );
+        return conversationRepository.save(conversation);
+    }
+
+    @Transactional
+    public StudentConversation updateConversation(
+            String accountName,
+            String conversationId,
+            UpdateConversationCommand command
+    ) {
+        String userId = resolveUserId(accountName);
+        StudentConversation conversation = requireOwnedConversation(userId, conversationId);
+        conversation.update(
+                command.title() == null ? conversation.getTitle() : command.title(),
+                command.selectedExpertId() == null ? conversation.getSelectedExpertId() : command.selectedExpertId(),
+                command.selectedSkillId() == null ? conversation.getSelectedSkillId() : command.selectedSkillId(),
+                command.modelMode() == null ? conversation.getModelMode() : command.modelMode(),
+                command.knowledgeSelectionJson() == null
+                        ? conversation.getKnowledgeSelectionJson()
+                        : command.knowledgeSelectionJson()
+        );
+        return conversation;
+    }
+
+    @Transactional
+    public void deleteConversation(String accountName, String conversationId) {
+        String userId = resolveUserId(accountName);
+        conversationRepository.delete(requireOwnedConversation(userId, conversationId));
     }
 
     @Transactional
@@ -104,8 +148,40 @@ public class StudentWorkspaceService {
             return new MessageResult(conversation, existing, false);
         }
 
-        StudentConversation conversation = conversationRepository.findByUserIdAndIdeaId(userId, ideaId)
+        StudentConversation conversation = conversationRepository.findFirstByUserIdAndIdeaIdOrderByUpdatedAtDesc(userId, ideaId)
                 .orElseGet(() -> conversationRepository.save(StudentConversation.create(userId, ideaId)));
+        return appendMessage(conversation, userId, command);
+    }
+
+    @Transactional
+    public MessageResult appendMessageToConversation(
+            String accountName,
+            String conversationId,
+            AppendMessageCommand command
+    ) {
+        String userId = resolveUserId(accountName);
+
+        ConversationMessage existing = messageRepository
+                .findByUserIdAndClientMessageId(userId, command.clientMessageId())
+                .orElse(null);
+        if (existing != null) {
+            StudentConversation existingConversation = conversationRepository.findById(existing.getConversationId())
+                    .orElseThrow(() -> new WorkspaceResourceNotFoundException("对话不存在"));
+            if (!existingConversation.getId().equals(conversationId)) {
+                throw new IllegalArgumentException("同一消息不能写入不同对话");
+            }
+            return new MessageResult(existingConversation, existing, false);
+        }
+
+        StudentConversation conversation = requireOwnedConversation(userId, conversationId);
+        return appendMessage(conversation, userId, command);
+    }
+
+    private MessageResult appendMessage(
+            StudentConversation conversation,
+            String userId,
+            AppendMessageCommand command
+    ) {
         ConversationMessage message = ConversationMessage.create(
                 userId,
                 conversation.getId(),
@@ -119,12 +195,19 @@ public class StudentWorkspaceService {
                 command.content(),
                 command.blocksJson()
         );
-        return new MessageResult(conversation, messageRepository.save(message), true);
+        ConversationMessage saved = messageRepository.save(message);
+        conversation.markMessageAppended(saved.getCreatedAt());
+        return new MessageResult(conversation, saved, true);
     }
 
     private StudentIdea requireOwnedIdea(String userId, String ideaId) {
         return ideaRepository.findByIdAndUserId(ideaId, userId)
                 .orElseThrow(() -> new WorkspaceResourceNotFoundException("创意不存在"));
+    }
+
+    private StudentConversation requireOwnedConversation(String userId, String conversationId) {
+        return conversationRepository.findByIdAndUserId(conversationId, userId)
+                .orElseThrow(() -> new WorkspaceResourceNotFoundException("对话不存在"));
     }
 
     private String resolveUserId(String accountName) {
@@ -147,6 +230,24 @@ public class StudentWorkspaceService {
     }
 
     public record ConversationSettingsCommand(
+            String selectedExpertId,
+            String selectedSkillId,
+            String modelMode,
+            String knowledgeSelectionJson
+    ) {
+    }
+
+    public record CreateConversationCommand(
+            String title,
+            String selectedExpertId,
+            String selectedSkillId,
+            String modelMode,
+            String knowledgeSelectionJson
+    ) {
+    }
+
+    public record UpdateConversationCommand(
+            String title,
             String selectedExpertId,
             String selectedSkillId,
             String modelMode,

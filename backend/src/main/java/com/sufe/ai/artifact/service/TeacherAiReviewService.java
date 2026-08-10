@@ -4,9 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sufe.ai.account.domain.UserAccount;
 import com.sufe.ai.account.repository.UserAccountRepository;
-import com.sufe.ai.artifact.domain.ArtifactRecord;
 import com.sufe.ai.artifact.domain.ArtifactSubmission;
-import com.sufe.ai.artifact.repository.ArtifactRecordRepository;
 import com.sufe.ai.artifact.repository.ArtifactSubmissionRepository;
 import com.sufe.ai.generation.domain.GenerationProvider;
 import com.sufe.ai.provider.config.DeepSeekProperties;
@@ -28,7 +26,7 @@ public class TeacherAiReviewService {
     private final DeepSeekChatClient chatClient;
     private final UserAccountRepository userRepository;
     private final ArtifactSubmissionRepository submissionRepository;
-    private final ArtifactRecordRepository artifactRepository;
+    private final ArtifactService artifactService;
     private final AiUsageService usageService;
     private final ObjectMapper objectMapper;
 
@@ -37,7 +35,7 @@ public class TeacherAiReviewService {
             DeepSeekChatClient chatClient,
             UserAccountRepository userRepository,
             ArtifactSubmissionRepository submissionRepository,
-            ArtifactRecordRepository artifactRepository,
+            ArtifactService artifactService,
             AiUsageService usageService,
             ObjectMapper objectMapper
     ) {
@@ -45,7 +43,7 @@ public class TeacherAiReviewService {
         this.chatClient = chatClient;
         this.userRepository = userRepository;
         this.submissionRepository = submissionRepository;
-        this.artifactRepository = artifactRepository;
+        this.artifactService = artifactService;
         this.usageService = usageService;
         this.objectMapper = objectMapper;
     }
@@ -58,10 +56,14 @@ public class TeacherAiReviewService {
                 .orElseThrow(() -> new IllegalStateException("认证账号不存在"));
         ArtifactSubmission submission = submissionRepository.findById(submissionId)
                 .orElseThrow(() -> new ArtifactNotFoundException("提交记录不存在"));
-        ArtifactRecord artifact = artifactRepository.findById(submission.getArtifactId())
-                .orElseThrow(() -> new ArtifactNotFoundException("成果记录不存在"));
+        ArtifactSubmission latest = submissionRepository
+                .findFirstByArtifactIdOrderBySubmissionVersionDesc(submission.getArtifactId())
+                .orElseThrow(() -> new ArtifactNotFoundException("提交记录不存在"));
+        if (!latest.getId().equals(submission.getId())) {
+            throw new ArtifactConflictException("该提交已被更新版本取代，不能发起新的 AI 诊断");
+        }
 
-        String content = artifact.getContentJson();
+        String content = submission.getContentJsonSnapshot();
         if (content.length() > 14_000) content = content.substring(0, 14_000);
         String systemPrompt = """
                 你是上海财经大学商学院创业实践课程的教师审核助手。只分析给定成果，不得虚构访谈、数据或文件。
@@ -71,9 +73,9 @@ public class TeacherAiReviewService {
                 scores 必须包含创新性、市场洞察、商业逻辑、财务合理性、表达呈现、团队协作六项；分值上限依次为20、20、20、15、15、10。
                 资料不足的维度必须明确写“资料不足”，并给保守分数。输出是参考意见，不能声称已经完成教师终审。
                 """;
-        String userPrompt = "成果类型：" + artifact.getArtifactType()
-                + "\n成果标题：" + artifact.getTitle()
-                + "\n成果摘要：" + artifact.getSummary()
+        String userPrompt = "成果类型：" + submission.getArtifactTypeSnapshot()
+                + "\n成果标题：" + submission.getArtifactTitleSnapshot()
+                + "\n成果摘要：" + submission.getArtifactSummarySnapshot()
                 + "\n学生：" + submission.getStudentName()
                 + "\n小组：" + submission.getGroupLabel() + " / " + submission.getGroupName()
                 + "\n已有教师反馈：" + (submission.getTeacherComment() == null ? "无" : submission.getTeacherComment())
@@ -87,8 +89,7 @@ public class TeacherAiReviewService {
                 List.of(new DeepSeekMessage("system", systemPrompt), new DeepSeekMessage("user", userPrompt))
         ));
         JsonNode diagnosis = parseDiagnosis(result.content());
-        submission.recordAiDiagnosis(diagnosis.toString());
-        submissionRepository.save(submission);
+        artifactService.recordAiDiagnosisForLatest(submissionId, diagnosis.toString());
         result.verifiedUsage().ifPresent(usage -> usageService.recordReportedUsage(new AiUsageService.ReportedUsage(
                 teacher.getId(),
                 GenerationProvider.DEEPSEEK,

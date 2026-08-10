@@ -11,7 +11,7 @@ spring:
     locations: classpath:db/migration
   session:
     store-type: jdbc
-    timeout: 8h
+    timeout: ${SESSION_TIMEOUT:8h}
     jdbc:
       initialize-schema: never
   jpa:
@@ -37,6 +37,7 @@ server:
         http-only: true
         secure: ${SESSION_COOKIE_SECURE:true}
         same-site: lax
+        max-age: ${SESSION_COOKIE_MAX_AGE:8h}
 
 management:
   endpoints:
@@ -56,6 +57,15 @@ sufe:
   storage:
     files-root: ${SUFE_FILE_STORAGE_ROOT:./data/files}
     artifacts-root: ${SUFE_ARTIFACT_STORAGE_ROOT:./data/artifacts}
+  media-extraction:
+    enabled: ${MEDIA_EXTRACTION_ENABLED:false}
+    python-command: ${MEDIA_EXTRACTION_PYTHON:python}
+    script-path: ${MEDIA_EXTRACTION_SCRIPT:./scripts/media_text_extract.py}
+    whisper-model: ${ASR_WHISPER_MODEL:base}
+    timeout-seconds: ${MEDIA_EXTRACTION_TIMEOUT_SECONDS:240}
+    video-frame-interval-seconds: ${VIDEO_FRAME_INTERVAL_SECONDS:5}
+    video-max-frames: ${VIDEO_MAX_FRAMES:12}
+    pdf-max-pages: ${OCR_PDF_MAX_PAGES:20}
   bootstrap:
     demo-data-enabled: false
     demo-password: ""
@@ -74,8 +84,12 @@ sufe:
       app-key: ${LEXIANG_APP_KEY:}
       app-secret: ${LEXIANG_APP_SECRET:}
       staff-id: ${LEXIANG_STAFF_ID:system-bot}
+      knowledge-staff-id: ${LEXIANG_KNOWLEDGE_STAFF_ID:}
       space-id: ${LEXIANG_SPACE_ID:}
       max-concurrency: ${LEXIANG_MAX_CONCURRENCY:2}
+      pull:
+        scheduled-enabled: ${LEXIANG_PULL_SCHEDULED_ENABLED:false}
+        fixed-delay-ms: ${LEXIANG_PULL_FIXED_DELAY_MS:300000}
     deepseek:
       enabled: ${DEEPSEEK_ENABLED:false}
       api-base: ${DEEPSEEK_API_BASE:https://api.deepseek.com}

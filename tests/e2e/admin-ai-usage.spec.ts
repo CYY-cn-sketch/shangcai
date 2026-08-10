@@ -36,6 +36,14 @@ test("管理员可按个人和小组查看真实 Token 用量", async ({ page },
   await expect(page.locator(".admin-console-layout")).toBeVisible();
   await page.getByRole("button", { name: "AI 用量统计" }).click();
   await expect(page.getByRole("heading", { name: "AI 与生成服务用量" })).toBeVisible();
+  await expect(page.getByText("Token 是模型计量单位", { exact: false })).toBeVisible();
+  const usageSummary = page.getByLabel("Token 用量汇总");
+  await expect(usageSummary.locator("dd").nth(0)).toContainText(/Token$/);
+  await expect(usageSummary.locator("dd").nth(1)).toContainText(/Token$/);
+  await expect(usageSummary.locator("dd").nth(2)).toContainText(/Token$/);
+  await expect(usageSummary.locator("dd").nth(3)).toContainText(/次$/);
+  await expect(usageSummary.locator("dd").nth(4)).toContainText(/人$/);
+  await expect(usageSummary.locator("dd").nth(5)).toContainText(/组$/);
   if (testInfo.project.name === "desktop-chromium") {
     const navigationHeight = await page.locator(".admin-console-side").evaluate((element) => element.getBoundingClientRect().height);
     expect(navigationHeight).toBeLessThanOrEqual(90);
@@ -69,8 +77,8 @@ test("管理员可按个人和小组查看真实 Token 用量", async ({ page },
 
   await page.getByRole("button", { name: "试点运营评估" }).click();
   await expect(page.getByRole("heading", { name: "试点运营评估", exact: true })).toBeVisible();
-  await expect(page.getByText("系统数据汇总", { exact: true })).toBeVisible();
-  await expect(page.getByText("数据库实时", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看系统数据汇总详情" })).toBeVisible();
+  await expect(page.getByLabel("运营评估数据来源")).toContainText("系统汇总");
   await page.screenshot({ path: testInfo.outputPath(`admin-pilot-evaluation-${testInfo.project.name}.png`), fullPage: true });
   expect(failures.httpFailures).toEqual([]);
   expect(failures.consoleErrors).toEqual([]);

@@ -608,10 +608,15 @@ function skillBlocks(expertId: ExpertId, skillName: string): ResultBlock[] | nul
         {
           title: "商业模式画布",
           items: [
+            "关键合作伙伴：商学院、就业指导中心、创新创业课程组、AI 模型与内容服务供应商。",
+            "关键业务：课程专家配置、学生阶段成果生成、教师审核反馈、知识资料治理和试点数据复盘。",
+            "关键资源：课程知识库、专家 Skill、教师评分标准、优秀案例库、平台研发与运营团队。",
+            "价值主张：提升学生成果质量、降低教师重复点评成本、沉淀可复用的课程数字资产。",
+            "客户关系：课程试点共创、教师培训与运营支持、阶段复盘、优秀成果持续沉淀。",
+            "渠道通路：先通过创业实践课试点，再扩展到就业指导、案例教学和职业发展课程。",
             "客户细分：商学院、就业指导中心、创新创业课程组、职业发展课程负责人。",
-            "价值主张：提升学生成果质量、降低教师重复点评成本、沉淀课程数字资产。",
-            "渠道：先通过创业实践课试点，再扩展到就业指导、案例教学和职业发展课程。",
-            "收入来源：学院年度订阅、行业训练包、案例库扩展包、答辩题库服务。",
+            "成本结构：平台研发维护、模型与供应商调用、知识资料治理、教师培训和试点运营。",
+            "收入来源：学院年度订阅、课程建设包、行业训练包、案例库扩展包和答辩题库服务。",
           ],
         },
       ];
@@ -685,7 +690,7 @@ function skillBlocks(expertId: ExpertId, skillName: string): ResultBlock[] | nul
   }
 
   if (expertId === "pitch") {
-    if (skillName === "10 页 PPT 大纲") {
+    if (skillName === "路演 PPT 大纲" || skillName === "10 页 PPT 大纲") {
       return [
         {
           title: "10 页路演 PPT 结构",
@@ -1363,11 +1368,19 @@ function buildDefensePractice(ideaId: string, visibility: "self" | "teacher"): D
 }
 
 function defenseBlocks(practice: DefensePractice): ResultBlock[] {
+  const supportingBlocks = [
+    {
+      title: "1/3/5 分钟演讲稿",
+      items: Object.entries(practice.scripts)
+        .filter(([, text]) => text.trim())
+        .map(([label, text]) => `${label}：${text}`),
+    },
+    { title: "评委压力测试问题", items: practice.questions.filter((item) => item.trim()) },
+    { title: "回答建议", items: practice.answerSuggestions.filter((item) => item.trim()) },
+    { title: "表达改进点", items: practice.expressionTips.filter((item) => item.trim()) },
+  ].filter((block) => block.items.length > 0);
   return [
-    { title: "1/3/5 分钟演讲稿", items: Object.entries(practice.scripts).map(([label, text]) => `${label}：${text}`) },
-    { title: "评委压力测试问题", items: practice.questions },
-    { title: "回答建议", items: practice.answerSuggestions },
-    { title: "表达改进点", items: practice.expressionTips },
+    ...supportingBlocks,
     ...(practice.evaluation?.length ? practice.evaluation : []),
   ];
 }

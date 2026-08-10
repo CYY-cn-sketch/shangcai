@@ -21,6 +21,21 @@ public class ArtifactSubmission {
     @Column(name = "artifact_id", length = 36, nullable = false, updatable = false)
     private String artifactId;
 
+    @Column(name = "submission_version", nullable = false, updatable = false)
+    private int submissionVersion;
+
+    @Column(name = "artifact_type_snapshot", length = 32, nullable = false, updatable = false)
+    private String artifactTypeSnapshot;
+
+    @Column(name = "artifact_title_snapshot", length = 200, nullable = false, updatable = false)
+    private String artifactTitleSnapshot;
+
+    @Column(name = "artifact_summary_snapshot", columnDefinition = "TEXT", nullable = false, updatable = false)
+    private String artifactSummarySnapshot;
+
+    @Column(name = "content_json_snapshot", columnDefinition = "TEXT", nullable = false, updatable = false)
+    private String contentJsonSnapshot;
+
     @Column(name = "student_user_id", length = 36, nullable = false, updatable = false)
     private String studentUserId;
 
@@ -65,45 +80,41 @@ public class ArtifactSubmission {
     }
 
     private ArtifactSubmission(
-            String artifactId,
+            ArtifactRecord artifact,
+            int submissionVersion,
             String studentUserId,
             String studentName,
             String groupLabel,
             String groupName
     ) {
         this.id = UUID.randomUUID().toString();
-        this.artifactId = requireText(artifactId, "artifactId");
+        this.artifactId = requireText(artifact.getId(), "artifactId");
+        if (submissionVersion < 1) throw new IllegalArgumentException("submissionVersion 必须大于 0");
+        this.submissionVersion = submissionVersion;
+        this.artifactTypeSnapshot = requireText(artifact.getArtifactType(), "artifactTypeSnapshot");
+        this.artifactTitleSnapshot = requireText(artifact.getTitle(), "artifactTitleSnapshot");
+        this.artifactSummarySnapshot = requireText(artifact.getSummary(), "artifactSummarySnapshot");
+        this.contentJsonSnapshot = requireText(artifact.getContentJson(), "contentJsonSnapshot");
         this.studentUserId = requireText(studentUserId, "studentUserId");
         this.studentName = requireText(studentName, "studentName");
         this.groupLabel = requireText(groupLabel, "groupLabel");
         this.groupName = requireText(groupName, "groupName");
-        resubmit(studentName, groupLabel, groupName);
         this.excellent = false;
+        Instant now = Instant.now();
+        this.status = SubmissionStatus.PENDING;
+        this.submittedAt = now;
+        this.updatedAt = now;
     }
 
     public static ArtifactSubmission create(
-            String artifactId,
+            ArtifactRecord artifact,
+            int submissionVersion,
             String studentUserId,
             String studentName,
             String groupLabel,
             String groupName
     ) {
-        return new ArtifactSubmission(artifactId, studentUserId, studentName, groupLabel, groupName);
-    }
-
-    public void resubmit(String studentName, String groupLabel, String groupName) {
-        Instant now = Instant.now();
-        this.studentName = requireText(studentName, "studentName");
-        this.groupLabel = requireText(groupLabel, "groupLabel");
-        this.groupName = requireText(groupName, "groupName");
-        this.status = SubmissionStatus.PENDING;
-        this.teacherComment = null;
-        this.aiDiagnosisJson = null;
-        this.aiDiagnosedAt = null;
-        this.reviewerUserId = null;
-        this.submittedAt = now;
-        this.reviewedAt = null;
-        this.updatedAt = now;
+        return new ArtifactSubmission(artifact, submissionVersion, studentUserId, studentName, groupLabel, groupName);
     }
 
     public void review(SubmissionStatus status, String teacherComment, String reviewerUserId, Boolean excellent) {
@@ -142,6 +153,11 @@ public class ArtifactSubmission {
 
     public String getId() { return id; }
     public String getArtifactId() { return artifactId; }
+    public int getSubmissionVersion() { return submissionVersion; }
+    public String getArtifactTypeSnapshot() { return artifactTypeSnapshot; }
+    public String getArtifactTitleSnapshot() { return artifactTitleSnapshot; }
+    public String getArtifactSummarySnapshot() { return artifactSummarySnapshot; }
+    public String getContentJsonSnapshot() { return contentJsonSnapshot; }
     public String getStudentUserId() { return studentUserId; }
     public String getStudentName() { return studentName; }
     public String getGroupLabel() { return groupLabel; }

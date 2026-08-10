@@ -6,6 +6,7 @@ import com.sufe.ai.knowledge.domain.ExpertProfile;
 import com.sufe.ai.knowledge.domain.ExpertSkill;
 import com.sufe.ai.knowledge.domain.KnowledgeAsset;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
+import com.sufe.ai.knowledge.domain.KnowledgeBaseScope;
 import com.sufe.ai.knowledge.repository.ExpertKnowledgeRouteRepository;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.ExpertSkillRepository;
@@ -187,12 +188,12 @@ public class StarterContentInitializer implements ApplicationRunner {
         seedExpert(new ExpertStarter(
                 "pitch",
                 "路演 PPT 专家",
-                "将已确认的商业计划和证据转化为逐页内容，由平台结合乐享知识库组装并保存 PPTX。",
-                "路演结构、逐页观点、证据、图表建议、讲述提示和 PPTX 组装。",
+                "将已确认的商业计划和证据转化为动态页数的逐页内容，由平台优先结合乐享知识库、不可用时使用 DeepSeek 内容组装并保存 PPTX。",
+                "动态页数路演结构、逐页观点、证据、图表建议、讲述提示和 PPTX 组装。",
                 "#005aa8",
                 "starter-content/experts/pitch-expert/SKILL.md",
                 List.of(
-                        new SkillStarter("deck", "10 页 PPT 大纲", "路演 PPT", "生成页面标题、核心观点和证据要求"),
+                        new SkillStarter("deck", "路演 PPT 大纲", "路演 PPT", "按路演时长、受众和内容量生成动态页数的页面标题、核心观点和证据要求"),
                         new SkillStarter("slide-points", "页面观点", "观点提炼", "为每页形成一句话结论和图表建议"),
                         new SkillStarter("speaker-notes", "讲稿建议", "路演表达", "生成逐页讲述提示和转场建议")
                 ),
@@ -240,6 +241,19 @@ public class StarterContentInitializer implements ApplicationRunner {
                 ),
                 List.of("多媒体模板", "PPT 模板", "评分标准")
         ));
+
+        seedExpertPrivateKnowledge(
+                "pitch",
+                "路演PPT结构模板.md",
+                "starter-content/knowledge/路演PPT结构模板.md",
+                "路演 PPT 专家逐页组织观点、证据、图表建议和讲述提示的专属检索模板。"
+        );
+        seedExpertPrivateKnowledge(
+                "media",
+                "多媒体物料脚本与分镜模板.md",
+                "starter-content/knowledge/多媒体物料脚本与分镜模板.md",
+                "多媒体物料专家生成短视频脚本、分镜、海报文案和视觉提示词的专属检索模板。"
+        );
     }
 
     private KnowledgeBase requiredKnowledgeBase(String category) {
@@ -295,7 +309,10 @@ public class StarterContentInitializer implements ApplicationRunner {
         ExpertProfile expert = byId != null ? byId : byName;
         if (expert != null && (!expert.getId().equals(definition.id())
                 || !UPLOADED_BY.equals(expert.getSourceSkillUploadedBy()))) return;
-        if (expert != null && sourceContent.equals(expert.getSourceSkillContent())) return;
+        if (expert != null && sourceContent.equals(expert.getSourceSkillContent())) {
+            ensureExpertPrivateKnowledgeBase(expert);
+            return;
+        }
         boolean existing = expert != null;
         if (expert == null) {
             expert = ExpertProfile.create(
@@ -319,6 +336,7 @@ public class StarterContentInitializer implements ApplicationRunner {
                 true
         );
         expertProfileRepository.saveAndFlush(expert);
+        ensureExpertPrivateKnowledgeBase(expert);
         if (existing) {
             expertSkillRepository.deleteByExpertId(expert.getId());
             expertKnowledgeRouteRepository.deleteByExpertId(expert.getId());
@@ -335,6 +353,76 @@ public class StarterContentInitializer implements ApplicationRunner {
         definition.knowledgeCategories().forEach(category ->
                 expertKnowledgeRouteRepository.save(ExpertKnowledgeRoute.create(definition.id(), category))
         );
+    }
+
+    private KnowledgeBase ensureExpertPrivateKnowledgeBase(ExpertProfile expert) {
+        KnowledgeBase privateBase = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType(expert.getId(), KnowledgeBaseScope.EXPERT_PRIVATE)
+                .orElseGet(() -> knowledgeBaseRepository.save(KnowledgeBase.createExpertPrivate(
+                        limit(expert.getName(), 92) + "专属知识库",
+                        limit(expert.getName(), 440) + "的 Skill 知识资料，仅供该专家检索使用。",
+                        expert.getName(),
+                        expert.getId()
+                )));
+        boolean hasRoute = expertKnowledgeRouteRepository.findByExpertId(expert.getId()).stream()
+                .anyMatch(route -> route.getCategory().equals(privateBase.getCategory()));
+        if (!hasRoute) {
+            expertKnowledgeRouteRepository.save(ExpertKnowledgeRoute.create(expert.getId(), privateBase.getCategory()));
+        }
+        return privateBase;
+    }
+
+    private void seedExpertPrivateKnowledge(
+            String expertId,
+            String fileName,
+            String resourcePath,
+            String preview
+    ) {
+        ExpertProfile expert = expertProfileRepository.findById(expertId)
+                .orElseThrow(() -> new IllegalStateException("平台默认专家缺失：" + expertId));
+        KnowledgeBase privateBase = ensureExpertPrivateKnowledgeBase(expert);
+        KnowledgeAsset existing = knowledgeAssetRepository
+                .findFirstByKnowledgeBaseIdAndNameOrderByCreatedAtAsc(privateBase.getId(), fileName)
+                .orElse(null);
+        if (existing != null && existing.hasFile()) {
+            try {
+                fileStorageService.load(existing.getStorageKey());
+                existing.setEnabled(true);
+                existing.markSkillImport();
+                knowledgeAssetRepository.save(existing);
+                return;
+            } catch (IllegalArgumentException | IllegalStateException ignored) {
+                // 文件缺失时用版本库内的同名 Skill 资料修复。
+            }
+        }
+
+        byte[] content = readResource(resourcePath);
+        FileStorageService.StoredFile stored;
+        try {
+            stored = fileStorageService.storeKnowledgeFile(fileName, content);
+        } catch (IOException exception) {
+            throw new IllegalStateException("无法初始化专家专属知识文件：" + fileName, exception);
+        }
+        try {
+            KnowledgeAsset asset = existing == null
+                    ? KnowledgeAsset.create(
+                            privateBase.getId(),
+                            fileName,
+                            formatFileSize(content.length),
+                            "MD",
+                            preview,
+                            new String(content, StandardCharsets.UTF_8),
+                            UPLOADED_BY
+                    )
+                    : existing;
+            asset.setEnabled(true);
+            asset.markSkillImport();
+            asset.attachFile(stored.storageKey(), stored.originalName(), stored.mimeType(), stored.size(), stored.sha256());
+            knowledgeAssetRepository.save(asset);
+        } catch (RuntimeException exception) {
+            fileStorageService.delete(stored.storageKey());
+            throw exception;
+        }
     }
 
     private static String composeSystemPrompt(String content) {
@@ -378,6 +466,10 @@ public class StarterContentInitializer implements ApplicationRunner {
     private static String formatFileSize(long size) {
         if (size < 1024) return size + " B";
         return String.format(Locale.ROOT, "%.1f KB", size / 1024.0);
+    }
+
+    private static String limit(String value, int maxLength) {
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
     }
 
     private record ExpertStarter(

@@ -9,6 +9,8 @@ export type RemoteAuthSession = {
   groupLabel?: string;
   groupName?: string;
   quota: number;
+  lexiangPptQuota: number;
+  workbuddyVideoQuota: number;
   disabledPermissions: string[];
 };
 

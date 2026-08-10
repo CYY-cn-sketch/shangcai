@@ -7,7 +7,6 @@ import com.sufe.ai.account.domain.UserRole;
 import com.sufe.ai.account.repository.UserAccountRepository;
 import com.sufe.ai.artifact.domain.ArtifactRecord;
 import com.sufe.ai.artifact.domain.ArtifactSubmission;
-import com.sufe.ai.artifact.repository.ArtifactRecordRepository;
 import com.sufe.ai.artifact.repository.ArtifactSubmissionRepository;
 import com.sufe.ai.provider.config.DeepSeekProperties;
 import com.sufe.ai.provider.deepseek.DeepSeekChatClient;
@@ -21,6 +20,7 @@ import java.net.URI;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -34,7 +34,7 @@ class TeacherAiReviewServiceTests {
         DeepSeekChatClient chatClient = mock(DeepSeekChatClient.class);
         UserAccountRepository userRepository = mock(UserAccountRepository.class);
         ArtifactSubmissionRepository submissionRepository = mock(ArtifactSubmissionRepository.class);
-        ArtifactRecordRepository artifactRepository = mock(ArtifactRecordRepository.class);
+        ArtifactService artifactService = mock(ArtifactService.class);
         AiUsageService usageService = mock(AiUsageService.class);
         ObjectMapper objectMapper = new ObjectMapper();
 
@@ -46,7 +46,7 @@ class TeacherAiReviewServiceTests {
                 "{\"valueProposition\":\"减少课间排队\",\"evidence\":\"尚未提供访谈原话\"}"
         );
         ArtifactSubmission submission = ArtifactSubmission.create(
-                artifact.getId(), "student-001", "陈同学", "第 3 组", "校园咖啡"
+                artifact, 1, "student-001", "陈同学", "第 3 组", "校园咖啡"
         );
         String providerJson = """
                 {"summary":"方向清楚但证据不足","problems":["缺少访谈原话"],"risks":["支付意愿未验证"],
@@ -57,7 +57,8 @@ class TeacherAiReviewServiceTests {
 
         when(userRepository.findByAccountIgnoreCase("teacher@test.local")).thenReturn(Optional.of(teacher));
         when(submissionRepository.findById(submission.getId())).thenReturn(Optional.of(submission));
-        when(artifactRepository.findById(artifact.getId())).thenReturn(Optional.of(artifact));
+        when(submissionRepository.findFirstByArtifactIdOrderBySubmissionVersionDesc(artifact.getId()))
+                .thenReturn(Optional.of(submission));
         when(chatClient.chat(any())).thenReturn(new DeepSeekChatResult("```json\n" + providerJson + "\n```", "deepseek-pro", Optional.empty()));
 
         TeacherAiReviewService service = new TeacherAiReviewService(
@@ -65,7 +66,7 @@ class TeacherAiReviewServiceTests {
                 chatClient,
                 userRepository,
                 submissionRepository,
-                artifactRepository,
+                artifactService,
                 usageService,
                 objectMapper
         );
@@ -73,9 +74,9 @@ class TeacherAiReviewServiceTests {
         JsonNode result = service.diagnose("teacher@test.local", submission.getId());
 
         assertThat(result.path("summary").asText()).isEqualTo("方向清楚但证据不足");
-        assertThat(submission.getAiDiagnosisJson()).contains("缺少访谈原话");
-        assertThat(submission.getAiDiagnosedAt()).isNotNull();
-        verify(submissionRepository).save(submission);
+        ArgumentCaptor<String> diagnosis = ArgumentCaptor.forClass(String.class);
+        verify(artifactService).recordAiDiagnosisForLatest(org.mockito.ArgumentMatchers.eq(submission.getId()), diagnosis.capture());
+        assertThat(diagnosis.getValue()).contains("缺少访谈原话");
         verifyNoInteractions(usageService);
 
         ArgumentCaptor<DeepSeekChatCommand> command = ArgumentCaptor.forClass(DeepSeekChatCommand.class);
@@ -86,5 +87,47 @@ class TeacherAiReviewServiceTests {
         assertThat(command.getValue().messages().getLast().content())
                 .contains("校园咖啡 BP")
                 .contains("尚未提供访谈原话");
+    }
+
+    @Test
+    void rejectsSupersededSubmissionBeforeCallingAi() {
+        DeepSeekChatClient chatClient = mock(DeepSeekChatClient.class);
+        UserAccountRepository userRepository = mock(UserAccountRepository.class);
+        ArtifactSubmissionRepository submissionRepository = mock(ArtifactSubmissionRepository.class);
+        ArtifactService artifactService = mock(ArtifactService.class);
+        AiUsageService usageService = mock(AiUsageService.class);
+        UserAccount teacher = UserAccount.create(
+                "teacher-002", "teacher@test.local", "password-hash", UserRole.TEACHER, "周老师", "课程教师", 100
+        );
+        ArtifactRecord artifact = ArtifactRecord.create(
+                "student-001", "idea-001", "message-002", "BP", "校园咖啡 BP v1", "第一版",
+                "{\"version\":1}"
+        );
+        ArtifactSubmission versionOne = ArtifactSubmission.create(
+                artifact, 1, "student-001", "陈同学", "第 3 组", "校园咖啡"
+        );
+        artifact.refresh("BP", "校园咖啡 BP v2", "第二版", "{\"version\":2}");
+        ArtifactSubmission versionTwo = ArtifactSubmission.create(
+                artifact, 2, "student-001", "陈同学", "第 3 组", "校园咖啡"
+        );
+        when(userRepository.findByAccountIgnoreCase("teacher@test.local")).thenReturn(Optional.of(teacher));
+        when(submissionRepository.findById(versionOne.getId())).thenReturn(Optional.of(versionOne));
+        when(submissionRepository.findFirstByArtifactIdOrderBySubmissionVersionDesc(artifact.getId()))
+                .thenReturn(Optional.of(versionTwo));
+
+        TeacherAiReviewService service = new TeacherAiReviewService(
+                new DeepSeekProperties(true, URI.create("https://deepseek.test"), "test-key", "flash", "pro", 4096, 20, 12000),
+                chatClient,
+                userRepository,
+                submissionRepository,
+                artifactService,
+                usageService,
+                new ObjectMapper()
+        );
+
+        assertThatThrownBy(() -> service.diagnose("teacher@test.local", versionOne.getId()))
+                .isInstanceOf(ArtifactConflictException.class)
+                .hasMessageContaining("更新版本取代");
+        verifyNoInteractions(chatClient, artifactService, usageService);
     }
 }

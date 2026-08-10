@@ -13,6 +13,7 @@ import com.sufe.ai.audit.repository.AuditLogRepository;
 import com.sufe.ai.knowledge.domain.ExpertProfile;
 import com.sufe.ai.knowledge.domain.KnowledgeAsset;
 import com.sufe.ai.knowledge.domain.KnowledgeBase;
+import com.sufe.ai.knowledge.domain.KnowledgeBaseScope;
 import com.sufe.ai.knowledge.repository.ExpertProfileRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeAssetRepository;
 import com.sufe.ai.knowledge.repository.KnowledgeBaseRepository;
@@ -212,6 +213,127 @@ class AdminKnowledgeControllerTests {
     }
 
     @Test
+    void teacherUploadCannotWriteIntoExpertPrivateKnowledgeBase() throws Exception {
+        ExpertProfile expert = expertProfileRepository.saveAndFlush(ExpertProfile.create(
+                "private-upload-expert",
+                "专属资料测试专家",
+                "验证教师资料与 Skill 资料隔离。",
+                "知识库隔离测试",
+                "#0f7b73"
+        ));
+        KnowledgeBase privateBase = knowledgeBaseRepository.saveAndFlush(KnowledgeBase.createExpertPrivate(
+                "专属资料测试专家专属知识库",
+                "仅保存该专家 Skill 导入的资料",
+                "专属资料测试专家",
+                expert.getId()
+        ));
+
+        mockMvc.perform(post("/api/admin/knowledge-assets")
+                        .with(csrf())
+                        .cookie(login("knowledge-admin@test.local"))
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "category": "%s",
+                                  "name": "教师课程材料.md",
+                                  "sizeLabel": "1 KB",
+                                  "fileType": "Markdown",
+                                  "preview": "不应写入专家专属库",
+                                  "contentText": "教师课程材料",
+                                  "uploadedBy": "平台管理员",
+                                  "enabled": true
+                                }
+                                """.formatted(privateBase.getCategory())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("EXPERT_PRIVATE_KNOWLEDGE_REQUIRES_SKILL_IMPORT"));
+
+        assertThat(knowledgeAssetRepository.findByKnowledgeBaseId(privateBase.getId())).isEmpty();
+    }
+
+    @Test
+    void teacherUploadsReadableFileIntoNamedExpertPrivateKnowledgeBaseWithoutExposingItToStudents() throws Exception {
+        ExpertProfile expert = expertProfileRepository.saveAndFlush(ExpertProfile.create(
+                "private-direct-upload-expert",
+                "专家资料直传测试",
+                "验证教师可定向补充专家检索资料。",
+                "专家知识资料上传",
+                "#0f7b73"
+        ));
+        KnowledgeBase privateBase = knowledgeBaseRepository.saveAndFlush(KnowledgeBase.createExpertPrivate(
+                "专家资料直传测试专属知识库",
+                "仅供当前专家检索",
+                expert.getName(),
+                expert.getId()
+        ));
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "专家补充资料.txt",
+                "text/plain",
+                "这是只供当前专家检索的补充资料。".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        String responseJson = mockMvc.perform(multipart(
+                                "/api/knowledge/experts/{expertId}/knowledge-assets/files",
+                                expert.getId()
+                        )
+                        .file(file)
+                        .with(csrf())
+                        .cookie(login("knowledge-admin@test.local")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.category").value(privateBase.getCategory()))
+                .andExpect(jsonPath("$.name").value("专家补充资料.txt"))
+                .andExpect(jsonPath("$.extractionStatus").value("READY"))
+                .andExpect(jsonPath("$.contentText").value("这是只供当前专家检索的补充资料。"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String assetId = objectMapper.readTree(responseJson).path("id").asText();
+
+        KnowledgeAsset saved = knowledgeAssetRepository.findById(assetId).orElseThrow();
+        assertThat(saved.getKnowledgeBaseId()).isEqualTo(privateBase.getId());
+        assertThat(saved.getOriginType()).isEqualTo("EXPERT_DIRECT_UPLOAD");
+        assertThat(knowledgeAssetRepository.countByKnowledgeBaseId(privateBase.getId())).isEqualTo(1);
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactly("EXPERT_PRIVATE_KNOWLEDGE_UPLOAD");
+
+        userAccountRepository.saveAndFlush(UserAccount.create(
+                "U-KNOWLEDGE-STUDENT",
+                "knowledge-student@test.local",
+                passwordEncoder.encode("correct-password"),
+                UserRole.STUDENT,
+                "知识库学生",
+                "学生",
+                0
+        ));
+        Cookie studentSession = login("knowledge-student@test.local");
+        String studentAssets = mockMvc.perform(get("/api/knowledge/knowledge-assets").cookie(studentSession))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(studentAssets).doesNotContain(assetId);
+        mockMvc.perform(get("/api/knowledge/knowledge-assets/{assetId}/file", assetId).cookie(studentSession))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(delete(
+                                "/api/knowledge/experts/{expertId}/knowledge-assets/{assetId}",
+                                expert.getId(),
+                                assetId
+                        )
+                        .with(csrf())
+                        .cookie(login("knowledge-admin@test.local")))
+                .andExpect(status().isNoContent());
+        assertThat(knowledgeAssetRepository.findById(assetId)).isEmpty();
+        assertThat(knowledgeAssetRepository.countByKnowledgeBaseId(privateBase.getId())).isZero();
+        assertThat(auditLogRepository.findAll())
+                .filteredOn(log -> log.getResourceId().equals(assetId))
+                .extracting("action")
+                .containsExactly("EXPERT_PRIVATE_KNOWLEDGE_UPLOAD", "EXPERT_PRIVATE_KNOWLEDGE_DELETE");
+    }
+
+    @Test
     void adminStoresExpertSkillAsTextConfigurationOnly() throws Exception {
         Cookie sessionCookie = login("knowledge-admin@test.local");
 
@@ -251,6 +373,10 @@ class AdminKnowledgeControllerTests {
                 .getContentAsString();
         JsonNode expert = objectMapper.readTree(expertJson);
         assertThat(expert.path("id").asText()).isEqualTo("custom-finance");
+        assertThat(knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType("custom-finance", KnowledgeBaseScope.EXPERT_PRIVATE)
+                .orElseThrow()
+                .getCategory()).isEqualTo("财务测算专家专属知识库");
 
         mockMvc.perform(get("/api/admin/experts").cookie(sessionCookie))
                 .andExpect(status().isOk())
@@ -293,6 +419,32 @@ class AdminKnowledgeControllerTests {
                 .andExpect(status().isNoContent());
 
         assertThat(expertProfileRepository.findById("custom-finance")).isEmpty();
+    }
+
+    @Test
+    void adminCreatesDistinctPrivateKnowledgeBasesForLongExpertNamesWithSamePrefix() throws Exception {
+        Cookie sessionCookie = login("knowledge-admin@test.local");
+        String sharedPrefix = "超".repeat(92);
+
+        createExpert(sessionCookie, "long-expert-one", sharedPrefix + "甲");
+        createExpert(sessionCookie, "long-expert-two", sharedPrefix + "乙");
+
+        KnowledgeBase first = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType(
+                        "long-expert-one",
+                        KnowledgeBaseScope.EXPERT_PRIVATE
+                )
+                .orElseThrow();
+        KnowledgeBase second = knowledgeBaseRepository
+                .findByOwnerExpertIdAndScopeType(
+                        "long-expert-two",
+                        KnowledgeBaseScope.EXPERT_PRIVATE
+                )
+                .orElseThrow();
+
+        assertThat(first.getCategory()).isNotEqualTo(second.getCategory());
+        assertLongCategory(first.getCategory(), "long-expert-one");
+        assertLongCategory(second.getCategory(), "long-expert-two");
     }
 
     @Test
@@ -650,6 +802,38 @@ class AdminKnowledgeControllerTests {
                         .cookie(sessionCookie))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_KNOWLEDGE_FILE"));
+    }
+
+    private void createExpert(Cookie sessionCookie, String expertId, String expertName) throws Exception {
+        mockMvc.perform(post("/api/admin/experts")
+                        .with(csrf())
+                        .cookie(sessionCookie)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "id": "%s",
+                                  "name": "%s",
+                                  "role": "验证长专家名知识库命名。",
+                                  "scenario": "专家创建测试",
+                                  "accent": "#0f7b73",
+                                  "active": true,
+                                  "skills": [
+                                    {
+                                      "id": "%s-skill",
+                                      "name": "命名检查",
+                                      "stage": "测试",
+                                      "description": "验证专属知识库名称不会碰撞。"
+                                    }
+                                  ],
+                                  "knowledgeCategories": []
+                                }
+                                """.formatted(expertId, expertName, expertId)))
+                .andExpect(status().isCreated());
+    }
+
+    private static void assertLongCategory(String category, String expertId) {
+        assertThat(category.codePointCount(0, category.length())).isLessThanOrEqualTo(100);
+        assertThat(category).endsWith("专属知识库-" + expertId);
     }
 
     private Cookie login(String account) throws Exception {

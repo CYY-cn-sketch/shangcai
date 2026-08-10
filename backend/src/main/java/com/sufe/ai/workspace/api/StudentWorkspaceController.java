@@ -112,6 +112,56 @@ public class StudentWorkspaceController {
         return ConversationResponse.from(conversation, List.of(), objectMapper);
     }
 
+    @PostMapping("/ideas/{ideaId}/conversations")
+    public ResponseEntity<ConversationResponse> createConversation(
+            Authentication authentication,
+            @PathVariable String ideaId,
+            @Valid @RequestBody CreateConversationRequest request
+    ) {
+        StudentConversation conversation = workspaceService.createConversation(
+                authentication.getName(),
+                ideaId,
+                new StudentWorkspaceService.CreateConversationCommand(
+                        request.title(),
+                        request.selectedExpertId(),
+                        request.selectedSkillId(),
+                        request.modelMode(),
+                        request.knowledgeSelection().toString()
+                )
+        );
+        return ResponseEntity.created(URI.create("/api/student/conversations/" + conversation.getId()))
+                .body(ConversationResponse.from(conversation, List.of(), objectMapper));
+    }
+
+    @PatchMapping("/conversations/{conversationId}")
+    public ConversationResponse updateConversation(
+            Authentication authentication,
+            @PathVariable String conversationId,
+            @Valid @RequestBody UpdateConversationRequest request
+    ) {
+        StudentConversation conversation = workspaceService.updateConversation(
+                authentication.getName(),
+                conversationId,
+                new StudentWorkspaceService.UpdateConversationCommand(
+                        request.title(),
+                        request.selectedExpertId(),
+                        request.selectedSkillId(),
+                        request.modelMode(),
+                        request.knowledgeSelection() == null ? null : request.knowledgeSelection().toString()
+                )
+        );
+        return ConversationResponse.from(conversation, List.of(), objectMapper);
+    }
+
+    @DeleteMapping("/conversations/{conversationId}")
+    public ResponseEntity<Void> deleteConversation(
+            Authentication authentication,
+            @PathVariable String conversationId
+    ) {
+        workspaceService.deleteConversation(authentication.getName(), conversationId);
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/ideas/{ideaId}/messages")
     public ResponseEntity<MessageResponse> appendMessage(
             Authentication authentication,
@@ -140,6 +190,28 @@ public class StudentWorkspaceController {
                 .body(response);
     }
 
+    @PostMapping("/conversations/{conversationId}/messages")
+    public ResponseEntity<MessageResponse> appendConversationMessage(
+            Authentication authentication,
+            @PathVariable String conversationId,
+            @Valid @RequestBody AppendMessageRequest request
+    ) {
+        StudentWorkspaceService.MessageResult result = workspaceService.appendMessageToConversation(
+                authentication.getName(),
+                conversationId,
+                toCommand(request)
+        );
+        MessageResponse response = MessageResponse.from(
+                result.message(),
+                result.conversation().getIdeaId(),
+                objectMapper
+        );
+        if (!result.created()) return ResponseEntity.ok(response);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .location(URI.create("/api/student/conversations/" + conversationId + "/messages/" + result.message().getId()))
+                .body(response);
+    }
+
     public record CreateIdeaRequest(
             @NotBlank @Size(max = 100) String title,
             @NotBlank @Size(max = 2_000) String description,
@@ -164,6 +236,38 @@ public class StudentWorkspaceController {
             @NotBlank @Size(max = 32) String modelMode,
             @NotNull JsonNode knowledgeSelection
     ) {
+        @AssertTrue(message = "knowledgeSelection 不能超过 10000 个字符")
+        public boolean isKnowledgeSelectionSizeValid() {
+            return knowledgeSelection == null || knowledgeSelection.toString().length() <= 10_000;
+        }
+    }
+
+    public record CreateConversationRequest(
+            @NotBlank @Size(max = 120) String title,
+            @NotBlank @Size(max = 64) String selectedExpertId,
+            @NotBlank @Size(max = 64) String selectedSkillId,
+            @NotBlank @Size(max = 32) String modelMode,
+            @NotNull JsonNode knowledgeSelection
+    ) {
+        @AssertTrue(message = "knowledgeSelection 不能超过 10000 个字符")
+        public boolean isKnowledgeSelectionSizeValid() {
+            return knowledgeSelection == null || knowledgeSelection.toString().length() <= 10_000;
+        }
+    }
+
+    public record UpdateConversationRequest(
+            @Size(min = 1, max = 120) String title,
+            @Size(min = 1, max = 64) String selectedExpertId,
+            @Size(min = 1, max = 64) String selectedSkillId,
+            @Size(min = 1, max = 32) String modelMode,
+            JsonNode knowledgeSelection
+    ) {
+        @AssertTrue(message = "至少提供一个需要修改的字段")
+        public boolean isAnyFieldPresent() {
+            return title != null || selectedExpertId != null || selectedSkillId != null
+                    || modelMode != null || knowledgeSelection != null;
+        }
+
         @AssertTrue(message = "knowledgeSelection 不能超过 10000 个字符")
         public boolean isKnowledgeSelectionSizeValid() {
             return knowledgeSelection == null || knowledgeSelection.toString().length() <= 10_000;
@@ -213,11 +317,15 @@ public class StudentWorkspaceController {
     public record ConversationResponse(
             String id,
             String ideaId,
+            String title,
+            String status,
             String selectedExpertId,
             String selectedSkillId,
             String modelMode,
             JsonNode knowledgeSelection,
             List<MessageResponse> messages,
+            Instant createdAt,
+            Instant lastMessageAt,
             Instant updatedAt
     ) {
         private static ConversationResponse from(
@@ -228,11 +336,15 @@ public class StudentWorkspaceController {
             return new ConversationResponse(
                     conversation.getId(),
                     conversation.getIdeaId(),
+                    conversation.getTitle(),
+                    conversation.getStatus(),
                     conversation.getSelectedExpertId(),
                     conversation.getSelectedSkillId(),
                     conversation.getModelMode(),
                     readJson(objectMapper, conversation.getKnowledgeSelectionJson()),
                     messages.stream().map(message -> MessageResponse.from(message, conversation.getIdeaId(), objectMapper)).toList(),
+                    conversation.getCreatedAt(),
+                    conversation.getLastMessageAt(),
                     conversation.getUpdatedAt()
             );
         }
@@ -242,6 +354,7 @@ public class StudentWorkspaceController {
             String id,
             String clientMessageId,
             String ideaId,
+            String conversationId,
             String sender,
             String inputMode,
             String expertId,
@@ -257,6 +370,7 @@ public class StudentWorkspaceController {
                     message.getId(),
                     message.getClientMessageId(),
                     ideaId,
+                    message.getConversationId(),
                     message.getSender(),
                     message.getInputMode(),
                     message.getExpertId(),
@@ -268,6 +382,20 @@ public class StudentWorkspaceController {
                     message.getCreatedAt()
             );
         }
+    }
+
+    private static StudentWorkspaceService.AppendMessageCommand toCommand(AppendMessageRequest request) {
+        return new StudentWorkspaceService.AppendMessageCommand(
+                request.clientMessageId(),
+                request.sender(),
+                request.inputMode(),
+                request.expertId(),
+                request.expertName(),
+                request.skillName(),
+                request.artifactType(),
+                request.content(),
+                request.blocks() == null || request.blocks().isNull() ? null : request.blocks().toString()
+        );
     }
 
     private static JsonNode readJson(ObjectMapper objectMapper, String value) {

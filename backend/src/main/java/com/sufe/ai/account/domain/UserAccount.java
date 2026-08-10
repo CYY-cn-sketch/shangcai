@@ -43,6 +43,12 @@ public class UserAccount {
     @Column(name = "quota_remaining", nullable = false)
     private int quotaRemaining;
 
+    @Column(name = "lexiang_ppt_quota", nullable = false)
+    private int lexiangPptQuota;
+
+    @Column(name = "workbuddy_video_quota", nullable = false)
+    private int workbuddyVideoQuota;
+
     @Column(name = "avatar_id", length = 64, nullable = false)
     private String avatarId;
 
@@ -62,7 +68,9 @@ public class UserAccount {
             UserRole role,
             String displayName,
             String title,
-            int quotaRemaining
+            int quotaRemaining,
+            int lexiangPptQuota,
+            int workbuddyVideoQuota
     ) {
         Instant now = Instant.now();
         this.id = requireText(id, "id");
@@ -71,10 +79,9 @@ public class UserAccount {
         this.role = Objects.requireNonNull(role, "role 不能为空");
         this.displayName = normalizeDisplayName(displayName);
         this.title = requireText(title, "title");
-        if (quotaRemaining < 0) {
-            throw new IllegalArgumentException("quotaRemaining 不能小于 0");
-        }
-        this.quotaRemaining = quotaRemaining;
+        this.quotaRemaining = requireQuota(quotaRemaining, "quotaRemaining");
+        this.lexiangPptQuota = requireQuota(lexiangPptQuota, "lexiangPptQuota");
+        this.workbuddyVideoQuota = requireQuota(workbuddyVideoQuota, "workbuddyVideoQuota");
         this.avatarId = "student-boy";
         this.status = UserStatus.ACTIVE;
         this.createdAt = now;
@@ -90,7 +97,41 @@ public class UserAccount {
             String title,
             int quotaRemaining
     ) {
-        return new UserAccount(id, account, passwordHash, role, displayName, title, quotaRemaining);
+        return new UserAccount(
+                id,
+                account,
+                passwordHash,
+                role,
+                displayName,
+                title,
+                quotaRemaining,
+                defaultLexiangPptQuota(role),
+                defaultWorkbuddyVideoQuota(role)
+        );
+    }
+
+    public static UserAccount create(
+            String id,
+            String account,
+            String passwordHash,
+            UserRole role,
+            String displayName,
+            String title,
+            int quotaRemaining,
+            int lexiangPptQuota,
+            int workbuddyVideoQuota
+    ) {
+        return new UserAccount(
+                id,
+                account,
+                passwordHash,
+                role,
+                displayName,
+                title,
+                quotaRemaining,
+                lexiangPptQuota,
+                workbuddyVideoQuota
+        );
     }
 
     public static UserAccount register(
@@ -104,6 +145,29 @@ public class UserAccount {
         return create(UUID.randomUUID().toString(), account, passwordHash, role, displayName, title, quotaRemaining);
     }
 
+    public static UserAccount register(
+            String account,
+            String passwordHash,
+            UserRole role,
+            String displayName,
+            String title,
+            int quotaRemaining,
+            int lexiangPptQuota,
+            int workbuddyVideoQuota
+    ) {
+        return create(
+                UUID.randomUUID().toString(),
+                account,
+                passwordHash,
+                role,
+                displayName,
+                title,
+                quotaRemaining,
+                lexiangPptQuota,
+                workbuddyVideoQuota
+        );
+    }
+
     public boolean isEnabled() {
         return status == UserStatus.ACTIVE;
     }
@@ -113,16 +177,35 @@ public class UserAccount {
         this.updatedAt = Instant.now();
     }
 
-    public void updateAdminProfile(UserRole role, String displayName, String title, int quotaRemaining, UserStatus status) {
+    public void updateAdminProfile(
+            UserRole role,
+            String displayName,
+            String title,
+            int quotaRemaining,
+            int lexiangPptQuota,
+            int workbuddyVideoQuota,
+            UserStatus status
+    ) {
         this.role = Objects.requireNonNull(role, "role 不能为空");
         this.displayName = normalizeDisplayName(displayName);
         this.title = requireText(title, "title");
-        if (quotaRemaining < 0) {
-            throw new IllegalArgumentException("quotaRemaining 不能小于 0");
-        }
-        this.quotaRemaining = quotaRemaining;
+        this.quotaRemaining = requireQuota(quotaRemaining, "quotaRemaining");
+        this.lexiangPptQuota = requireQuota(lexiangPptQuota, "lexiangPptQuota");
+        this.workbuddyVideoQuota = requireQuota(workbuddyVideoQuota, "workbuddyVideoQuota");
         this.status = Objects.requireNonNull(status, "status 不能为空");
         this.updatedAt = Instant.now();
+    }
+
+    public void updateAdminProfile(UserRole role, String displayName, String title, int quotaRemaining, UserStatus status) {
+        updateAdminProfile(
+                role,
+                displayName,
+                title,
+                quotaRemaining,
+                lexiangPptQuota,
+                workbuddyVideoQuota,
+                status
+        );
     }
 
     public void updatePasswordHash(String passwordHash) {
@@ -152,6 +235,29 @@ public class UserAccount {
             throw new IllegalArgumentException(fieldName + " 不能为空");
         }
         return value.trim();
+    }
+
+    private static int requireQuota(int value, String fieldName) {
+        if (value < 0) {
+            throw new IllegalArgumentException(fieldName + " 不能小于 0");
+        }
+        return value;
+    }
+
+    public static int defaultLexiangPptQuota(UserRole role) {
+        return switch (Objects.requireNonNull(role, "role 不能为空")) {
+            case STUDENT -> 100;
+            case TEACHER -> 200;
+            case ADMIN -> 500;
+        };
+    }
+
+    public static int defaultWorkbuddyVideoQuota(UserRole role) {
+        return switch (Objects.requireNonNull(role, "role 不能为空")) {
+            case STUDENT -> 20;
+            case TEACHER -> 50;
+            case ADMIN -> 100;
+        };
     }
 
     public String getId() {
@@ -184,6 +290,14 @@ public class UserAccount {
 
     public int getQuotaRemaining() {
         return quotaRemaining;
+    }
+
+    public int getLexiangPptQuota() {
+        return lexiangPptQuota;
+    }
+
+    public int getWorkbuddyVideoQuota() {
+        return workbuddyVideoQuota;
     }
 
     public String getAvatarId() {

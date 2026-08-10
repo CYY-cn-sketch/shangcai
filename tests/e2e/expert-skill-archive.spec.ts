@@ -113,7 +113,20 @@ test("专家 Skill 支持 ZIP 拖放和文件夹选择的统一五步向导", as
   await page.getByRole("button", { name: "登录进入系统" }).click();
 
   await expect(page.locator(".admin-console-layout")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "知识库管理" }).click();
+  await expect(page.getByText("课程共享知识库", { exact: true })).toBeVisible();
+  await expect(page.getByText("专家专属知识库", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "专家配置与 Skill 管理" }).click();
+  const expertList = page.locator(".expert-skill-list");
+  await expect(expertList).toBeVisible();
+  const expertListStyle = await expertList.evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    const headerStyle = window.getComputedStyle(element.querySelector(":scope > header")!);
+    return { maxHeight: style.maxHeight, overflowY: style.overflowY, headerPosition: headerStyle.position };
+  });
+  expect(expertListStyle.overflowY).toBe("auto");
+  expect(expertListStyle.maxHeight).not.toBe("none");
+  expect(expertListStyle.headerPosition).toBe("sticky");
   await page.getByRole("button", { name: "上传并配置 Skill" }).click();
 
   const dialog = page.getByRole("dialog", { name: "专家配置与 Skill 管理" });
@@ -154,8 +167,18 @@ test("专家 Skill 支持 ZIP 拖放和文件夹选择的统一五步向导", as
   await dialog.getByRole("button", { name: /下一步/ }).click();
   await dialog.getByRole("button", { name: /下一步/ }).click();
   await expect(dialog.getByRole("heading", { name: "配置知识库" })).toBeVisible();
-  await dialog.getByRole("radio", { name: /新建知识库并导入/ }).check();
+  await dialog.getByRole("radio", { name: /新建专属库并导入/ }).check();
   await expect(dialog.getByText("e2e-skill/references/case.md")).toBeVisible();
+  const knowledgeBaseToggle = dialog.getByRole("checkbox", { name: /创建后立即启用知识库/ });
+  await expect(knowledgeBaseToggle).toBeChecked();
+  const toggleSize = await knowledgeBaseToggle.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  });
+  expect(toggleSize.width).toBeLessThanOrEqual(24);
+  expect(toggleSize.height).toBeLessThanOrEqual(24);
+  await knowledgeBaseToggle.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("expert-skill-knowledge-step.png") });
   await dialog.getByRole("button", { name: /下一步/ }).click();
   await expect(dialog.getByRole("heading", { name: "检查提示词" })).toBeVisible();
   await dialog.getByRole("button", { name: /下一步/ }).click();

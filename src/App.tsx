@@ -20,6 +20,7 @@ import {
   PenLine,
   RotateCcw,
   Save,
+  Search,
   Send,
   Settings2,
   Sparkles,
@@ -44,8 +45,20 @@ import {
   type AdminOperationsReport,
 } from "./api/admin";
 import { AdminAiUsagePanel } from "./AdminAiUsagePanel";
+import { AdminOperationsEvaluation } from "./AdminOperationsEvaluation";
 import { ExpertSkillManager } from "./ExpertSkillManager";
+import { LexiangKnowledgeMappingEditor } from "./LexiangKnowledgeMappingEditor";
+import { LexiangPullSyncPanel } from "./LexiangPullSyncPanel";
+import { ExpertSkillSourceFiles } from "./ExpertSkillSourceFiles";
+import { ExpertPrivateKnowledgeFiles } from "./ExpertPrivateKnowledgeFiles";
 import { loadCurrentAuth, loginWithPassword, logoutRemoteSession, updateAuthProfile } from "./api/auth";
+import {
+  clearAuthRetention,
+  getAuthRetentionExpiry,
+  markAuthRetention,
+  shouldRestoreAuth,
+} from "./authRetention";
+import { logoutAndClearSession, restoreRetainedSession } from "./authLifecycle";
 import {
   artifactDownloadUrl,
   diagnoseTeacherSubmission,
@@ -62,25 +75,39 @@ import {
   type RemoteArtifact,
   type RemoteSubmission,
 } from "./api/artifacts";
-import { buildPptxFile, parsePptSlideOutline } from "./pptxBuilder";
+import { buildPptOutlineContent, buildPptxFile, parsePptSlideOutline } from "./pptxBuilder";
 import { PptPreviewModal } from "./PptPreviewModal";
+import { getArtifactDocumentTitle, normalizeArtifactBlocks } from "./artifactFormatting";
+import { DefenseEvaluationMessage } from "./DefenseEvaluationMessage";
+import { getDefenseScoreLabel } from "./defenseEvaluation";
+import { BusinessModelCanvas } from "./BusinessModelCanvas";
 import {
   createKnowledgeAsset,
   createKnowledgeBase,
+  deleteExpertPrivateKnowledgeAsset,
   deleteKnowledgeAsset,
   deleteKnowledgeBase,
   deleteKnowledgeExpert,
+  getLatestLexiangPullRun,
+  listLexiangKnowledgeMappings,
   listKnowledgeAssets,
   listKnowledgeBases,
   listKnowledgeExperts,
   knowledgeAssetDownloadUrl,
+  pullLexiangKnowledge,
   saveKnowledgeExpert,
+  syncKnowledgeAssetWithLexiang,
+  updateLexiangKnowledgeMapping,
   uploadKnowledgeAsset,
+  uploadExpertPrivateKnowledgeAsset,
   updateKnowledgeAsset,
   updateKnowledgeBase,
   type KnowledgeAssetRecord,
   type KnowledgeBaseRecord,
   type KnowledgeExpertRecord,
+  type LexiangKnowledgeMappingRecord,
+  type LexiangPullRunRecord,
+  type SaveLexiangKnowledgeMappingInput,
   type ExpertSkillConfirmationRecord,
   type SaveKnowledgeExpertInput,
 } from "./api/knowledge";
@@ -98,15 +125,10 @@ import {
 } from "./authViews";
 import {
   buildBlocks,
-  buildDefenseEvaluation,
-  buildDefensePractice,
-  buildFollowUpQuestion,
   configureExpertGeneration,
   defenseBlocks,
-  formatDefenseEvaluationForChat,
   getArtifactType,
   getChatStarterPrompts,
-  getDefenseSuggestedAnswer,
   getExpertDialogueRound,
   getGenerationLoadingCopy,
   getNextRoundPrompt,
@@ -131,12 +153,14 @@ import {
 } from "./visuals";
 import { defaultStudentAvatarId, normalizeStudentAvatarId } from "./studentAvatars";
 import {
-  appendStudentMessage,
+  appendStudentConversationMessage,
+  createStudentConversation,
   createStudentIdea,
+  deleteStudentConversation,
   deleteStudentIdea,
   loadStudentWorkspace,
-  saveStudentConversation,
   uploadStudentAttachment,
+  updateStudentConversation,
   updateStudentIdea,
   type RemoteConversationMessage,
   type RemoteStudentConversation,
@@ -144,11 +168,16 @@ import {
   type StudentAttachmentRecord,
 } from "./api/studentWorkspace";
 import {
-  appendPositioningHandoffPrompt,
   createBrainstormArtifactContent,
-  findLatestBrainstormHandoff,
+  findLatestConfirmedStageArtifact,
+  getConfirmedArtifactType,
   readArtifactBlocks,
 } from "./expertHandoff";
+import {
+  confirmExpertHandoff,
+  listExpertHandoffs,
+  type RemoteExpertHandoff,
+} from "./api/expertHandoffs";
 import {
   answerModeLabels,
   answerModes,
@@ -156,6 +185,10 @@ import {
   type AnswerMode,
 } from "./answerModes";
 import { StructuredAiResponse } from "./StructuredAiResponse";
+import { findFeedbackSourceConversationId, selectIdeaFeedbackSubmissions } from "./teacherFeedback";
+import { downloadThenRecord } from "./artifactDownloadFlow";
+import { attemptPostMutationRefresh } from "./postMutationRefresh";
+import { useSpeechInput } from "./useSpeechInput";
 import "./App.css";
 
 type Role = "student" | "teacher" | "admin";
@@ -199,34 +232,6 @@ type DiagnosisResult = {
   feedbackDraft?: string;
 };
 type DefenseTurn = { id: string; sender: "student" | "ai"; content: string; createdAt: string };
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-type SpeechRecognitionResultLike = { 0?: { transcript?: string } };
-type SpeechRecognitionResultListLike = {
-  length: number;
-  [index: number]: SpeechRecognitionResultLike;
-};
-type SpeechRecognitionEventLike = Event & {
-  resultIndex: number;
-  results: SpeechRecognitionResultListLike;
-};
-type SpeechRecognitionErrorEventLike = Event & {
-  error?: string;
-  message?: string;
-};
-type SpeechRecognitionLike = {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  maxAlternatives: number;
-  onstart: (() => void) | null;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-};
-
 const emptyTeacherReviewSearch: TeacherReviewSearch = {
   keyword: "",
   artifactType: "ALL",
@@ -252,6 +257,8 @@ type AuthSession = {
   groupLabel?: string;
   groupName?: string;
   quota?: number;
+  lexiangPptQuota?: number;
+  workbuddyVideoQuota?: number;
   disabledPermissions?: string[];
 };
 
@@ -264,6 +271,14 @@ type AccountRecord = AuthSession & {
   permissions: string[];
   disabledPermissions?: string[];
   quota: number;
+  aiCallsUsed?: number;
+  aiCallsRemaining?: number;
+  lexiangPptQuota?: number;
+  lexiangPptUsed?: number;
+  lexiangPptRemaining?: number;
+  workbuddyVideoQuota?: number;
+  workbuddyVideoUsed?: number;
+  workbuddyVideoRemaining?: number;
   status: "已开通" | "已停用" | "待后端开通";
 };
 
@@ -344,6 +359,7 @@ type ChatMessage = {
   id: string;
   clientMessageId?: string;
   ideaId: string;
+  conversationId?: string;
   sender: "user" | "ai";
   mode?: "文本" | "录音" | "语音" | "文件";
   expertId?: ExpertId;
@@ -356,6 +372,7 @@ type ChatMessage = {
 };
 
 type GeneratedAssetType = "PPT" | "VIDEO";
+type PptContentSource = "LEXIANG" | "DEEPSEEK";
 type ContextAction = "ask" | "script" | "video" | "download" | "preview";
 type PendingAssetGeneration = {
   title: string;
@@ -385,6 +402,7 @@ type GeneratedAsset = {
   pptKnowledgeReferences?: PptKnowledgeReference[];
   pptGeneratedAt?: string;
   pptUsesLexiang?: boolean;
+  pptContentSource?: PptContentSource;
   pptUrl?: string;
   pptFileName?: string;
 };
@@ -393,6 +411,7 @@ type WordPreview = { title: string; blocks: ResultBlock[] };
 type Submission = {
   id: string;
   artifactId: string;
+  submissionVersion: number;
   ideaId: string;
   student: string;
   group: string;
@@ -439,6 +458,10 @@ type KnowledgeUpload = {
   contentText?: string;
   extractionStatus?: KnowledgeAssetRecord["extractionStatus"];
   extractionMessage?: string;
+  lexiangSyncStatus?: KnowledgeAssetRecord["lexiangSyncStatus"];
+  lexiangEntryId?: string;
+  lexiangSyncError?: string;
+  lexiangSyncedAt?: string;
   category?: KnowledgeCategory;
   enabled?: boolean;
 };
@@ -455,6 +478,9 @@ type KnowledgeBaseCatalogItem = {
   description: string;
   usedBy: string;
   active?: boolean;
+  scopeType?: "COURSE_SHARED" | "EXPERT_PRIVATE";
+  ownerExpertId?: string | null;
+  assetCount?: number;
 };
 const knowledgeCategoryOptions: KnowledgeCategory[] = [
   "教学大纲",
@@ -524,20 +550,16 @@ function getActiveKnowledgeCatalog(catalog: KnowledgeBaseCatalogItem[]) {
   return (catalog.length ? catalog : defaultKnowledgeBaseCatalog).filter((item) => item.active !== false);
 }
 
-function mergeKnowledgeBaseRecords(current: KnowledgeBaseCatalogItem[], remote: KnowledgeBaseRecord[]) {
-  const merged = new Map(
-    (current.length ? current : defaultKnowledgeBaseCatalog).map((item) => [item.category, item]),
-  );
-  remote.forEach((item) => {
-    merged.set(item.category, {
-      id: item.id,
-      category: item.category,
-      description: item.description,
-      usedBy: item.usedBy,
-      active: item.active,
-    });
-  });
-  return Array.from(merged.values());
+function isCourseSharedKnowledgeBase(item: KnowledgeBaseCatalogItem) {
+  return item.scopeType !== "EXPERT_PRIVATE";
+}
+
+function getExpertKnowledgeCatalog(catalog: KnowledgeBaseCatalogItem[], expertId: string) {
+  return catalog.filter((item) => isCourseSharedKnowledgeBase(item) || item.ownerExpertId === expertId);
+}
+
+function formatKnowledgeBaseName(category: string) {
+  return category.endsWith("知识库") ? category : `${category}知识库`;
 }
 
 function mapKnowledgeAssetRecord(record: KnowledgeAssetRecord): KnowledgeUpload {
@@ -556,7 +578,30 @@ function mapKnowledgeAssetRecord(record: KnowledgeAssetRecord): KnowledgeUpload 
     fileAvailable: record.fileAvailable,
     extractionStatus: record.extractionStatus,
     extractionMessage: record.extractionMessage || undefined,
+    lexiangSyncStatus: record.lexiangSyncStatus,
+    lexiangEntryId: record.lexiangEntryId || undefined,
+    lexiangSyncError: record.lexiangSyncError || undefined,
+    lexiangSyncedAt: record.lexiangSyncedAt || undefined,
   };
+}
+
+function getLexiangSyncLabel(asset: KnowledgeUpload) {
+  return {
+    SYNCED: "乐享已同步",
+    PULLED: "已从乐享回拉",
+    PENDING: "乐享待同步",
+    SYNCING: "乐享同步中",
+    CONFLICT: "乐享双端冲突",
+    REMOTE_MISSING: "乐享远端已缺失",
+    NOT_CONFIGURED: "乐享待配置",
+    FAILED: "乐享同步失败",
+    UNSUPPORTED: "仅平台保存",
+    NOT_APPLICABLE: "平台独立保存",
+  }[asset.lexiangSyncStatus || "NOT_APPLICABLE"];
+}
+
+function canRetryLexiangSync(asset: KnowledgeUpload) {
+  return ["PENDING", "NOT_CONFIGURED", "FAILED"].includes(asset.lexiangSyncStatus || "");
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -652,6 +697,24 @@ function toKnowledgeExpertInput(
   };
 }
 
+function toKnowledgeExpertRecord(expert: Expert, knowledgeCategories: KnowledgeCategory[]): KnowledgeExpertRecord {
+  return {
+    id: expert.id,
+    name: expert.name,
+    role: expert.role,
+    scenario: expert.scenario,
+    accent: expert.accent,
+    active: expert.active !== false,
+    sourceSkillName: expert.sourceSkillName,
+    sourceSkillContent: expert.sourceSkillContent,
+    sourceSkillUploadedBy: expert.sourceSkillUploadedBy,
+    systemPrompt: expert.systemPrompt,
+    userPrompt: expert.userPrompt,
+    skills: expert.skills,
+    knowledgeCategories,
+  };
+}
+
 function syncKnowledgeCatalogAddition(
   catalog: KnowledgeBaseCatalogItem[],
   states: KnowledgeBaseStates,
@@ -712,6 +775,7 @@ function getStudentOutcomeFlow(expertId: ExpertId) {
 
 function ExpertDetailModal(props: {
   expert: Expert;
+  knowledgeUploads: KnowledgeUpload[];
   knowledgeCatalog: KnowledgeBaseCatalogItem[];
   knowledgeBaseStates: KnowledgeBaseStates;
   selectedCategories: KnowledgeCategory[];
@@ -724,6 +788,8 @@ function ExpertDetailModal(props: {
   onSystemPromptChange: (value: string) => void;
   onUserPromptChange: (value: string) => void;
   onActiveChange: (active: boolean) => void;
+  onUploadPrivateKnowledge: (expertId: string, files: File[]) => Promise<void>;
+  onDeletePrivateKnowledge: (expertId: string, assetId: string) => Promise<void>;
   onSave: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -732,6 +798,16 @@ function ExpertDetailModal(props: {
   const expertId = props.expert.id;
   const closeDetail = props.onClose;
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const expertSkillKnowledgeBase = props.knowledgeCatalog.find(
+    (base) => base.scopeType === "EXPERT_PRIVATE" && base.ownerExpertId === props.expert.id,
+  );
+  const callableKnowledgeBases = props.knowledgeCatalog.filter(isCourseSharedKnowledgeBase);
+  const privateKnowledgeAssets = expertSkillKnowledgeBase
+    ? props.knowledgeUploads.filter((asset) => asset.category === expertSkillKnowledgeBase.category)
+    : [];
+  const selectedCallableKnowledgeBaseCount = callableKnowledgeBases.filter((base) =>
+    props.selectedCategories.includes(base.category),
+  ).length;
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -800,22 +876,54 @@ function ExpertDetailModal(props: {
               <dd>{props.expert.sourceSkillName || "平台预置专家"}</dd>
             </div>
             <div>
-              <dt>知识库目录</dt>
-              <dd>{props.selectedCategories.length} 个</dd>
+              <dt>Skill 专属库</dt>
+              <dd>{expertSkillKnowledgeBase ? "1 个" : "未建立"}</dd>
             </div>
             <div>
-              <dt>启用资料</dt>
-              <dd>{props.enabledKnowledgeCount} 个</dd>
+              <dt>调用知识库</dt>
+              <dd>{selectedCallableKnowledgeBaseCount} 个</dd>
             </div>
           </dl>
 
+          <section className="expert-skill-knowledge-card" aria-labelledby={`${titleId}-skill-knowledge`}>
+            <header>
+              <span className="expert-knowledge-icon" aria-hidden="true"><BookOpen size={18} /></span>
+              <div>
+                <strong id={`${titleId}-skill-knowledge`}>专家 Skill 专属知识库</strong>
+                <span>保存 Skill 包内勾选的知识资料；完整源文件在下方来源档案中追溯。</span>
+              </div>
+            </header>
+            {expertSkillKnowledgeBase ? (
+              <article>
+                <div>
+                  <strong>{formatKnowledgeBaseName(expertSkillKnowledgeBase.category)}</strong>
+                  <span>{expertSkillKnowledgeBase.description}</span>
+                </div>
+                <dl>
+                  <div><dt>资料</dt><dd>{privateKnowledgeAssets.length} 个</dd></div>
+                  <div><dt>状态</dt><dd>{expertSkillKnowledgeBase.active === false ? "已停用" : "已启用"}</dd></div>
+                  <div><dt>维护方式</dt><dd>Skill 导入 + 手动补充</dd></div>
+                </dl>
+              </article>
+            ) : (
+              <p>尚未建立专属知识库；重新上传并确认该专家 Skill 后将自动创建。</p>
+            )}
+            <ExpertPrivateKnowledgeFiles
+              files={privateKnowledgeAssets}
+              available={Boolean(expertSkillKnowledgeBase)}
+              onUpload={(files) => props.onUploadPrivateKnowledge(expertId, files)}
+              onDelete={(assetId) => props.onDeletePrivateKnowledge(expertId, assetId)}
+            />
+            <ExpertSkillSourceFiles key={expertId} expertId={expertId} />
+          </section>
+
           <section className="prompt-knowledge-route expert-detail-knowledge">
             <div>
-              <strong>专家调用知识库目录</strong>
-              <span>仅勾选的知识库会参与该专家的检索与提示词组装。</span>
+              <strong>专家调用的课程知识库</strong>
+              <span>教师或管理员维护的共享资料；勾选后参与检索，但不会修改专家 Skill。</span>
             </div>
             <div className="prompt-knowledge-options">
-              {props.knowledgeCatalog.map((base) => {
+              {callableKnowledgeBases.map((base) => {
                 const selected = props.selectedCategories.includes(base.category);
                 const enabled = props.knowledgeBaseStates[base.category];
                 return (
@@ -825,13 +933,14 @@ function ExpertDetailModal(props: {
                       checked={selected}
                       onChange={() => props.onKnowledgeToggle(base.category)}
                     />
-                    <span>{base.category}知识库</span>
+                    <span>{formatKnowledgeBaseName(base.category)}</span>
                     <em>{enabled ? "目录开放" : "目录停用"}</em>
                     <small>{base.usedBy}</small>
                   </label>
                 );
               })}
             </div>
+            <small className="expert-callable-knowledge-summary">已选择 {selectedCallableKnowledgeBaseCount} 个课程知识库，共有 {props.enabledKnowledgeCount} 份当前可检索资料。</small>
           </section>
 
           <section className="prompt-content-grid expert-detail-prompts">
@@ -1091,6 +1200,16 @@ function normalizeAccountRecords(records: AccountRecord[], groups: StudentGroup[
   return records.map((storedAccount) => {
     const account = { ...storedAccount } as AccountRecord & { password?: unknown };
     delete account.password;
+    const defaultQuotas = getDefaultAccountQuotas(account.role);
+    account.quota = Math.max(account.quota || 0, defaultQuotas.aiCalls);
+    account.aiCallsUsed = account.aiCallsUsed || 0;
+    account.aiCallsRemaining = Math.max(0, account.quota - account.aiCallsUsed);
+    account.lexiangPptQuota = Math.max(account.lexiangPptQuota || 0, defaultQuotas.lexiangPpt);
+    account.lexiangPptUsed = account.lexiangPptUsed || 0;
+    account.lexiangPptRemaining = Math.max(0, account.lexiangPptQuota - account.lexiangPptUsed);
+    account.workbuddyVideoQuota = Math.max(account.workbuddyVideoQuota || 0, defaultQuotas.workbuddyVideo);
+    account.workbuddyVideoUsed = account.workbuddyVideoUsed || 0;
+    account.workbuddyVideoRemaining = Math.max(0, account.workbuddyVideoQuota - account.workbuddyVideoUsed);
     const hasExpertPermissions = account.permissions.some((permission) => studentExpertPermissionNames.includes(permission));
     const defaultPermissions = account.role === "student" ? studentExpertPermissionNames : [];
     const basePermissions = account.role === "student" && !hasExpertPermissions ? defaultPermissions : account.permissions;
@@ -1129,6 +1248,17 @@ function getBaseRolePermissions(role: Role) {
   return ["账号权限管理", "知识库维护", "专家配置与 Skill 管理", "试点数据看板"];
 }
 
+function getDefaultAccountQuotas(role: Role) {
+  if (role === "student") return { aiCalls: 2000, lexiangPpt: 100, workbuddyVideo: 20 };
+  if (role === "teacher") return { aiCalls: 5000, lexiangPpt: 200, workbuddyVideo: 50 };
+  return { aiCalls: 10000, lexiangPpt: 500, workbuddyVideo: 100 };
+}
+
+function parseQuotaValue(value: string, fallback: number) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? fallback : Math.max(0, parsed);
+}
+
 function mapAdminAccount(account: AdminAccount, groups: StudentGroup[]): AccountRecord {
   const role = account.role.toLowerCase() as Role;
   const group = account.groupId ? groups.find((item) => item.id === account.groupId) : undefined;
@@ -1150,12 +1280,24 @@ function mapAdminAccount(account: AdminAccount, groups: StudentGroup[]): Account
     permissions: getBaseRolePermissions(role),
     disabledPermissions: account.disabledPermissions || [],
     quota: account.quotaRemaining,
+    aiCallsUsed: account.aiCallsUsed,
+    aiCallsRemaining: account.aiCallsRemaining,
+    lexiangPptQuota: account.lexiangPptQuota,
+    lexiangPptUsed: account.lexiangPptUsed,
+    lexiangPptRemaining: account.lexiangPptRemaining,
+    workbuddyVideoQuota: account.workbuddyVideoQuota,
+    workbuddyVideoUsed: account.workbuddyVideoUsed,
+    workbuddyVideoRemaining: account.workbuddyVideoRemaining,
     status: account.status === "ACTIVE" ? "已开通" : "已停用",
   };
 }
 
 function buildAuthenticatedAccount(auth: AuthSession, groups: StudentGroup[]): AccountRecord {
   const group = auth.groupId ? groups.find((item) => item.id === auth.groupId) : undefined;
+  const defaultQuotas = getDefaultAccountQuotas(auth.role);
+  const aiQuota = auth.quota ?? defaultQuotas.aiCalls;
+  const lexiangPptQuota = auth.lexiangPptQuota ?? defaultQuotas.lexiangPpt;
+  const workbuddyVideoQuota = auth.workbuddyVideoQuota ?? defaultQuotas.workbuddyVideo;
   return {
     id: auth.id || auth.account,
     role: auth.role,
@@ -1173,7 +1315,15 @@ function buildAuthenticatedAccount(auth: AuthSession, groups: StudentGroup[]): A
     groupName: auth.groupName,
     permissions: getBaseRolePermissions(auth.role),
     disabledPermissions: auth.disabledPermissions || [],
-    quota: auth.quota || 0,
+    quota: aiQuota,
+    aiCallsUsed: 0,
+    aiCallsRemaining: aiQuota,
+    lexiangPptQuota,
+    lexiangPptUsed: 0,
+    lexiangPptRemaining: lexiangPptQuota,
+    workbuddyVideoQuota,
+    workbuddyVideoUsed: 0,
+    workbuddyVideoRemaining: workbuddyVideoQuota,
     status: "已开通",
   };
 }
@@ -1258,11 +1408,11 @@ const baseExperts: Expert[] = [
     id: "pitch",
     name: "路演 PPT 专家",
     role: "将 BP 转换为可讲述的路演结构",
-    scenario: "10 页大纲、页面观点、讲稿建议",
+    scenario: "动态页数大纲、页面观点、讲稿建议",
     icon: PitchAvatar,
     accent: "#005aa8",
     skills: [
-      { id: "deck", name: "10 页 PPT 大纲", stage: "路演 PPT", description: "生成 10 页标题、核心观点和图表建议" },
+      { id: "deck", name: "路演 PPT 大纲", stage: "路演 PPT", description: "根据路演时长、受众和内容生成动态页数的逐页结构" },
       { id: "slide-points", name: "页面观点", stage: "观点提炼", description: "提炼每页一句话结论" },
       { id: "speaker-notes", name: "讲稿建议", stage: "路演表达", description: "生成演讲提示和转场话术" },
     ],
@@ -1311,6 +1461,21 @@ const baseExperts: Expert[] = [
 let experts: Expert[] = baseExperts;
 const baseStudentExpertIds: ExpertId[] = ["brainstorm", "positioning", "market", "business", "pitch", "script", "media"];
 let studentExpertIds: ExpertId[] = baseStudentExpertIds;
+
+function placePositioningExpertAfterBrainstorm(items: Expert[]) {
+  const brainstormIndex = items.findIndex((expert) => expert.id === "brainstorm");
+  const positioningIndex = items.findIndex((expert) => expert.id === "positioning");
+  if (brainstormIndex < 0 || positioningIndex < 0 || positioningIndex === brainstormIndex + 1) return items;
+
+  const positioningExpert = items[positioningIndex];
+  const remainingExperts = items.filter((expert) => expert.id !== "positioning");
+  const insertionIndex = remainingExperts.findIndex((expert) => expert.id === "brainstorm") + 1;
+  return [
+    ...remainingExperts.slice(0, insertionIndex),
+    positioningExpert,
+    ...remainingExperts.slice(insertionIndex),
+  ];
+}
 
 function normalizeCustomExperts(records: CustomExpertRecord[]) {
   return records
@@ -1467,168 +1632,6 @@ function resolveSelectedKnowledgeSources(
   return { categories, uploads: Array.from(uploadMap.values()) };
 }
 
-function getKnowledgeUsageBlock(
-  expertId: ExpertId,
-  uploads: KnowledgeUpload[],
-  states: KnowledgeBaseStates,
-  canCallKnowledge: boolean,
-  selection: StudentKnowledgeSelection,
-  allowedCategories?: KnowledgeCategory[],
-): ResultBlock {
-  const expertCategories = allowedCategories?.length ? allowedCategories : getExpertKnowledgeCategories(expertId);
-  const resolved = resolveSelectedKnowledgeSources(selection, uploads, states, expertCategories);
-  const categories = resolved.categories.filter((category) => expertCategories.includes(category));
-  const selectedButUnavailable = selection.categories.filter(
-    (category) => states[category] === false || !expertCategories.includes(category),
-  );
-  if (!canCallKnowledge) {
-    return {
-      title: "参考资料说明",
-      items: [
-        "这轮我先按课程内置范例帮你拆，不引用教师端知识库资料。",
-        "当前账号没有“调用课程知识库”权限，管理员重新开启后，学生端会自动恢复参考资料。",
-      ],
-    };
-  }
-  if (categories.length === 0 && resolved.uploads.length === 0) {
-    return {
-      title: "参考资料说明",
-      items: [
-        selectedButUnavailable.length
-          ? `你之前选的 ${selectedButUnavailable.join("、")} 当前没有开放给这个专家，我先按该专家允许的课程口径继续帮你推进。`
-          : "你这轮没有选择该专家可用的知识库，我先按课程内置范例继续帮你推进。",
-        `当前专家可调用：${expertCategories.map((category) => `${category}知识库`).join("、") || "暂无配置"}。`,
-      ],
-    };
-  }
-  const sourceItems = resolved.uploads.length
-    ? resolved.uploads.slice(0, 6).map((asset) => `${asset.category || inferKnowledgeCategory(asset.name)}知识库：${asset.name}（${asset.sizeLabel}）`)
-    : categories.map((category) => `${category}知识库：暂无教师上传资料，使用平台预置课程模板口径。`);
-  return {
-    title: "我会参考这些资料",
-    items: [
-      categories.length
-        ? `这轮先参考 ${categories.map((category) => `${category}知识库`).join("、")}，把回答收在课程作业能用的范围内。`
-        : "这轮先参考你选中的具体材料，把回答收在课程作业能用的范围内。",
-      ...sourceItems,
-      selectedButUnavailable.length
-        ? `另外，${selectedButUnavailable.join("、")} 当前不在该专家开放范围内，学生端不会引用。`
-        : "我会把资料当作参考，不会写成系统调用日志。",
-    ],
-  };
-}
-
-function getKnowledgeSpecificBlocks(
-  expertId: ExpertId,
-  selection: StudentKnowledgeSelection,
-  shouldOutput: boolean,
-  uploads: KnowledgeUpload[] = [],
-  states: KnowledgeBaseStates = {},
-  allowedCategories?: KnowledgeCategory[],
-): ResultBlock[] {
-  const expertCategories = allowedCategories?.length ? allowedCategories : getExpertKnowledgeCategories(expertId);
-  const resolved = resolveSelectedKnowledgeSources(selection, uploads, states, expertCategories);
-  const selected =
-    resolved.categories[0] ||
-    (resolved.uploads[0] ? resolved.uploads[0].category || inferKnowledgeCategory(resolved.uploads[0].name) : undefined) ||
-    expertCategories[0] ||
-    getExpertKnowledgeCategories(expertId)[0];
-  const selectedUploadNames = resolved.uploads.slice(0, 3).map((asset) => asset.name);
-  const publicReferenceBlock: ResultBlock = {
-    title: "外部公开资料参考",
-    items: [
-      "高校职业发展场景中，AI 工具常被用于简历反馈、模拟面试、岗位探索和职业路径建议；平台文案会把这些能力落到学生端任务，而不是只写“AI 生成”。",
-      "创业教育场景中，BP 和路演材料通常要覆盖问题、目标用户、解决方案、市场、商业模式、财务假设、团队、风险和验证计划；因此最终 Word 会补齐这些章节。",
-      "路演评审常追问商业可行性、客户为什么付费、数据安全、落地成本和试点指标；答辩和 PPT 内容会围绕这些问题提前准备。",
-    ],
-  };
-  const map: Record<string, ResultBlock> = {
-    教学大纲: {
-      title: "按课程阶段补强",
-      items: [
-        "第 1-2 周：创意发散、目标用户访谈、问题场景归纳，交付《头脑风暴整理表》和《访谈问题清单》。",
-        "第 3-4 周：项目定位、竞品对比、价值主张收敛，交付《产品定位说明》和《市场假设清单》。",
-        "第 5-6 周：商业模式、BP、PPT 初稿，交付《商业模式画布》《BP 核心模块》和《10 页路演结构》。",
-        "第 7-8 周：答辩模拟、教师审核、修改复盘，交付《答辩记录》《教师反馈闭环》和《优秀案例沉淀标签》。",
-      ],
-    },
-    "BP 模板": {
-      title: "BP 模板补强",
-      items: [
-        "执行摘要：一句话说明项目、第一用户、核心痛点、解决方案和首期试点目标。",
-        "商业模式：先写清付费方，再写采购理由、交付包、定价假设、续费理由和成本边界。",
-        "运营计划：用 8 周试点拆任务，指标包括活跃学生数、阶段成果数、教师审核数、退回修改数和优秀案例数。",
-        "风险应对：至少覆盖内容质量、学生依赖、教师使用成本、数据安全、真实接口成本五类风险。",
-      ],
-    },
-    "PPT 模板": {
-      title: "PPT 模板补强",
-      items: [
-        "每页标题改成结论句，例如“学生缺的不是工具，而是连续反馈闭环”，不要只写“用户痛点”。",
-        "10 页建议顺序：封面、课堂痛点、第一用户、解决方案、三端闭环、知识库与审核、商业模式、8 周试点、风险应对、下一步计划。",
-        "每页都要配一类证据：访谈原话、课程流程、三端截图、试点指标、评分 Rubric 或风险矩阵。",
-        "页脚保留评委追问提示，方便路演稿和答辩模拟承接。",
-      ],
-    },
-    评分标准: {
-      title: "评分标准补强",
-      items: [
-        "创新性：是否不是简单套壳通用 AI，而是结合课程模板、教师审核和成果沉淀形成闭环。",
-        "可行性：是否说清第一用户、付费方、交付物、试点周期和资源投入。",
-        "商业价值：是否能解释学院或课程组为什么愿意采购，以及采购后能看见哪些指标。",
-        "表达质量：BP、PPT、路演稿和答辩回答是否能互相承接，避免每份材料口径不一致。",
-      ],
-    },
-    创业案例: {
-      title: "创业案例补强",
-      items: [
-        "参考同类教育科技项目的切入方式：先从一个高频教学节点切入，再扩展到课程全流程。",
-        "本项目适合先切“创业实践课成果生成与审核”，不要一开始扩成所有职业服务场景。",
-        "案例表达建议：用一个学生小组从讨论录音到 BP、PPT、答辩的完整路径证明价值。",
-        "客户演示时重点讲试点样板，而不是讲远期大平台愿景。",
-      ],
-    },
-    答辩题库: {
-      title: "答辩题库补强",
-      items: [
-        "商业模式追问：谁付费？预算从哪里来？不采购会有什么损失？",
-        "产品边界追问：和通用 AI、招聘平台、学校作业系统分别有什么不同？",
-        "教学价值追问：老师为什么愿意用？学生为什么会持续用？学院能沉淀什么？",
-        "风险追问：学生隐私、内容幻觉、教师审核压力、真实生成成本分别怎么处理？",
-      ],
-    },
-    多媒体模板: {
-      title: "多媒体模板补强",
-      items: [
-        "30 秒视频建议只讲一条主线：课堂讨论很乱，AI 帮学生成稿，老师审核修改，成果进入案例库。",
-        "6 镜头结构：课堂讨论、学生输入、AI 输出、教师审核、答辩模拟、成果沉淀。",
-        "海报文案避免夸张科技感，突出“从课堂创意到路演成果，让每一次实践都有反馈”。",
-        "视觉 Prompt 保持高校商学院质感：深蓝、白、浅灰、金色点缀，真实课堂和产品界面结合。",
-      ],
-    },
-  };
-  const fallbackBlock: ResultBlock = {
-    title: `${selected}知识库补强`,
-    items: [
-      `当前选择了${selected}知识库，系统会优先引用该目录下已启用资料。`,
-      selectedUploadNames.length ? `本轮重点参考材料：${selectedUploadNames.join("、")}。` : "本轮未指定具体材料，优先使用目录下已启用资料。",
-      "如果该目录暂无资料，平台会使用课程通用口径生成建议。",
-      "建议先上传模板、案例或评分材料，让学生端回答更贴近课堂要求。",
-    ],
-  };
-  const categoryBlock = map[selected] || fallbackBlock;
-  const materialBlock =
-    selectedUploadNames.length && map[selected]
-      ? {
-          title: "本轮指定材料",
-          items: selectedUploadNames.map((name) => `优先参考：${name}`),
-        }
-      : null;
-  return shouldOutput
-    ? [publicReferenceBlock, categoryBlock, ...(materialBlock ? [materialBlock] : [])]
-    : [categoryBlock, ...(materialBlock ? [materialBlock] : [])];
-}
-
 function buildPromptTemplateParts(
   expert: Expert,
   uploads: KnowledgeUpload[],
@@ -1664,7 +1667,7 @@ ${expert.sourceSkillContent}`
 覆盖技能：${expert.skills.map((skill) => `${skill.stage}/${skill.name}`).join("、")}
 
 知识库引用规则：
-${promptKnowledgeBases.map((base) => `- ${base.category}知识库：${base.description}`).join("\n")}
+${promptKnowledgeBases.map((base) => `- ${formatKnowledgeBaseName(base.category)}：${base.description}`).join("\n")}
 引用方式：优先使用已启用资料；如果某个知识库暂无教师上传资料，则使用平台预置教学口径生成，但需要在结果中保持“知识来源标签”。
 
 回答方式策略：Auto、快速生成和深度分析由平台在每次调用时统一叠加，不写死在专家基础提示词中。
@@ -1680,7 +1683,7 @@ ${promptKnowledgeBases.map((base) => `- ${base.category}知识库：${base.descr
 - 历史上下文：同一创意下最近 5 轮对话、已生成的阶段成果、教师反馈意见
 - 本轮输入：学生文本，以及平台预处理后的可读资料摘要；图片需 OCR/视觉摘要，音频需 ASR 转写，视频需音轨转写与关键帧摘要
 - 当前专家字段：${expert.name} / ${expert.scenario}
-- 可引用知识库：${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}
+- 可引用知识库：${promptKnowledgeBases.map((base) => formatKnowledgeBaseName(base.category)).join("、")}
 - 已启用资料数量：${enabledKnowledgeCount} 个；如为 0，则使用平台预置教学口径并保留知识来源标签
 
 生成任务：
@@ -1688,7 +1691,7 @@ ${promptKnowledgeBases.map((base) => `- ${base.category}知识库：${base.descr
 
 组装规则：
 1. 先判断学生当前处于哪个阶段节点，优先读取同一创意下与该节点相关的历史成果。
-2. 从${promptKnowledgeBases.map((base) => `${base.category}知识库`).join("、")}中检索已启用资料，并把命中的资料转成“知识来源标签”。
+2. 从${promptKnowledgeBases.map((base) => formatKnowledgeBaseName(base.category)).join("、")}中检索已启用资料，并把命中的资料转成“知识来源标签”。
 3. 按专家能力边界输出内容；Word、PPTX 和视频由独立成果流程承接，不能因为回答方式不同而虚构已生成文件。
 4. 输出必须能被学生直接复制到阶段成果中，并标明是否建议提交老师审核。
 5. 如学生输入与当前技能不匹配，需要先温和纠偏，再给出可继续推进的结果。`,
@@ -1703,7 +1706,7 @@ const initialMessages: ChatMessage[] = [
     ideaId: "I-1001",
     sender: "user",
     mode: "文本",
-    content: "请把 AI 就业教练整理成 10 页路演 PPT。",
+    content: "请把 AI 就业教练整理成适合 8 分钟汇报的路演 PPT。",
     createdAt: "11:05",
   },
   {
@@ -1712,10 +1715,10 @@ const initialMessages: ChatMessage[] = [
     sender: "ai",
     expertId: "pitch",
     expertName: "路演 PPT 专家",
-    skillName: "10 页 PPT 大纲",
+    skillName: "路演 PPT 大纲",
     artifactType: "PPT",
     content: "已基于 BP 草稿生成路演结构，建议突出学校端付费价值和教学数据闭环。",
-    blocks: buildBlocks("pitch", "10 页 PPT 大纲", "Auto"),
+    blocks: buildBlocks("pitch", "路演 PPT 大纲", "Auto"),
     createdAt: "11:06",
   },
 ];
@@ -1778,11 +1781,25 @@ function mergeManageableExperts(activeExperts: Expert[], records: CustomExpertRe
   return Array.from(merged.values());
 }
 
+function mapKnowledgeBaseRecords(remote: KnowledgeBaseRecord[]): KnowledgeBaseCatalogItem[] {
+  return remote.map((item) => ({
+    id: item.id,
+    category: item.category,
+    description: item.description,
+    usedBy: item.usedBy,
+    active: item.active,
+    scopeType: item.scopeType,
+    ownerExpertId: item.ownerExpertId,
+    assetCount: item.assetCount,
+  }));
+}
+
 function mapRemoteMessage(message: RemoteConversationMessage): ChatMessage {
   return {
     id: message.id,
     clientMessageId: message.clientMessageId,
     ideaId: message.ideaId,
+    conversationId: message.conversationId,
     sender: message.sender === "AI" ? "ai" : "user",
     mode:
       message.inputMode === "录音" || message.inputMode === "语音" || message.inputMode === "文件"
@@ -1824,6 +1841,7 @@ function mapRemoteSubmission(submission: RemoteSubmission): Submission {
   return {
     id: submission.id,
     artifactId: submission.artifactId,
+    submissionVersion: submission.submissionVersion,
     ideaId: submission.ideaId,
     student: submission.student,
     group: submission.group,
@@ -1840,6 +1858,12 @@ function mapRemoteSubmission(submission: RemoteSubmission): Submission {
     isExcellent: submission.excellent,
     aiDiagnosis: submission.aiDiagnosis,
   };
+}
+
+function hasSameKnowledgeSelection(left: StudentKnowledgeSelection, right: StudentKnowledgeSelection) {
+  const sameValues = (leftValues: string[], rightValues: string[]) =>
+    leftValues.length === rightValues.length && leftValues.every((value) => rightValues.includes(value));
+  return sameValues(left.categories, right.categories) && sameValues(left.uploadIds, right.uploadIds);
 }
 
 function matchesTeacherReviewSearch(submission: Submission, search: TeacherReviewSearch) {
@@ -1885,127 +1909,6 @@ function makePersistentId(prefix: string) {
   return `${prefix}-${window.crypto?.randomUUID?.() || `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`}`;
 }
 
-function getSpeechRecognitionConstructor() {
-  const speechWindow = window as Window & {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  };
-  return speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-}
-
-function appendVoiceText(baseText: string, voiceText: string) {
-  const base = baseText.trim();
-  const transcript = voiceText.trim();
-  if (!base) return transcript;
-  if (!transcript) return base;
-  return `${base}\n${transcript}`;
-}
-
-function useSpeechInput(options: { value: string; onChange: (value: string) => void; fallbackText: string }) {
-  const [isListening, setIsListening] = useState(false);
-  const [notice, setNotice] = useState("");
-  const [hasVoiceInput, setHasVoiceInput] = useState(false);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const baseTextRef = useRef("");
-
-  useEffect(() => {
-    return () => {
-      recognitionRef.current?.abort();
-    };
-  }, []);
-
-  function start() {
-    const Recognition = getSpeechRecognitionConstructor();
-    baseTextRef.current = options.value;
-
-    if (!Recognition) {
-      options.onChange(appendVoiceText(options.value, options.fallbackText));
-      setHasVoiceInput(true);
-      setNotice("当前浏览器不支持实时语音识别，已填入一段演示语音内容。建议使用 Chrome 或 Edge 演示。");
-      return;
-    }
-
-    const recognition = new Recognition();
-    let latestTranscript = "";
-    recognition.lang = "zh-CN";
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    recognition.maxAlternatives = 1;
-    recognition.onstart = () => {
-      setIsListening(true);
-      setNotice("正在听写，请直接说出你的想法。");
-    };
-    recognition.onresult = (event) => {
-      let transcript = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        transcript += event.results[index][0]?.transcript || "";
-      }
-      latestTranscript = transcript.trim();
-      if (latestTranscript) {
-        options.onChange(appendVoiceText(baseTextRef.current, latestTranscript));
-        setHasVoiceInput(true);
-        setNotice("正在识别：" + latestTranscript);
-      }
-    };
-    recognition.onerror = (event) => {
-      const reason = event.error === "not-allowed" ? "请允许浏览器使用麦克风后再试。" : event.message || "请检查麦克风或浏览器权限。";
-      if (!latestTranscript) {
-        options.onChange(appendVoiceText(baseTextRef.current, options.fallbackText));
-        setHasVoiceInput(true);
-      }
-      setNotice("语音识别失败：" + reason + " 已填入一段演示语音内容，方便继续演示。");
-      setIsListening(false);
-    };
-    recognition.onend = () => {
-      setIsListening(false);
-      recognitionRef.current = null;
-      if (!latestTranscript) {
-        options.onChange(appendVoiceText(baseTextRef.current, options.fallbackText));
-        setHasVoiceInput(true);
-        setNotice("语音已整理成文字，可继续编辑或直接发送。");
-        return;
-      }
-      setNotice("语音已转成文字，可继续编辑或发送。");
-    };
-    recognitionRef.current = recognition;
-
-    try {
-      recognition.start();
-    } catch {
-      setIsListening(false);
-      recognitionRef.current = null;
-      options.onChange(appendVoiceText(options.value, options.fallbackText));
-      setHasVoiceInput(true);
-      setNotice("语音识别启动受限，已填入一段演示语音内容。");
-    }
-  }
-
-  function toggle() {
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
-      setNotice("语音听写已停止，正在整理识别文本。");
-      return;
-    }
-    start();
-  }
-
-  function resetVoiceInput() {
-    setHasVoiceInput(false);
-    setNotice("");
-  }
-
-  return { hasVoiceInput, isListening, notice, resetVoiceInput, toggle };
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function triggerDownload(href: string, filename: string, revokeUrl = false) {
   const link = document.createElement("a");
   link.href = href;
@@ -2018,29 +1921,15 @@ function triggerDownload(href: string, filename: string, revokeUrl = false) {
   if (revokeUrl) window.setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
 
-function downloadWord(filename: string, title: string, blocks?: ResultBlock[]) {
-  const body = blocks?.length
-    ? blocks
-        .map(
-          (block) =>
-            `<h2>${escapeHtml(block.title)}</h2><ul>${block.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`,
-        )
-        .join("")
-    : "<p>暂无结构化成果内容。</p>";
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:"Microsoft YaHei",Arial,sans-serif;line-height:1.75;color:#10233f;padding:40px 48px}.doc-meta{color:#5f7088;font-size:13px;margin:0 0 18px}h1{color:#003b79;border-bottom:3px solid #bf8f2a;padding-bottom:12px;margin-bottom:10px}h2{margin:26px 0 10px;color:#003b79;font-size:20px}ul{margin-top:8px;padding-left:22px}li{margin:7px 0}.footer{margin-top:34px;padding-top:12px;border-top:1px solid #d7e3ef;color:#7b8ca4;font-size:12px}</style></head><body><h1>${escapeHtml(title)}</h1><p class="doc-meta">上海财经大学商学院 AI 赋能创业实践教学示范平台｜阶段成果自动生成稿</p>${body}<p class="footer">说明：本文件由平台根据当前成果内容生成，请结合课程资料和教师审核意见复核。</p></body></html>`;
-  const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
-  triggerDownload(URL.createObjectURL(blob), filename, true);
+async function downloadWord(filename: string, title: string, blocks?: ResultBlock[]) {
+  const { buildArtifactDocx } = await import("./artifactDocuments");
+  const blob = await buildArtifactDocx(title, blocks || []);
+  const docxFilename = filename.replace(/\.docx?$/i, "") + ".docx";
+  triggerDownload(URL.createObjectURL(blob), docxFilename, true);
 }
 
 function getDownloadTitle(message: Pick<ChatMessage, "artifactType" | "skillName">, fallback = "AI 生成成果") {
-  if (!message.artifactType) return fallback;
-  if (message.artifactType === "POSITIONING") return "产品定位说明大纲";
-  if (message.artifactType === "BP") return "商业计划书 BP 初稿";
-  if (message.artifactType === "PPT") return "路演 PPT";
-  if (message.artifactType === "BRAINSTORM") return "待验证任务清单";
-  if (message.artifactType === "DEFENSE") return "答辩复盘";
-  if (message.artifactType === "MEDIA") return "创意物料包";
-  return message.skillName || artifactLabels[message.artifactType];
+  return getArtifactDocumentTitle(message.artifactType, message.skillName || fallback);
 }
 
 function getBrainstormTaskBlocks(blocks?: ResultBlock[]): ResultBlock[] {
@@ -2088,14 +1977,15 @@ function getBrainstormTaskBlocks(blocks?: ResultBlock[]): ResultBlock[] {
   ];
 }
 
-function downloadArtifactWord(message: Pick<ChatMessage, "artifactType" | "blocks" | "skillName">, titlePrefix = "") {
+async function downloadArtifactWord(message: Pick<ChatMessage, "artifactType" | "blocks" | "skillName" | "content">, titlePrefix = "") {
   const title = `${titlePrefix}${getDownloadTitle(message, "阶段对话记录")}`;
-  const filename = `${title}.doc`;
+  const filename = `${title}.docx`;
+  const normalizedBlocks = normalizeArtifactBlocks(message.blocks, message.content, message.artifactType);
   if (message.artifactType === "BRAINSTORM") {
-    downloadWord("待验证任务清单.doc", "待验证任务清单", getBrainstormTaskBlocks(message.blocks));
+    await downloadWord(`${title}.docx`, title, getBrainstormTaskBlocks(normalizedBlocks));
     return;
   }
-  downloadWord(filename, title, message.blocks);
+  await downloadWord(filename, title, normalizedBlocks);
 }
 
 function downloadPptAsset(asset?: GeneratedAsset) {
@@ -2108,11 +1998,13 @@ async function generateLexiangPptContext(message: ChatMessage, idea: Idea) {
   const query = [
     `请基于课程知识库，为《${idea.title}》生成路演 PPT 结构。`,
     `学生输入：${message.content}`,
+    "页数必须遵循学生明确要求；未指定页数时，请根据路演时长、受众和内容量判断，不要默认或补齐为 10 页。",
+    "请逐行使用“第 N 页：观点式标题｜核心观点｜证据或视觉建议”的格式输出。",
     ...(message.blocks || []).slice(0, 6).map((block) => `${block.title}：${block.items.slice(0, 4).join("；")}`),
   ].join("\n").slice(0, 1024);
   return requestLexiangPptContext({
     projectId: idea.id,
-    conversationId: message.ideaId,
+    conversationId: message.conversationId || message.ideaId,
     expertId: message.expertId || "pitch",
     query,
   });
@@ -2140,8 +2032,8 @@ function buildMediaAsset(idea: Idea, sourceMessage?: ChatMessage): GeneratedAsse
   };
 }
 
-function downloadMediaPackage(asset: GeneratedAsset) {
-  downloadWord(`${asset.title}.doc`, asset.title, [
+async function downloadMediaPackage(asset: GeneratedAsset) {
+  await downloadWord(`${asset.title}.doc`, asset.title, [
     { title: "模型提示词", items: [asset.prompt || ""] },
     { title: "30 秒宣传视频脚本", items: (asset.script || "").split("\n") },
     { title: "视频分镜表", items: (asset.storyboard || "").split("\n") },
@@ -2193,7 +2085,7 @@ function isSubmissionDownloadAvailable(submission: Submission, generatedAssets: 
   return true;
 }
 
-function downloadSubmissionArtifact(submission: Submission, generatedAssets: GeneratedAsset[]) {
+async function downloadSubmissionArtifact(submission: Submission, generatedAssets: GeneratedAsset[]) {
   if (submission.artifactType === "PPT") {
     return downloadPptAsset(getSubmissionPptAsset(submission, generatedAssets));
   }
@@ -2201,10 +2093,10 @@ function downloadSubmissionArtifact(submission: Submission, generatedAssets: Gen
     return downloadVideoAsset(getSubmissionVideoAsset(submission, generatedAssets));
   }
   if (submission.artifactType === "BRAINSTORM") {
-    downloadWord("待验证任务清单.doc", "待验证任务清单", getBrainstormTaskBlocks(submission.blocks));
+    await downloadWord("待验证任务清单.doc", "待验证任务清单", getBrainstormTaskBlocks(submission.blocks));
     return true;
   }
-  downloadWord(`${submission.artifactTitle}.doc`, submission.artifactTitle, submission.blocks);
+  await downloadWord(`${submission.artifactTitle}.doc`, submission.artifactTitle, submission.blocks);
   return true;
 }
 
@@ -2302,7 +2194,7 @@ function buildUploadPreview(file: File, text?: string, selectedCategory?: Knowle
       "BP 模板":
         "资料摘要：该资料将作为商业计划书模板使用，可解析执行摘要、用户痛点、解决方案、市场竞品、商业模式、财务假设、风险应对和试点指标。",
       "PPT 模板":
-        "资料摘要：该资料将作为路演 PPT 模板使用，可解析 10 页页面结构、核心观点、图表建议和演讲提示，用于 PPT 生成与答辩模拟。",
+        "资料摘要：该资料将作为路演 PPT 模板使用，可解析动态页面结构、核心观点、图表建议和演讲提示，用于 PPT 生成与答辩模拟。",
       评分标准:
         "资料摘要：该资料将作为教师审核 Rubric 使用，可解析评分维度、权重、等级描述和退回修改口径，用于系统评估与教师点评。",
       创业案例:
@@ -2394,7 +2286,7 @@ function previewKnowledgeAsset(asset: KnowledgeUpload, onPreviewWord: (preview: 
   });
 }
 
-function downloadKnowledgeAsset(asset: KnowledgeUpload) {
+async function downloadKnowledgeAsset(asset: KnowledgeUpload) {
   if (asset.downloadUrl || asset.fileAvailable) {
     triggerDownload(asset.downloadUrl || knowledgeAssetDownloadUrl(asset.id), asset.name);
     return;
@@ -2404,16 +2296,20 @@ function downloadKnowledgeAsset(asset: KnowledgeUpload) {
     return;
   }
   const basename = asset.name.replace(/\.[^.]+$/, "") || "课程资料";
-  downloadWord(`${basename}-资料说明.doc`, asset.name, buildKnowledgeAssetPreviewBlocks(asset));
+  await downloadWord(`${basename}-资料说明.doc`, asset.name, buildKnowledgeAssetPreviewBlocks(asset));
 }
 
 function App() {
   const [auth, setAuth] = useState<AuthSession | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [authRetentionExpiresAt, setAuthRetentionExpiresAt] = useState<number | null>(null);
   const [role, setRole] = useState<Role>("student");
   const [ideas, setIdeas] = useState<Idea[]>(initialIdeas);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [studentConversations, setStudentConversations] = useState<RemoteStudentConversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState("");
+  const [expertHandoffs, setExpertHandoffs] = useState<RemoteExpertHandoff[]>([]);
+  const [confirmingArtifactId, setConfirmingArtifactId] = useState<string | null>(null);
   const [studentWorkspaceAccount, setStudentWorkspaceAccount] = useState<string | null>(null);
   const [artifactRecords, setArtifactRecords] = useState<RemoteArtifact[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
@@ -2422,6 +2318,14 @@ function App() {
   const [knowledgeUploads, setKnowledgeUploads] = useState<KnowledgeUpload[]>([]);
   const [knowledgeCatalog, setKnowledgeCatalog] = useState<KnowledgeBaseCatalogItem[]>(defaultKnowledgeBaseCatalog);
   const [knowledgeBaseStates, setKnowledgeBaseStates] = useState<KnowledgeBaseStates>(initialKnowledgeBaseStates);
+  const [lexiangPullRun, setLexiangPullRun] = useState<LexiangPullRunRecord | null>(null);
+  const [lexiangPullLoadedForAccount, setLexiangPullLoadedForAccount] = useState<string | null>(null);
+  const [lexiangPulling, setLexiangPulling] = useState(false);
+  const [lexiangPullError, setLexiangPullError] = useState<string | null>(null);
+  const [lexiangMappings, setLexiangMappings] = useState<LexiangKnowledgeMappingRecord[]>([]);
+  const [lexiangMappingsLoadedForAccount, setLexiangMappingsLoadedForAccount] = useState<string | null>(null);
+  const [lexiangMappingsError, setLexiangMappingsError] = useState<string | null>(null);
+  const [savingLexiangMappingBaseId, setSavingLexiangMappingBaseId] = useState<string | null>(null);
   const [customExperts, setCustomExperts] = useState<CustomExpertRecord[]>([]);
   const [deletedExpertIds, setDeletedExpertIds] = useState<DeletedExpertIdState>([]);
   const [promptKnowledgeRoutes, setPromptKnowledgeRoutes] = useState<PromptKnowledgeRoutes>(createKnowledgeRouteState);
@@ -2448,6 +2352,7 @@ function App() {
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = useState(false);
   const [isProfileSettingsOpen, setIsProfileSettingsOpen] = useState(false);
   const [pendingDeleteIdeaId, setPendingDeleteIdeaId] = useState<string | null>(null);
+  const [pendingDeleteConversationId, setPendingDeleteConversationId] = useState<string | null>(null);
   const [pendingDeleteKnowledgeBase, setPendingDeleteKnowledgeBase] = useState<KnowledgeCategory | null>(null);
   const [pendingKnowledgeAssetAction, setPendingKnowledgeAssetAction] = useState<PendingKnowledgeAssetAction | null>(null);
   const [selectedKnowledgeSelection, setSelectedKnowledgeSelection] = useState<StudentKnowledgeSelection>(() =>
@@ -2464,6 +2369,7 @@ function App() {
   configureExpertGeneration(experts, studentExpertIds);
   const activeIdea = ideas.find((idea) => idea.id === activeIdeaId) || ideas[0];
   const pendingDeleteIdea = ideas.find((idea) => idea.id === pendingDeleteIdeaId) || null;
+  const pendingDeleteConversation = studentConversations.find((conversation) => conversation.id === pendingDeleteConversationId) || null;
   const pendingDeleteKnowledgeItem = pendingDeleteKnowledgeBase
     ? getActiveKnowledgeCatalog(knowledgeCatalog).find((item) => item.category === pendingDeleteKnowledgeBase) || null
     : null;
@@ -2474,14 +2380,31 @@ function App() {
     ? accountRecords.find((account) => account.account === auth.account) || buildAuthenticatedAccount(auth, studentGroups)
     : undefined;
   const activeStudentAvatarId = auth?.role === "student" ? normalizeStudentAvatarId(auth.avatarId) : defaultStudentAvatarId;
-  const studentExperts = experts.filter((expert) => isStudentExpertId(expert.id) && isStudentExpertEnabled(expert, activeAccountRecord));
-  const fallbackStudentExperts = experts.filter((expert) => isStudentExpertId(expert.id));
+  const studentExperts = placePositioningExpertAfterBrainstorm(
+    experts.filter((expert) => isStudentExpertId(expert.id) && isStudentExpertEnabled(expert, activeAccountRecord)),
+  );
+  const fallbackStudentExperts = placePositioningExpertAfterBrainstorm(experts.filter((expert) => isStudentExpertId(expert.id)));
   const rawSelectedExpert = experts.find((expert) => expert.id === selectedExpertId) || experts[0];
   const selectedExpert =
     role === "student" && (!isStudentExpertId(rawSelectedExpert.id) || !isStudentExpertEnabled(rawSelectedExpert, activeAccountRecord))
       ? studentExperts[0] || fallbackStudentExperts[0]
       : rawSelectedExpert;
   const selectedSkill = selectedExpert.skills.find((skill) => skill.id === selectedSkillId) || selectedExpert.skills[0];
+  const lexiangPullStateCurrent = Boolean(auth && lexiangPullLoadedForAccount === auth.account);
+  const lexiangMappingsStateCurrent = Boolean(auth && lexiangMappingsLoadedForAccount === auth.account);
+  const currentLexiangPullRun = lexiangPullStateCurrent ? lexiangPullRun : null;
+  const currentLexiangMappings = lexiangMappingsStateCurrent ? lexiangMappings : [];
+  const currentLexiangPullError = lexiangPullStateCurrent ? lexiangPullError : null;
+  const currentLexiangMappingsError = lexiangMappingsStateCurrent ? lexiangMappingsError : null;
+  const lexiangPullLoading = Boolean(auth && auth.role !== "student" && !lexiangPullStateCurrent);
+  const lexiangMappingsLoading = Boolean(auth && auth.role !== "student" && !lexiangMappingsStateCurrent);
+  const hasEnabledLexiangMapping = currentLexiangMappings.some(
+    (mapping) => mapping.enabled && Boolean(mapping.spaceId.trim()) && Boolean(mapping.parentEntryId.trim()),
+  );
+  const lexiangPullConfigured = hasEnabledLexiangMapping && currentLexiangPullRun?.configured !== false && currentLexiangPullRun?.status !== "NOT_CONFIGURED";
+  const lexiangPullConfigurationMessage = hasEnabledLexiangMapping
+    ? "乐享服务端凭据或空间配置尚未就绪，请联系运维人员。"
+    : "请先为至少一个课程共享知识库填写并启用乐享映射。";
   const teacherVisibleSubmissions = submissions.filter((item) => item.status !== "withdrawn");
   const teacherSubmissions = submissions.filter(
     (item) =>
@@ -2496,11 +2419,26 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    loadCurrentAuth()
-      .then((session) => {
-        if (!active || !session) return;
-        setAuth(session);
-        setRole(session.role);
+    if (!shouldRestoreAuth()) {
+      window.queueMicrotask(() => {
+        if (active) setAuthReady(true);
+      });
+      return () => {
+        active = false;
+      };
+    }
+    restoreRetainedSession({
+      loadSession: loadCurrentAuth,
+      getRetentionExpiry: getAuthRetentionExpiry,
+      clearRetention: clearAuthRetention,
+      logoutRemote: logoutRemoteSession,
+    })
+      .then((restored) => {
+        if (!active) return;
+        if (!restored) return;
+        setAuthRetentionExpiresAt(restored.expiresAt);
+        setAuth(restored.session);
+        setRole(restored.session.role);
       })
       .catch(() => {
         // 登录页会在用户主动登录时展示明确的连接错误。
@@ -2519,17 +2457,36 @@ function App() {
   }, [auth]);
 
   useEffect(() => {
+    if (!auth) return undefined;
+    const expiresAt = authRetentionExpiresAt;
+    if (expiresAt === null) return undefined;
+    const timeout = window.setTimeout(() => {
+      void logoutAndClearSession({
+        logoutRemote: logoutRemoteSession,
+        clearLocalSession: () => {
+          clearAuthRetention();
+          setAuthRetentionExpiresAt(null);
+          setStudentWorkspaceAccount(null);
+          setAuth(null);
+        },
+      });
+    }, Math.max(0, expiresAt - Date.now()));
+    return () => window.clearTimeout(timeout);
+  }, [auth, authRetentionExpiresAt]);
+
+  useEffect(() => {
     if (!auth || auth.role !== "student") return undefined;
     let active = true;
     const account = auth.account;
 
     async function restoreStudentWorkspace() {
       try {
-        const [initialWorkspace, remoteArtifacts, remoteSubmissions, remoteDefensePractices] = await Promise.all([
+        const [initialWorkspace, remoteArtifacts, remoteSubmissions, remoteDefensePractices, remoteHandoffs] = await Promise.all([
           loadStudentWorkspace(),
           listStudentArtifacts(),
           listStudentSubmissions(),
           listDefensePractices(),
+          listExpertHandoffs(),
         ]);
         let workspace = initialWorkspace;
         if (workspace.ideas.length === 0) {
@@ -2539,6 +2496,17 @@ function App() {
             stage: "新建创意",
           });
           workspace = { ideas: [idea], conversations: [] };
+        }
+        const firstIdea = workspace.ideas[0];
+        if (!workspace.conversations.some((item) => item.ideaId === firstIdea.id)) {
+          const conversation = await createStudentConversation(firstIdea.id, {
+            title: "路演 PPT 专家对话",
+            selectedExpertId: "pitch",
+            selectedSkillId: "deck",
+            modelMode: "Auto",
+            knowledgeSelection: { categories: [], uploadIds: [] },
+          });
+          workspace = { ...workspace, conversations: [conversation, ...workspace.conversations] };
         }
         if (!active) return;
 
@@ -2552,7 +2520,9 @@ function App() {
         setIdeas(nextIdeas);
         setMessages(workspace.conversations.flatMap((conversation) => conversation.messages.map(mapRemoteMessage)));
         setStudentConversations(workspace.conversations);
+        setActiveConversationId(activeConversation?.id || "");
         setArtifactRecords(remoteArtifacts);
+        setExpertHandoffs(remoteHandoffs);
         setGeneratedAssets(
           remoteArtifacts.map(mapGeneratedAssetRecord).filter((asset): asset is GeneratedAsset => Boolean(asset)),
         );
@@ -2566,10 +2536,7 @@ function App() {
           setSelectedKnowledgeSelection(normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection));
         }
         const restoredExpertId = activeConversation?.selectedExpertId || "pitch";
-        setPrompt(appendPositioningHandoffPrompt(
-          getScenarioPrompt(restoredExpertId, nextActiveIdea),
-          restoredExpertId === "positioning" ? findLatestBrainstormHandoff(remoteArtifacts, nextActiveIdea.id) : undefined,
-        ));
+        setPrompt(getScenarioPrompt(restoredExpertId, nextActiveIdea));
         setStudentWorkspaceAccount(account);
       } catch (error) {
         if (!active) return;
@@ -2610,15 +2577,51 @@ function App() {
   }, [auth]);
 
   useEffect(() => {
+    if (!auth || auth.role === "student") return undefined;
+    const account = auth.account;
+    let active = true;
+    getLatestLexiangPullRun()
+      .then((run) => {
+        if (!active) return;
+        setLexiangPullRun(run);
+        setLexiangPullError(null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setLexiangPullError(error instanceof Error ? error.message : "暂时无法读取乐享同步状态。");
+      })
+      .finally(() => {
+        if (active) setLexiangPullLoadedForAccount(account);
+      });
+    listLexiangKnowledgeMappings()
+      .then((mappings) => {
+        if (!active) return;
+        setLexiangMappings(mappings);
+        setLexiangMappingsError(null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setLexiangMappingsError(error instanceof Error ? error.message : "暂时无法读取乐享知识库映射。");
+      })
+      .finally(() => {
+        if (active) setLexiangMappingsLoadedForAccount(account);
+      });
+    return () => {
+      active = false;
+    };
+  }, [auth]);
+
+  useEffect(() => {
     if (
       !auth ||
       auth.role !== "student" ||
       studentWorkspaceAccount !== auth.account ||
       !activeIdeaId ||
+      !activeConversationId ||
       isGenerating
     ) return undefined;
-    const ideaMessages = messages.filter((message) => message.ideaId === activeIdeaId);
-    const pendingMessage = ideaMessages.at(-1);
+    const conversationMessages = messages.filter((message) => message.conversationId === activeConversationId);
+    const pendingMessage = conversationMessages.at(-1);
     if (!pendingMessage || pendingMessage.sender !== "user" || !pendingMessage.clientMessageId) return undefined;
 
     let active = true;
@@ -2635,10 +2638,26 @@ function App() {
         }
         if (status.status === "FAILED") {
           setIsRecoveringAi(false);
-          setSystemNotice({
-            title: "上次 AI 回复未完成",
-            message: status.errorMessage || "AI 服务未完成该请求，请重新发送。",
-          });
+          const failureId = `ai-failure-${pendingMessage.clientMessageId}`;
+          const exhausted =
+            status.errorMessage?.includes("输出长度") || status.errorMessage?.includes("响应缺少生成内容");
+          setMessages((current) =>
+            current.some((message) => message.id === failureId)
+              ? current
+              : [
+                  ...current,
+                  {
+                    id: failureId,
+                    ideaId: activeIdeaId,
+                    conversationId: activeConversationId,
+                    sender: "ai",
+                    content: exhausted
+                      ? "本次模型没有形成正式回复。你的输入已经保存，请直接重新发送；Auto 模式会使用更稳定的非思考生成。"
+                      : "本次 AI 回复没有完成。你的输入已经保存，请检查网络后重新发送。",
+                    createdAt: nowTime(),
+                  },
+                ],
+          );
           return;
         }
         if (status.status === "COMPLETED") {
@@ -2664,7 +2683,7 @@ function App() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [activeIdeaId, auth, isGenerating, messages, studentWorkspaceAccount]);
+  }, [activeConversationId, activeIdeaId, auth, isGenerating, messages, studentWorkspaceAccount]);
 
   useEffect(() => {
     if (!auth) return undefined;
@@ -2672,17 +2691,13 @@ function App() {
     Promise.all([listKnowledgeBases(), listKnowledgeAssets(), listKnowledgeExperts()])
       .then(([remoteBases, remoteAssets, remoteExperts]) => {
         if (!active) return;
-        setKnowledgeCatalog((current) => mergeKnowledgeBaseRecords(current, remoteBases));
-        setKnowledgeBaseStates((current) => ({
-          ...current,
-          ...Object.fromEntries(remoteBases.map((base) => [base.category, base.active])),
-        }));
+        const remoteExpertIds = new Set(remoteExperts.map((expert) => expert.id));
+        setKnowledgeCatalog(mapKnowledgeBaseRecords(remoteBases));
+        setKnowledgeBaseStates(Object.fromEntries(remoteBases.map((base) => [base.category, base.active])));
         setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
         setCustomExperts(remoteExperts.map(mapKnowledgeExpertRecord));
-        setPromptKnowledgeRoutes({
-          ...createKnowledgeRouteState(),
-          ...Object.fromEntries(remoteExperts.map((expert) => [expert.id, expert.knowledgeCategories])),
-        });
+        setDeletedExpertIds(baseExperts.filter((expert) => !remoteExpertIds.has(expert.id)).map((expert) => expert.id));
+        setPromptKnowledgeRoutes(Object.fromEntries(remoteExperts.map((expert) => [expert.id, expert.knowledgeCategories])));
       })
       .catch((error) => {
         if (!active) return;
@@ -2697,9 +2712,20 @@ function App() {
   }, [auth]);
 
   useEffect(() => {
-    if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account || !activeIdeaId) return undefined;
+    if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account || !activeConversationId) return undefined;
+    const activeConversation = studentConversations.find((conversation) => conversation.id === activeConversationId);
+    if (!activeConversation) return undefined;
+    const storedSelection = normalizeStudentKnowledgeSelection(activeConversation.knowledgeSelection);
+    if (
+      activeConversation.selectedExpertId === selectedExpertId
+      && activeConversation.selectedSkillId === selectedSkillId
+      && activeConversation.modelMode === model
+      && hasSameKnowledgeSelection(storedSelection, selectedKnowledgeSelection)
+    ) {
+      return undefined;
+    }
     const timer = window.setTimeout(() => {
-      saveStudentConversation(activeIdeaId, {
+      updateStudentConversation(activeConversationId, {
         selectedExpertId,
         selectedSkillId,
         modelMode: model,
@@ -2707,10 +2733,10 @@ function App() {
       })
         .then((saved) => {
           setStudentConversations((current) => {
-            const existing = current.find((item) => item.ideaId === saved.ideaId);
+            const existing = current.find((item) => item.id === saved.id);
             const next = { ...saved, messages: existing?.messages || [] };
             return existing
-              ? current.map((item) => (item.ideaId === saved.ideaId ? next : item))
+              ? current.map((item) => (item.id === saved.id ? next : item))
               : [next, ...current];
           });
         })
@@ -2723,12 +2749,13 @@ function App() {
     }, 250);
     return () => window.clearTimeout(timer);
   }, [
-    activeIdeaId,
+    activeConversationId,
     auth,
     model,
     selectedExpertId,
     selectedKnowledgeSelection,
     selectedSkillId,
+    studentConversations,
     studentWorkspaceAccount,
   ]);
 
@@ -2736,6 +2763,7 @@ function App() {
   knowledgeBaseCatalog = knowledgeCatalog.length ? knowledgeCatalog : defaultKnowledgeBaseCatalog;
   async function handleLogin(account: string, password: string) {
     const session = await loginWithPassword(account, password);
+    setAuthRetentionExpiresAt(markAuthRetention());
     setStudentWorkspaceAccount(null);
     setAuth(session);
     setRole(session.role);
@@ -2747,14 +2775,22 @@ function App() {
 
   async function handleConfirmLogout() {
     setIsLogoutConfirmOpen(false);
-    try {
-      await logoutRemoteSession();
-      setAuth(null);
-    } catch (error) {
+    const logoutError = await logoutAndClearSession({
+      logoutRemote: logoutRemoteSession,
+      clearLocalSession: () => {
+        clearAuthRetention();
+        setAuthRetentionExpiresAt(null);
+        setStudentWorkspaceAccount(null);
+        setAuth(null);
+      },
+    });
+    if (logoutError) {
       setSystemNotice({
-        title: "退出登录失败",
-        message: error instanceof Error ? error.message : "服务器暂时无法结束当前会话，请稍后重试。",
+        title: "已退出本机，远端会话结束失败",
+        message: logoutError instanceof Error ? logoutError.message : "本机登录状态已清除，但服务器暂时无法结束远端会话。",
       });
+    } else {
+      setSystemNotice(null);
     }
   }
 
@@ -2815,37 +2851,21 @@ function App() {
     block: blockPermission,
   };
 
-  function getBrainstormHandoffForIdea(idea: Idea) {
-    const persisted = findLatestBrainstormHandoff(artifactRecords, idea.id);
-    const latestMessage = messages.findLast(
-      (message) => message.ideaId === idea.id && message.artifactType === "BRAINSTORM" && Boolean(message.blocks),
-    );
-    if (!latestMessage?.blocks || latestMessage.id === persisted?.sourceMessageId) return persisted;
-    return createBrainstormArtifactContent({
-      sourceMessageId: latestMessage.id,
-      ideaId: idea.id,
-      projectTitle: idea.title,
-      projectDescription: idea.description,
-      sourceSummary: latestMessage.content,
-      blocks: latestMessage.blocks,
-    }).handoff;
-  }
-
   function getPreparedScenarioPrompt(expertId: ExpertId, idea: Idea) {
-    const handoff = expertId === "positioning" ? getBrainstormHandoffForIdea(idea) : undefined;
-    return appendPositioningHandoffPrompt(getScenarioPrompt(expertId, idea), handoff);
+    return getScenarioPrompt(expertId, idea);
   }
 
-  function applyConversationSettings(ideaId: string) {
-    const conversation = studentConversations.find((item) => item.ideaId === ideaId);
+  function applyConversationSettings(conversation?: RemoteStudentConversation) {
     if (!conversation) {
       const defaultExpert = studentExperts[0] || fallbackStudentExperts[0];
+      setActiveConversationId("");
       setSelectedExpertId(defaultExpert.id);
       setSelectedSkillId(defaultExpert.skills[0]?.id || "");
       setModel("Auto");
       setSelectedKnowledgeSelection({ categories: [], uploadIds: [] });
       return defaultExpert.id;
     }
+    setActiveConversationId(conversation.id);
     setSelectedExpertId(conversation.selectedExpertId);
     setSelectedSkillId(conversation.selectedSkillId);
     setModel(normalizeAnswerMode(conversation.modelMode));
@@ -2855,8 +2875,10 @@ function App() {
 
   async function persistStudentMessage(message: ChatMessage) {
     if (!auth || auth.role !== "student" || studentWorkspaceAccount !== auth.account) return null;
+    const conversationId = message.conversationId || activeConversationId;
+    if (!conversationId) throw new Error("当前对话尚未创建，请先新建对话。");
     try {
-      const saved = await appendStudentMessage(message.ideaId, {
+      const saved = await appendStudentConversationMessage(conversationId, {
         clientMessageId: message.clientMessageId || message.id,
         sender: message.sender === "ai" ? "AI" : "USER",
         inputMode: message.mode,
@@ -2869,6 +2891,18 @@ function App() {
       });
       const persisted = mapRemoteMessage(saved);
       setMessages((current) => current.map((item) => (item.id === message.id ? persisted : item)));
+      setStudentConversations((current) => current.map((conversation) => {
+        if (conversation.id !== conversationId) return conversation;
+        const exists = conversation.messages.some((item) => item.id === saved.id || item.clientMessageId === saved.clientMessageId);
+        return {
+          ...conversation,
+          messages: exists
+            ? conversation.messages.map((item) => (item.id === saved.id || item.clientMessageId === saved.clientMessageId ? saved : item))
+            : [...conversation.messages, saved],
+          lastMessageAt: saved.createdAt,
+          updatedAt: saved.createdAt,
+        };
+      }));
       return persisted;
     } catch (error) {
       setSystemNotice({
@@ -2909,12 +2943,51 @@ function App() {
     return saved;
   }
 
-  function handleSelectIdea(ideaId: string) {
+  function getLatestConversationForIdea(ideaId: string, expertId?: string) {
+    return studentConversations
+      .filter((item) => item.ideaId === ideaId && (!expertId || item.selectedExpertId === expertId))
+      .sort((left, right) =>
+        (right.lastMessageAt || right.updatedAt || right.createdAt).localeCompare(
+          left.lastMessageAt || left.updatedAt || left.createdAt,
+        ),
+      )[0];
+  }
+
+  async function createConversationForIdea(idea: Idea, expert = studentExperts[0] || fallbackStudentExperts[0]) {
+    if (!expert) throw new Error("当前没有可用专家，无法创建对话。");
+    const conversation = await createStudentConversation(idea.id, {
+      title: `${expert.name}对话`,
+      selectedExpertId: expert.id,
+      selectedSkillId: expert.skills[0]?.id || "",
+      modelMode: "Auto",
+      knowledgeSelection: { categories: [], uploadIds: [] },
+    });
+    setStudentConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+    return conversation;
+  }
+
+  async function ensureDefenseConversationForIdea(idea: Idea) {
+    const existing = getLatestConversationForIdea(idea.id, "defense");
+    if (existing) return existing.id;
+    const defenseExpert = experts.find((expert) => expert.id === "defense");
+    if (!defenseExpert) throw new Error("当前未配置答辩专家，无法保存答辩消息。");
+    return (await createConversationForIdea(idea, defenseExpert)).id;
+  }
+
+  async function handleSelectIdea(ideaId: string) {
     const idea = ideas.find((item) => item.id === ideaId);
     if (!idea) return;
-    setActiveIdeaId(ideaId);
-    const expertId = applyConversationSettings(ideaId);
-    setPrompt(getPreparedScenarioPrompt(expertId, idea));
+    try {
+      const conversation = getLatestConversationForIdea(ideaId) || await createConversationForIdea(idea);
+      setActiveIdeaId(ideaId);
+      const expertId = applyConversationSettings(conversation);
+      setPrompt(getPreparedScenarioPrompt(expertId, idea));
+    } catch (error) {
+      setSystemNotice({
+        title: "切换创意失败",
+        message: error instanceof Error ? error.message : "暂时无法读取或创建该创意的对话。",
+      });
+    }
   }
 
   async function handleCreateIdea() {
@@ -2929,10 +3002,11 @@ function App() {
         stage: "新建创意",
       });
       const idea = mapRemoteIdea(saved);
+      const conversation = await createConversationForIdea(idea);
       setIdeas((current) => [idea, ...current]);
       setActiveIdeaId(idea.id);
-      applyConversationSettings(idea.id);
-      setPrompt(getScenarioPrompt((studentExperts[0] || fallbackStudentExperts[0]).id, idea));
+      const expertId = applyConversationSettings(conversation);
+      setPrompt(getPreparedScenarioPrompt(expertId, idea));
     } catch (error) {
       setSystemNotice({
         title: "新建创意失败",
@@ -2966,12 +3040,28 @@ function App() {
         });
         remaining = [mapRemoteIdea(saved)];
       }
+      let remainingConversations = studentConversations.filter((conversation) => conversation.ideaId !== ideaId);
+      let nextConversation = remainingConversations
+        .filter((conversation) => conversation.ideaId === remaining[0].id)
+        .sort((left, right) => (right.lastMessageAt || right.updatedAt).localeCompare(left.lastMessageAt || left.updatedAt))[0];
+      if (!nextConversation) {
+        const defaultExpert = studentExperts[0] || fallbackStudentExperts[0];
+        nextConversation = await createStudentConversation(remaining[0].id, {
+          title: `${defaultExpert.name}对话`,
+          selectedExpertId: defaultExpert.id,
+          selectedSkillId: defaultExpert.skills[0]?.id || "",
+          modelMode: "Auto",
+          knowledgeSelection: { categories: [], uploadIds: [] },
+        });
+        remainingConversations = [nextConversation, ...remainingConversations];
+      }
       setIdeas(remaining);
       setMessages((current) => current.filter((message) => message.ideaId !== ideaId));
-      setStudentConversations((current) => current.filter((conversation) => conversation.ideaId !== ideaId));
+      setStudentConversations(remainingConversations);
       if (activeIdeaId === ideaId) {
         setActiveIdeaId(remaining[0].id);
-        applyConversationSettings(remaining[0].id);
+        const expertId = applyConversationSettings(nextConversation);
+        setPrompt(getPreparedScenarioPrompt(expertId, remaining[0]));
       }
       setPendingDeleteIdeaId(null);
     } catch (error) {
@@ -3019,7 +3109,7 @@ function App() {
         saved = await updateKnowledgeBase(saved.id, { ...saved, active: false });
       }
     }
-    return mergeKnowledgeBaseRecords([], [saved])[0];
+    return mapKnowledgeBaseRecords([saved])[0];
   }
 
   async function handleKnowledgeCatalogChange(nextCatalog: KnowledgeBaseCatalogItem[]) {
@@ -3091,6 +3181,62 @@ function App() {
       setSystemNotice({
         title: "知识资料上传失败",
         message: error instanceof Error ? error.message : "资料文件与元数据未写入后端。",
+      });
+    }
+  }
+
+  async function handleUploadExpertPrivateKnowledge(expertId: string, files: File[]) {
+    const results = await Promise.allSettled(
+      files.map((file) => uploadExpertPrivateKnowledgeAsset(expertId, file)),
+    );
+    const uploadedRecords = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    const uploadedAssets = uploadedRecords.map(mapKnowledgeAssetRecord);
+    if (uploadedAssets.length) {
+      setKnowledgeUploads((current) => [
+        ...uploadedAssets,
+        ...current.filter((asset) => !uploadedAssets.some((uploaded) => uploaded.id === asset.id)),
+      ]);
+      const refreshOutcome = await attemptPostMutationRefresh(async () => {
+        const [remoteBases, remoteAssets] = await Promise.all([listKnowledgeBases(), listKnowledgeAssets()]);
+        setKnowledgeCatalog(mapKnowledgeBaseRecords(remoteBases));
+        setKnowledgeBaseStates(Object.fromEntries(remoteBases.map((base) => [base.category, base.active])));
+        setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
+      });
+      if (!refreshOutcome.refreshed) {
+        setSystemNotice({
+          title: "专家资料已上传，列表刷新失败",
+          message: `已成功保存 ${uploadedAssets.length} 个文件，无需重复上传。请稍后重新打开专家资料列表刷新显示。`,
+        });
+      }
+    }
+
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      const firstFailure = failures[0];
+      const detail = firstFailure.status === "rejected" && firstFailure.reason instanceof Error
+        ? firstFailure.reason.message
+        : "文件未能写入专家专属知识库。";
+      throw new Error(
+        results.length === failures.length
+          ? detail
+          : `已成功上传 ${results.length - failures.length} 个文件，另有 ${failures.length} 个失败：${detail}`,
+      );
+    }
+  }
+
+  async function handleDeleteExpertPrivateKnowledge(expertId: string, assetId: string) {
+    await deleteExpertPrivateKnowledgeAsset(expertId, assetId);
+    setKnowledgeUploads((current) => current.filter((asset) => asset.id !== assetId));
+    const refreshOutcome = await attemptPostMutationRefresh(async () => {
+      const [remoteBases, remoteAssets] = await Promise.all([listKnowledgeBases(), listKnowledgeAssets()]);
+      setKnowledgeCatalog(mapKnowledgeBaseRecords(remoteBases));
+      setKnowledgeBaseStates(Object.fromEntries(remoteBases.map((base) => [base.category, base.active])));
+      setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
+    });
+    if (!refreshOutcome.refreshed) {
+      setSystemNotice({
+        title: "专家资料已删除，列表刷新失败",
+        message: "删除操作已经完成，无需重复删除。请稍后重新打开专家资料列表刷新显示。",
       });
     }
   }
@@ -3288,7 +3434,7 @@ function App() {
     setPendingKnowledgeAssetAction(null);
   }
 
-  function handleDeleteExpert(expertId: ExpertId) {
+  async function handleDeleteExpert(expertId: ExpertId) {
     const manageableExperts = mergeManageableExperts(experts, customExperts);
     if (manageableExperts.length <= 1) {
       return false;
@@ -3296,46 +3442,116 @@ function App() {
     const target = manageableExperts.find((expert) => expert.id === expertId);
     if (!target) return false;
     const fallbackExpert = experts.find((expert) => expert.id !== expertId) || manageableExperts.find((expert) => expert.id !== expertId) || baseExperts[0];
-    const isBaseExpert = baseExperts.some((expert) => expert.id === expertId);
-    const categories = promptKnowledgeRoutes[expertId] || getExpertKnowledgeCategories(expertId);
-    void (async () => {
-      try {
-        if (isBaseExpert) {
-          const saved = await saveKnowledgeExpert(
-            toKnowledgeExpertInput(toCustomExpertRecord(target), categories, false),
-          );
-          const inactive = mapKnowledgeExpertRecord(saved);
-          setCustomExperts((current) => [...current.filter((expert) => expert.id !== expertId), inactive]);
-        } else {
-          await deleteKnowledgeExpert(expertId);
-          setCustomExperts((current) => current.filter((expert) => expert.id !== expertId));
-        }
-        setDeletedExpertIds((current) => (isBaseExpert && !current.includes(expertId) ? [...current, expertId] : current));
-        setPromptKnowledgeRoutes((current) => {
-          const nextRoutes = { ...current };
-          delete nextRoutes[expertId];
-          return nextRoutes;
-        });
-        setAccountRecords((current) =>
-          current.map((account) => ({
-            ...account,
-            permissions: account.permissions.filter((permission) => permission !== target.name),
-            disabledPermissions: (account.disabledPermissions || []).filter((permission) => permission !== target.name),
-          })),
-        );
-      } catch (error) {
-        setSystemNotice({
-          title: "删除专家失败",
-          message: error instanceof Error ? error.message : "专家仍保留在后端。",
-        });
-      }
-    })();
+    try {
+      await deleteKnowledgeExpert(expertId, true);
+    } catch (error) {
+      setSystemNotice({
+        title: "删除专家失败",
+        message: error instanceof Error ? error.message : "专家及其专属数据仍保留在后端。",
+      });
+      return false;
+    }
+
+    const privateCategories = new Set(
+      knowledgeCatalog
+        .filter((base) => base.scopeType === "EXPERT_PRIVATE" && base.ownerExpertId === expertId)
+        .map((base) => base.category),
+    );
+    setCustomExperts((current) => current.filter((expert) => expert.id !== expertId));
+    setDeletedExpertIds((current) => (current.includes(expertId) ? current : [...current, expertId]));
+    setKnowledgeCatalog((current) => current.filter((base) => base.ownerExpertId !== expertId));
+    setKnowledgeBaseStates((current) =>
+      Object.fromEntries(Object.entries(current).filter(([category]) => !privateCategories.has(category))),
+    );
+    setKnowledgeUploads((current) => current.filter((asset) => !privateCategories.has(asset.category || inferKnowledgeCategory(asset.name))));
+    setPromptKnowledgeRoutes((current) => {
+      const nextRoutes = { ...current };
+      delete nextRoutes[expertId];
+      return nextRoutes;
+    });
+    setAccountRecords((current) =>
+      current.map((account) => ({
+        ...account,
+        permissions: account.permissions.filter((permission) => permission !== target.name),
+        disabledPermissions: (account.disabledPermissions || []).filter((permission) => permission !== target.name),
+      })),
+    );
     if (selectedExpertId === expertId) {
       setSelectedExpertId(fallbackExpert.id);
       setSelectedSkillId(fallbackExpert.skills[0]?.id || "");
       setPrompt(getScenarioPrompt(fallbackExpert.id, activeIdea));
     }
+
+    try {
+      const [remoteBases, remoteAssets, remoteExperts] = await Promise.all([
+        listKnowledgeBases(),
+        listKnowledgeAssets(),
+        listKnowledgeExperts(),
+      ]);
+      const remoteExpertIds = new Set(remoteExperts.map((expert) => expert.id));
+      setKnowledgeCatalog(mapKnowledgeBaseRecords(remoteBases));
+      setKnowledgeBaseStates(Object.fromEntries(remoteBases.map((base) => [base.category, base.active])));
+      setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
+      setCustomExperts(remoteExperts.map(mapKnowledgeExpertRecord));
+      setDeletedExpertIds(baseExperts.filter((expert) => !remoteExpertIds.has(expert.id)).map((expert) => expert.id));
+      setPromptKnowledgeRoutes(Object.fromEntries(remoteExperts.map((expert) => [expert.id, expert.knowledgeCategories])));
+    } catch (error) {
+      setSystemNotice({
+        title: "专家已删除，列表刷新失败",
+        message: error instanceof Error ? error.message : "本页已移除该专家，请刷新页面重新读取后端数据。",
+      });
+    }
     return true;
+  }
+
+  async function handleSyncKnowledgeAsset(id: string) {
+    try {
+      const saved = await syncKnowledgeAssetWithLexiang(id);
+      setKnowledgeUploads((current) => current.map((item) => (item.id === id ? mapKnowledgeAssetRecord(saved) : item)));
+    } catch (error) {
+      setSystemNotice({
+        title: "乐享知识库同步失败",
+        message: error instanceof Error ? error.message : "本地资料已保留，可稍后重试同步。",
+      });
+    }
+  }
+
+  async function handlePullLexiangKnowledge() {
+    if (lexiangPulling) return;
+    setLexiangPulling(true);
+    setLexiangPullError(null);
+    try {
+      const run = await pullLexiangKnowledge();
+      setLexiangPullRun(run);
+      const [remoteBases, remoteAssets] = await Promise.all([listKnowledgeBases(), listKnowledgeAssets()]);
+      setKnowledgeCatalog(mapKnowledgeBaseRecords(remoteBases));
+      setKnowledgeBaseStates(Object.fromEntries(remoteBases.map((base) => [base.category, base.active])));
+      setKnowledgeUploads(remoteAssets.map(mapKnowledgeAssetRecord));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "乐享课程知识回拉未执行。";
+      setLexiangPullError(message);
+      setSystemNotice({ title: "乐享课程知识回拉失败", message });
+    } finally {
+      setLexiangPulling(false);
+    }
+  }
+
+  async function handleSaveLexiangMapping(input: SaveLexiangKnowledgeMappingInput) {
+    setSavingLexiangMappingBaseId(input.baseId);
+    try {
+      const saved = await updateLexiangKnowledgeMapping(input);
+      setLexiangMappings((current) => [
+        ...current.filter((mapping) => mapping.baseId !== saved.baseId),
+        saved,
+      ]);
+      setLexiangMappingsError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "乐享知识库映射未保存。";
+      setSystemNotice({ title: "乐享映射保存失败", message });
+      throw error instanceof Error ? error : new Error(message);
+    } finally {
+      setSavingLexiangMappingBaseId(null);
+    }
   }
 
   async function handleGenerate(mode: "文本" | "录音" | "语音" | "文件" = "文本", uploadedFiles: File[] = [], promptOverride = "") {
@@ -3345,6 +3561,10 @@ function App() {
     }
     if (role === "student" && !isStudentExpertEnabled(selectedExpert, activeAccountRecord)) {
       blockPermission(selectedExpert.name);
+      return;
+    }
+    if (!activeConversationId) {
+      setSystemNotice({ title: "尚未创建对话", message: "请先新建或选择一个对话，再发送消息。" });
       return;
     }
     setIsGenerating(true);
@@ -3372,7 +3592,7 @@ function App() {
     const typedPrompt = promptOverride.trim() || prompt.trim();
     const userContent =
       mode === "文件" || mode === "录音"
-        ? `${uploadedFileText || `上传了一份关于《${activeIdea.title}》的本地资料。`}请整理重点并给出建议。`
+        ? `${uploadedFileText || `上传了一份关于《${activeIdea.title}》的本地资料。`}${typedPrompt || "请结合附件内容整理重点并给出建议。"}`
         : mode === "语音"
           ? typedPrompt || `通过语音补充了《${activeIdea.title}》的答辩想法，请模拟评委追问并给建议。`
           : typedPrompt || getScenarioPrompt(selectedExpert.id, activeIdea);
@@ -3380,6 +3600,7 @@ function App() {
       id: clientMessageId,
       clientMessageId,
       ideaId: activeIdea.id,
+      conversationId: activeConversationId,
       sender: "user",
       mode,
       content: userContent,
@@ -3387,13 +3608,9 @@ function App() {
     };
     setMessages((current) => [...current, userMessage]);
     setPrompt("");
-    const round = getExpertDialogueRound(messages, activeIdea.id, selectedExpert.id);
-    const artifactType = getArtifactType(selectedExpert.id);
-    const shouldOutput = shouldOutputStageResult(selectedExpert.id, round);
-    const selectedExpertKnowledgeCategories = getConfiguredExpertKnowledgeCategories(selectedExpert.id, promptKnowledgeRoutes);
-
+    const candidateArtifactType = getArtifactType(selectedExpert.id);
     try {
-      await saveStudentConversation(activeIdea.id, {
+      await updateStudentConversation(activeConversationId, {
         selectedExpertId: selectedExpert.id,
         selectedSkillId: selectedSkill.id,
         modelMode: model,
@@ -3407,6 +3624,7 @@ function App() {
         const localNoticeMessage: ChatMessage = {
           id: makeId("M"),
           ideaId: activeIdea.id,
+          conversationId: activeConversationId,
           sender: "ai",
           expertId: selectedExpert.id,
           expertName: selectedExpert.name,
@@ -3423,37 +3641,26 @@ function App() {
         expertId: selectedExpert.id,
         clientMessageId: userMessage.id,
         skillName: selectedSkill.name,
-        artifactType: shouldOutput ? artifactType : undefined,
+        artifactType: candidateArtifactType,
+        artifactMode: "AUTO",
       });
-      const blocks: ResultBlock[] | undefined = shouldOutput
-        ? [
-            { title: `${selectedExpert.name}生成结果`, items: [reply.content] },
-            ...getKnowledgeSpecificBlocks(
-              selectedExpert.id,
-              selectedKnowledgeSelection,
-              true,
-              knowledgeUploads,
-              knowledgeBaseStates,
-              selectedExpertKnowledgeCategories,
-            ),
-            getKnowledgeUsageBlock(
-              selectedExpert.id,
-              knowledgeUploads,
-              knowledgeBaseStates,
-              canUsePermission("调用课程知识库"),
-              selectedKnowledgeSelection,
-              selectedExpertKnowledgeCategories,
-            ),
-          ]
+      const producedArtifactType = isArtifactType(reply.artifactType) ? reply.artifactType : undefined;
+      const blocks: ResultBlock[] | undefined = producedArtifactType
+        ? normalizeArtifactBlocks(
+            normalizeRemoteBlocks(reply.blocks),
+            reply.content,
+            producedArtifactType,
+          )
         : undefined;
       const aiMessage: ChatMessage = {
         id: reply.assistantMessageId || makeId("M"),
         ideaId: activeIdea.id,
+        conversationId: activeConversationId,
         sender: "ai",
         expertId: selectedExpert.id,
         expertName: selectedExpert.name,
         skillName: selectedSkill.name,
-        artifactType: shouldOutput ? artifactType : undefined,
+        artifactType: producedArtifactType,
         content: reply.content,
         blocks,
         createdAt: nowTime(),
@@ -3483,10 +3690,29 @@ function App() {
           });
         });
     } catch (error) {
-      setSystemNotice({
-        title: "AI 生成失败",
-        message: error instanceof Error ? error.message : "AI 服务暂时不可用，请稍后重试。",
-      });
+      const errorMessage = error instanceof Error ? error.message : "";
+      const exhausted = errorMessage.includes("输出长度") || errorMessage.includes("响应缺少生成内容");
+      const failureId = `ai-failure-${userMessage.id}`;
+      setMessages((current) =>
+        current.some((message) => message.id === failureId)
+          ? current
+          : [
+              ...current,
+              {
+                id: failureId,
+                ideaId: activeIdea.id,
+                conversationId: activeConversationId,
+                sender: "ai",
+                expertId: selectedExpert.id,
+                expertName: selectedExpert.name,
+                skillName: selectedSkill.name,
+                content: exhausted
+                  ? "本次模型没有形成正式回复。你的输入已经保存，请直接重新发送；Auto 模式会使用更稳定的非思考生成。"
+                  : "本次 AI 回复没有完成。你的输入已经保存，请检查网络后重新发送。",
+                createdAt: nowTime(),
+              },
+            ],
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -3494,7 +3720,14 @@ function App() {
 
   function buildPptAssetFromMessage(
     message: ChatMessage,
-    pptContext?: { configured?: boolean; content?: string; references?: PptKnowledgeReference[]; pptUrl?: string; pptFileName?: string },
+    pptContext?: {
+      configured?: boolean;
+      source?: PptContentSource;
+      content?: string;
+      references?: PptKnowledgeReference[];
+      pptUrl?: string;
+      pptFileName?: string;
+    },
   ) {
     const existing = generatedAssets.find((asset) => asset.type === "PPT" && asset.sourceMessageId === message.id);
     const baseAsset =
@@ -3512,7 +3745,8 @@ function App() {
           pptKnowledgeContent: pptContext.content || "",
           pptKnowledgeReferences: pptContext.references || [],
           pptGeneratedAt: nowTime(),
-          pptUsesLexiang: Boolean(pptContext.configured),
+          pptUsesLexiang: pptContext.source === "LEXIANG" || (!pptContext.source && Boolean(pptContext.configured)),
+          pptContentSource: pptContext.source || (pptContext.configured ? "LEXIANG" : "DEEPSEEK"),
           pptUrl: pptContext.pptUrl,
           pptFileName: pptContext.pptFileName,
         }
@@ -3542,6 +3776,7 @@ function App() {
         title: asset.title,
         content: asset.pptKnowledgeContent,
         references: asset.pptKnowledgeReferences,
+        contentSource: asset.pptContentSource,
       });
       const uploaded = await uploadStudentArtifactPptx(saved.id, pptxFile);
       setArtifactRecords((current) => [uploaded, ...current.filter((item) => item.id !== uploaded.id)]);
@@ -3569,27 +3804,59 @@ function App() {
         return;
       }
       if (message.artifactType === "PPT") {
-        setPendingAssetGeneration({
-          title: "正在连接乐享知识库生成 PPT",
-          detail: "正在读取乐享知识库资料，生成 10 页路演结构、页面观点和素材建议。",
-          seconds: 12,
-        });
-        try {
-          const pptContext = await generateLexiangPptContext(message, activeIdea);
-          const asset = buildPptAssetFromMessage(message, pptContext);
-          setPptPreview((await persistGeneratedAsset(asset)) || asset);
-        } catch (error) {
+        const cached = generatedAssets.find(
+          (asset) => asset.type === "PPT" && asset.sourceMessageId === message.id && Boolean(asset.pptUrl),
+        );
+        if (cached) {
+          setPptPreview(cached);
+          return;
+        }
+        const deepSeekContent = buildPptOutlineContent(message.blocks, message.content);
+        const generatePptFromDeepSeekFallback = async (reason: string) => {
+          if (parsePptSlideOutline(deepSeekContent).length === 0) {
+            setSystemNotice({
+              title: "暂时无法生成 PPTX",
+              message: "乐享当前不可用，本轮 DeepSeek 结果也没有可识别的逐页结构。请先让路演 PPT 专家生成页面大纲后再试。",
+            });
+            return;
+          }
           const asset = buildPptAssetFromMessage(message, {
             configured: false,
-            content: "",
+            source: "DEEPSEEK",
+            content: deepSeekContent,
             references: [],
           });
           const storedAsset = await persistGeneratedAsset(asset);
           setPptPreview(storedAsset || asset);
-          setSystemNotice({
-            title: "已使用平台预置结构生成 PPTX",
-            message: error instanceof Error ? `乐享当前不可用：${error.message}` : "乐享当前不可用，未产生供应商消耗。",
-          });
+          if (storedAsset) {
+            setSystemNotice({
+              title: "已改用 DeepSeek 内容生成 PPTX",
+              message: `${reason}平台已使用本轮 DeepSeek 生成的逐页内容完成 PPTX 组装，页数按实际成果保留。`,
+            });
+          }
+        };
+        const lexiangQuotaExhausted = activeAccountRecord?.lexiangPptRemaining === 0;
+        setPendingAssetGeneration({
+          title: lexiangQuotaExhausted ? "正在使用 DeepSeek 内容生成 PPT" : "正在连接乐享知识库生成 PPT",
+          detail: lexiangQuotaExhausted
+            ? "乐享 PPT 额度已用完，正在使用本轮 DeepSeek 逐页内容组装 PPTX。"
+            : "正在读取乐享知识库资料，并按路演时长、受众和实际内容确定页面数量。",
+          seconds: 12,
+        });
+        try {
+          if (lexiangQuotaExhausted) {
+            await generatePptFromDeepSeekFallback("乐享 PPT 额度已用完。 ");
+            return;
+          }
+          const pptContext = await generateLexiangPptContext(message, activeIdea);
+          if (parsePptSlideOutline(pptContext.content).length === 0) {
+            throw new Error("乐享未返回可识别的逐页 PPT 结构");
+          }
+          const asset = buildPptAssetFromMessage(message, { ...pptContext, source: "LEXIANG" });
+          setPptPreview((await persistGeneratedAsset(asset)) || asset);
+        } catch (error) {
+          const reason = error instanceof Error ? `乐享当前不可用：${error.message}。` : "乐享当前不可用。";
+          await generatePptFromDeepSeekFallback(reason);
         } finally {
           setPendingAssetGeneration(null);
         }
@@ -3603,7 +3870,10 @@ function App() {
       window.setTimeout(() => {
         setWordPreview({
           title: getDownloadTitle(message, "阶段对话记录"),
-          blocks: message.artifactType === "BRAINSTORM" ? getBrainstormTaskBlocks(message.blocks) : message.blocks || [],
+          blocks:
+            message.artifactType === "BRAINSTORM"
+              ? getBrainstormTaskBlocks(normalizeArtifactBlocks(message.blocks, message.content, message.artifactType))
+              : normalizeArtifactBlocks(message.blocks, message.content, message.artifactType),
         });
         setPendingAssetGeneration(null);
       }, 3800);
@@ -3628,25 +3898,43 @@ function App() {
         setSystemNotice({ title: "MP4 尚未生成", message: "当前仅保存了视频脚本和分镜，尚无可下载的真实 MP4 文件。" });
         return;
       }
+      let artifact: RemoteArtifact | null | undefined;
       try {
-        const artifact = artifactRecords.find((item) => item.sourceMessageId === message.id) || (await saveMessageArtifact(message));
-        if (artifact) await recordArtifactClientDownload(artifact.id);
+        artifact = artifactRecords.find((item) => item.sourceMessageId === message.id) || (await saveMessageArtifact(message));
       } catch (error) {
         setSystemNotice({
           title: "成果下载准备失败",
-          message: error instanceof Error ? error.message : "暂时无法记录本次下载，请稍后再试。",
+          message: error instanceof Error ? error.message : "暂时无法准备本次下载，请稍后再试。",
         });
         return;
       }
-      if (message.artifactType === "PPT") {
-        downloadPptAsset(downloadablePpt);
-        return;
+      try {
+        const outcome = await downloadThenRecord(
+          async () => {
+            if (message.artifactType === "PPT") {
+              if (!downloadPptAsset(downloadablePpt)) throw new Error("PPTX 文件尚未生成。");
+              return;
+            }
+            if (message.artifactType === "MEDIA") {
+              if (!downloadVideoAsset(downloadableVideo)) throw new Error("MP4 文件尚未生成。");
+              return;
+            }
+            await downloadArtifactWord(message);
+          },
+          artifact ? () => recordArtifactClientDownload(artifact.id) : undefined,
+        );
+        if (outcome.recordError) {
+          setSystemNotice({
+            title: "成果已下载，记录保存失败",
+            message: outcome.recordError instanceof Error ? outcome.recordError.message : "文件已经开始下载，但暂时无法保存下载记录。",
+          });
+        }
+      } catch (error) {
+        setSystemNotice({
+          title: "成果下载失败",
+          message: error instanceof Error ? error.message : "成果文件未能生成或下载，本次未记录下载。",
+        });
       }
-      if (message.artifactType === "MEDIA") {
-        downloadVideoAsset(downloadableVideo);
-        return;
-      }
-      downloadArtifactWord(message);
       return;
     }
     if (action === "ask") {
@@ -3663,15 +3951,15 @@ function App() {
         return;
       }
       const scriptExpert = experts.find((expert) => expert.id === "script");
-      if (scriptExpert) {
-        if (!isStudentExpertEnabled(scriptExpert, activeAccountRecord)) {
-          blockPermission(scriptExpert.name);
-          return;
-        }
-        setSelectedExpertId(scriptExpert.id);
-        setSelectedSkillId(scriptExpert.skills[0].id);
+      if (!scriptExpert) {
+        setSystemNotice({ title: "路演稿专家不可用", message: "当前未配置路演稿专家，无法创建独立路演稿对话。" });
+        return;
       }
-      setStudentView("workspace");
+      if (!isStudentExpertEnabled(scriptExpert, activeAccountRecord)) {
+        blockPermission(scriptExpert.name);
+        return;
+      }
+      if (!await handleSelectExpert(scriptExpert)) return;
       setPrompt(`基于刚才这份《${getDownloadTitle(message)}》，帮我准备 1 分钟、3 分钟、5 分钟路演稿。这次主要讲给课堂老师和学院试点负责人，转场话术要自然一点。`);
       return;
     }
@@ -3885,22 +4173,123 @@ function App() {
     setTeacherComment(submission.teacherComment || getDefaultTeacherComment(submission));
   }
 
-  function handleSelectExpert(expert: Expert) {
-    const handoff = expert.id === "positioning" ? getBrainstormHandoffForIdea(activeIdea) : undefined;
-    setSelectedExpertId(expert.id);
-    setSelectedSkillId(expert.skills[0].id);
+  async function handleSelectConversation(conversationId: string) {
+    const conversation = studentConversations.find((item) => item.id === conversationId);
+    const idea = conversation ? ideas.find((item) => item.id === conversation.ideaId) : undefined;
+    if (!conversation || !idea) return;
+    setActiveIdeaId(idea.id);
+    const expertId = applyConversationSettings(conversation);
     setStudentView("workspace");
-    setPrompt(appendPositioningHandoffPrompt(getScenarioPrompt(expert.id, activeIdea), handoff));
-    if (handoff) {
+    setPrompt(getPreparedScenarioPrompt(expertId, idea));
+  }
+
+  async function handleCreateConversation() {
+    try {
+      const conversation = await createConversationForIdea(activeIdea, selectedExpert);
+      applyConversationSettings(conversation);
+      setPrompt(getPreparedScenarioPrompt(conversation.selectedExpertId, activeIdea));
+    } catch (error) {
       setSystemNotice({
-        title: "已带入头脑风暴成果",
-        message: "项目定位专家已收到同一创意空间中最新的结构化交接。该内容仍标记为待学生确认，专家会先核对再收敛定位。",
+        title: "新建对话失败",
+        message: error instanceof Error ? error.message : "暂时无法创建新对话。",
       });
     }
   }
 
+  function requestDeleteConversation(conversationId: string) {
+    if (!studentConversations.some((conversation) => conversation.id === conversationId)) return;
+    setPendingDeleteConversationId(conversationId);
+  }
+
+  async function handleConfirmDeleteConversation() {
+    if (!pendingDeleteConversationId) return;
+    const conversationId = pendingDeleteConversationId;
+    const conversation = studentConversations.find((item) => item.id === conversationId);
+    if (!conversation) {
+      setPendingDeleteConversationId(null);
+      return;
+    }
+    try {
+      await deleteStudentConversation(conversationId);
+      const remaining = studentConversations.filter((item) => item.id !== conversationId);
+      setStudentConversations(remaining);
+      setMessages((current) => current.filter((message) => message.conversationId !== conversationId));
+      if (activeConversationId === conversationId) {
+        const next = remaining
+          .filter((item) => item.ideaId === conversation.ideaId)
+          .sort((left, right) =>
+            (right.lastMessageAt || right.updatedAt).localeCompare(left.lastMessageAt || left.updatedAt),
+          )[0];
+        if (next) {
+          const idea = ideas.find((item) => item.id === next.ideaId) || activeIdea;
+          setActiveIdeaId(idea.id);
+          const expertId = applyConversationSettings(next);
+          setPrompt(getPreparedScenarioPrompt(expertId, idea));
+        } else {
+          setActiveConversationId("");
+          setPrompt(getPreparedScenarioPrompt(selectedExpert.id, activeIdea));
+        }
+      }
+      setPendingDeleteConversationId(null);
+    } catch (error) {
+      setSystemNotice({
+        title: "删除对话失败",
+        message: error instanceof Error ? error.message : "该对话仍保留在后端。",
+      });
+    }
+  }
+
+  async function handleSelectExpert(expert: Expert) {
+    try {
+      const conversation = getLatestConversationForIdea(activeIdea.id, expert.id)
+        || await createConversationForIdea(activeIdea, expert);
+      applyConversationSettings(conversation);
+      setStudentView("workspace");
+      setPrompt(getPreparedScenarioPrompt(expert.id, activeIdea));
+      return true;
+    } catch (error) {
+      setSystemNotice({
+        title: "切换专家失败",
+        message: error instanceof Error ? error.message : "暂时无法读取或创建该专家的对话。",
+      });
+      return false;
+    }
+  }
+
+  async function handleConfirmStageArtifact(message: ChatMessage) {
+    if (!isArtifactType(message.artifactType)) return;
+    let artifact = artifactRecords.find((item) =>
+      item.sourceMessageId === message.id || Boolean(message.clientMessageId && item.sourceMessageId === message.clientMessageId),
+    );
+    if (confirmingArtifactId === (artifact?.id || message.id)) return;
+    setConfirmingArtifactId(artifact?.id || message.id);
+    try {
+      artifact = artifact || (await saveMessageArtifact(message)) || undefined;
+      if (!artifact) throw new Error("当前阶段成果尚未保存，无法确认正式版本。");
+      const saved = await confirmExpertHandoff(artifact.id, "ALL");
+      setExpertHandoffs((current) => [
+        saved,
+        ...current.filter((item) => item.id !== saved.id && !(
+          item.sourceArtifactId === saved.sourceArtifactId && item.targetExpertId === saved.targetExpertId
+        )),
+      ]);
+    } catch (error) {
+      setSystemNotice({
+        title: "确认正式成果失败",
+        message: error instanceof Error ? error.message : "当前成果尚未确认为正式阶段版本，请稍后重试。",
+      });
+    } finally {
+      setConfirmingArtifactId(null);
+    }
+  }
+
   if (!authReady) return <AuthLoadingView />;
-  if (!auth) return <LoginView accountRecords={accountRecords} onLogin={handleLogin} />;
+  if (!auth) return (
+    <>
+      <LoginView accountRecords={accountRecords} onLogin={handleLogin} />
+      {systemNotice && <SystemNoticeModal notice={systemNotice} onClose={() => setSystemNotice(null)} />}
+    </>
+  );
 
   return (
     <div className="app-shell">
@@ -3946,6 +4335,8 @@ function App() {
           <StudentView
             ideas={ideas}
             activeIdea={activeIdea}
+            conversations={studentConversations}
+            activeConversationId={activeConversationId}
             experts={studentExperts}
             selectedExpert={selectedExpert}
             selectedSkill={selectedSkill}
@@ -3961,6 +4352,9 @@ function App() {
             defensePractices={defensePractices}
             generatedAssets={generatedAssets}
             isGenerating={isGenerating || isRecoveringAi}
+            artifactRecords={artifactRecords}
+            expertHandoffs={expertHandoffs}
+            confirmingArtifactId={confirmingArtifactId}
             studentView={studentView}
             studentAvatarId={activeStudentAvatarId}
             permissionAccess={permissionAccess}
@@ -3971,6 +4365,10 @@ function App() {
             onPromptChange={setPrompt}
             onIdeaSelect={handleSelectIdea}
             onIdeaCreate={handleCreateIdea}
+            onConversationSelect={handleSelectConversation}
+            onConversationCreate={handleCreateConversation}
+            onConversationDelete={requestDeleteConversation}
+            onConfirmArtifact={handleConfirmStageArtifact}
             onIdeaDelete={requestDeleteIdea}
             onIdeaRename={handleRenameIdea}
             onIdeaEdit={() => setPrompt(`请帮我继续修改当前创意《${activeIdea.title}》：${activeIdea.description}`)}
@@ -3978,6 +4376,7 @@ function App() {
             onContextAction={handleContextAction}
             onSubmitMessage={handleSubmitMessage}
             onSaveDefense={handleSaveDefense}
+            onEnsureDefenseConversation={() => ensureDefenseConversationForIdea(activeIdea)}
             onWithdrawSubmission={handleWithdrawSubmission}
             onDeleteWithdrawnSubmission={handleDeleteWithdrawnSubmission}
           />
@@ -4001,6 +4400,15 @@ function App() {
             idea={pendingDeleteIdea}
             onCancel={() => setPendingDeleteIdeaId(null)}
             onConfirm={handleConfirmDeleteIdea}
+          />
+        )}
+        {pendingDeleteConversation && (
+          <ConversationDeleteConfirmModal
+            conversation={pendingDeleteConversation}
+            expertName={experts.find((expert) => expert.id === pendingDeleteConversation.selectedExpertId)?.name || "未指定专家"}
+            messageCount={messages.filter((message) => message.conversationId === pendingDeleteConversation.id).length}
+            onCancel={() => setPendingDeleteConversationId(null)}
+            onConfirm={handleConfirmDeleteConversation}
           />
         )}
         {pendingDeleteKnowledgeItem && (
@@ -4029,6 +4437,16 @@ function App() {
             knowledgeUploads={knowledgeUploads}
             knowledgeCatalog={knowledgeCatalog}
             knowledgeBaseStates={knowledgeBaseStates}
+            lexiangPullRun={currentLexiangPullRun}
+            lexiangPullLoading={lexiangPullLoading}
+            lexiangPulling={lexiangPulling}
+            lexiangPullError={currentLexiangPullError}
+            lexiangPullConfigured={lexiangPullConfigured}
+            lexiangPullConfigurationMessage={lexiangPullConfigurationMessage}
+            lexiangMappings={currentLexiangMappings}
+            lexiangMappingsLoading={lexiangMappingsLoading}
+            lexiangMappingsError={currentLexiangMappingsError}
+            savingLexiangMappingBaseId={savingLexiangMappingBaseId}
             promptKnowledgeRoutes={promptKnowledgeRoutes}
             customExperts={customExperts}
             teacherName={auth.name}
@@ -4054,8 +4472,19 @@ function App() {
               }
               void handleUploadKnowledge(assets);
             }}
+            onUploadExpertPrivateKnowledge={async (expertId, files) => {
+              if (!canUsePermission("上传教学资料")) {
+                blockPermission("上传教学资料");
+                throw new Error("当前账号没有上传专家知识资料的权限。");
+              }
+              await handleUploadExpertPrivateKnowledge(expertId, files);
+            }}
+            onDeleteExpertPrivateKnowledge={handleDeleteExpertPrivateKnowledge}
             onDeleteKnowledge={(id) => requestKnowledgeAssetAction(id, "delete")}
             onToggleKnowledge={(id) => requestKnowledgeAssetAction(id, "toggle")}
+            onSyncKnowledge={(id) => void handleSyncKnowledgeAsset(id)}
+            onPullLexiangKnowledge={handlePullLexiangKnowledge}
+            onSaveLexiangMapping={handleSaveLexiangMapping}
             onKnowledgeBaseStatesChange={(states) => void handleKnowledgeBaseStatesChange(states)}
             onKnowledgeCatalogChange={(catalog) => void handleKnowledgeCatalogChange(catalog)}
             onPromptKnowledgeRoutesChange={(routes) => void handlePromptKnowledgeRoutesChange(routes)}
@@ -4077,6 +4506,16 @@ function App() {
             knowledgeUploads={knowledgeUploads}
             knowledgeCatalog={knowledgeCatalog}
             knowledgeBaseStates={knowledgeBaseStates}
+            lexiangPullRun={currentLexiangPullRun}
+            lexiangPullLoading={lexiangPullLoading}
+            lexiangPulling={lexiangPulling}
+            lexiangPullError={currentLexiangPullError}
+            lexiangPullConfigured={lexiangPullConfigured}
+            lexiangPullConfigurationMessage={lexiangPullConfigurationMessage}
+            lexiangMappings={currentLexiangMappings}
+            lexiangMappingsLoading={lexiangMappingsLoading}
+            lexiangMappingsError={currentLexiangMappingsError}
+            savingLexiangMappingBaseId={savingLexiangMappingBaseId}
             promptKnowledgeRoutes={promptKnowledgeRoutes}
             customExperts={customExperts}
             adminName={auth.name}
@@ -4089,8 +4528,13 @@ function App() {
             onDeleteExpert={handleDeleteExpert}
             onDeleteKnowledgeBase={handleDeleteKnowledgeBase}
             onUploadKnowledge={(assets) => void handleUploadKnowledge(assets)}
+            onUploadExpertPrivateKnowledge={handleUploadExpertPrivateKnowledge}
+            onDeleteExpertPrivateKnowledge={handleDeleteExpertPrivateKnowledge}
             onDeleteKnowledge={(id) => requestKnowledgeAssetAction(id, "delete")}
             onToggleKnowledge={(id) => requestKnowledgeAssetAction(id, "toggle")}
+            onSyncKnowledge={(id) => void handleSyncKnowledgeAsset(id)}
+            onPullLexiangKnowledge={handlePullLexiangKnowledge}
+            onSaveLexiangMapping={handleSaveLexiangMapping}
             submissions={submissions}
           />
         )}
@@ -4220,6 +4664,8 @@ function PrettySelect<T extends string>(props: {
 function StudentView(props: {
   ideas: Idea[];
   activeIdea: Idea;
+  conversations: RemoteStudentConversation[];
+  activeConversationId: string;
   experts: Expert[];
   selectedExpert: Expert;
   selectedSkill: Skill;
@@ -4235,6 +4681,9 @@ function StudentView(props: {
   defensePractices: DefensePractice[];
   generatedAssets: GeneratedAsset[];
   isGenerating: boolean;
+  artifactRecords: RemoteArtifact[];
+  expertHandoffs: RemoteExpertHandoff[];
+  confirmingArtifactId: string | null;
   studentView: StudentViewMode;
   studentAvatarId: StudentAvatarId;
   permissionAccess: PermissionAccess;
@@ -4245,6 +4694,10 @@ function StudentView(props: {
   onPromptChange: (value: string) => void;
   onIdeaSelect: (ideaId: string) => void;
   onIdeaCreate: () => void;
+  onConversationSelect: (conversationId: string) => void;
+  onConversationCreate: () => void;
+  onConversationDelete: (conversationId: string) => void;
+  onConfirmArtifact: (message: ChatMessage) => void;
   onIdeaDelete: (ideaId: string) => void;
   onIdeaRename: (ideaId: string, nextTitle: string) => void;
   onIdeaEdit: () => void;
@@ -4252,16 +4705,33 @@ function StudentView(props: {
   onContextAction: (message: ChatMessage, action: ContextAction) => void | Promise<void>;
   onSubmitMessage: (message: ChatMessage) => void;
   onSaveDefense: (practice: DefensePractice) => void;
+  onEnsureDefenseConversation: () => Promise<string>;
   onWithdrawSubmission: (submissionId: string) => void;
   onDeleteWithdrawnSubmission: (submissionId: string) => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ ideaId: string; x: number; y: number } | null>(null);
   const [renameIdeaId, setRenameIdeaId] = useState<string | null>(null);
+  const [conversationQuery, setConversationQuery] = useState("");
   const renameIdea = renameIdeaId ? props.ideas.find((idea) => idea.id === renameIdeaId) || null : null;
-  const currentMessages = props.messages.filter((message) => message.ideaId === props.activeIdea.id);
-  const currentSubmissions = props.submissions.filter((submission) => submission.ideaId === props.activeIdea.id);
+  const activeConversation = props.conversations.find((conversation) => conversation.id === props.activeConversationId);
+  const currentMessages = props.messages.filter((message) => message.conversationId === props.activeConversationId);
+  const currentSubmissions = selectIdeaFeedbackSubmissions(props.submissions, props.activeIdea.id);
   const activeKnowledgeCatalog = getActiveKnowledgeCatalog(props.knowledgeCatalog);
   const activeKnowledgeCategories = activeKnowledgeCatalog.map((item) => item.category);
+  const normalizedConversationQuery = conversationQuery.trim().toLocaleLowerCase("zh-CN");
+  const matchesConversationQuery = (idea: Idea, conversation: RemoteStudentConversation) => {
+    if (!normalizedConversationQuery) return true;
+    const expertName = props.experts.find((expert) => expert.id === conversation.selectedExpertId)?.name || "";
+    return `${idea.title} ${conversation.title} ${expertName}`
+      .toLocaleLowerCase("zh-CN")
+      .includes(normalizedConversationQuery);
+  };
+  const visibleConversationCount = props.ideas.reduce(
+    (count, idea) => count + props.conversations.filter(
+      (conversation) => conversation.ideaId === idea.id && matchesConversationQuery(idea, conversation),
+    ).length,
+    0,
+  );
   const studentViewPermissions: Record<StudentViewMode, string> = {
     workspace: "AI 创意工作台",
     feedback: "提交老师审核",
@@ -4316,35 +4786,98 @@ function StudentView(props: {
                 <strong>创意空间</strong>
               </div>
             </div>
-            <button className={`buddy-new-chat ${props.permissionAccess.can("AI 创意工作台") ? "" : "locked"}`} type="button" onClick={props.onIdeaCreate}>
-              <PenLine size={17} />
-              {props.permissionAccess.can("AI 创意工作台") ? "新建创意" : "工作台权限已停用"}
-            </button>
-            <div className="buddy-history" aria-label="创意列表">
-              {props.ideas.map((idea) => (
-                <div
-                  className={idea.id === props.activeIdea.id ? "active" : ""}
-                  key={idea.id}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    const menuWidth = 132;
-                    const menuHeight = 92;
-                    const gap = 10;
-                    props.onIdeaSelect(idea.id);
-                    setContextMenu({
-                      ideaId: idea.id,
-                      x: Math.max(gap, Math.min(event.clientX, window.innerWidth - menuWidth - gap)),
-                      y: Math.max(gap, Math.min(event.clientY, window.innerHeight - menuHeight - gap)),
-                    });
-                  }}
-                >
-                  <button className="buddy-history-main" type="button" onClick={() => props.onIdeaSelect(idea.id)}>
-                    <strong>{idea.title}</strong>
-                    <p>{idea.description}</p>
-                    <span>{idea.stage}</span>
-                  </button>
+            <div className="buddy-sidebar-actions">
+              <button className={`buddy-new-chat ${props.permissionAccess.can("AI 创意工作台") ? "" : "locked"}`} type="button" onClick={props.onIdeaCreate}>
+                <PenLine size={17} />
+                {props.permissionAccess.can("AI 创意工作台") ? "新建创意" : "工作台权限已停用"}
+              </button>
+              <button className="buddy-new-conversation" type="button" onClick={props.onConversationCreate}>
+                <MessageSquareText size={17} />
+                新建对话
+              </button>
+            </div>
+            <label className="buddy-conversation-search" aria-label="搜索创意和对话">
+              <Search size={16} aria-hidden="true" />
+              <input
+                value={conversationQuery}
+                onChange={(event) => setConversationQuery(event.target.value)}
+                placeholder="搜索项目、专家或对话"
+                aria-label="搜索对话"
+              />
+              {conversationQuery && (
+                <button type="button" aria-label="清空搜索" onClick={() => setConversationQuery("")}>
+                  <X size={14} />
+                </button>
+              )}
+            </label>
+            <div className="buddy-history" aria-label="项目与对话列表">
+              {props.ideas.map((idea) => {
+                const conversations = props.conversations
+                  .filter((conversation) => conversation.ideaId === idea.id)
+                  .filter((conversation) => matchesConversationQuery(idea, conversation))
+                  .sort((left, right) =>
+                    (right.lastMessageAt || right.updatedAt).localeCompare(left.lastMessageAt || left.updatedAt),
+                  );
+                if (normalizedConversationQuery && conversations.length === 0) return null;
+                return (
+                  <div
+                    className={`buddy-project-group ${idea.id === props.activeIdea.id ? "active" : ""}`.trim()}
+                    key={idea.id}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      const menuWidth = 132;
+                      const menuHeight = 92;
+                      const gap = 10;
+                      props.onIdeaSelect(idea.id);
+                      setContextMenu({
+                        ideaId: idea.id,
+                        x: Math.max(gap, Math.min(event.clientX, window.innerWidth - menuWidth - gap)),
+                        y: Math.max(gap, Math.min(event.clientY, window.innerHeight - menuHeight - gap)),
+                      });
+                    }}
+                  >
+                    <button className="buddy-history-main" type="button" onClick={() => props.onIdeaSelect(idea.id)}>
+                      <strong>{idea.title}</strong>
+                      <span>{idea.stage} · {conversations.length} 个对话</span>
+                    </button>
+                    <div className="buddy-project-conversations">
+                      {conversations.map((conversation) => {
+                        const expertName = props.experts.find((expert) => expert.id === conversation.selectedExpertId)?.name || "未指定专家";
+                        const latestMessage = props.messages.findLast((message) => message.conversationId === conversation.id);
+                        return (
+                          <div className="buddy-conversation-row" key={conversation.id}>
+                          <button
+                            className={`buddy-conversation-item ${conversation.id === props.activeConversationId ? "active" : ""}`.trim()}
+                            type="button"
+                            onClick={() => props.onConversationSelect(conversation.id)}
+                          >
+                            <span>{expertName}</span>
+                            <strong>{conversation.title}</strong>
+                            <p>{latestMessage?.content || "尚未开始对话"}</p>
+                          </button>
+                            <button
+                              className="buddy-conversation-delete"
+                              type="button"
+                              aria-label={`删除对话：${conversation.title}`}
+                              title="删除当前对话"
+                              onClick={() => props.onConversationDelete(conversation.id)}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+              {normalizedConversationQuery && visibleConversationCount === 0 && (
+                <div className="buddy-conversation-empty" role="status">
+                  <Search size={18} />
+                  <strong>没有匹配的对话</strong>
+                  <span>换个项目名、专家名或对话标题试试。</span>
                 </div>
-              ))}
+              )}
             </div>
             {contextMenu && (
               createPortal(
@@ -4393,6 +4926,7 @@ function StudentView(props: {
 
           <ChatWorkspace
             activeIdea={props.activeIdea}
+            activeConversation={activeConversation}
             experts={props.experts}
             selectedExpert={props.selectedExpert}
             selectedSkill={props.selectedSkill}
@@ -4406,6 +4940,9 @@ function StudentView(props: {
             promptKnowledgeRoutes={props.promptKnowledgeRoutes}
             selectedKnowledgeSelection={props.selectedKnowledgeSelection}
             isGenerating={props.isGenerating}
+            artifactRecords={props.artifactRecords}
+            expertHandoffs={props.expertHandoffs}
+            confirmingArtifactId={props.confirmingArtifactId}
             studentAvatarId={props.studentAvatarId}
             onExpertSelect={props.onExpertSelect}
             onModelChange={props.onModelChange}
@@ -4415,6 +4952,7 @@ function StudentView(props: {
             onGenerate={props.onGenerate}
             onContextAction={props.onContextAction}
             onSubmitMessage={props.onSubmitMessage}
+            onConfirmArtifact={props.onConfirmArtifact}
             permissionAccess={props.permissionAccess}
           />
         </div>
@@ -4428,7 +4966,9 @@ function StudentView(props: {
           generatedAssets={props.generatedAssets}
           onBackToWorkspace={() => props.onViewChange("workspace")}
           onContinue={(submission) => {
-            props.onViewChange("workspace");
+            const sourceConversationId = findFeedbackSourceConversationId(props.messages, submission.sourceMessageId);
+            if (sourceConversationId) props.onConversationSelect(sourceConversationId);
+            else props.onViewChange("workspace");
             props.onPromptChange(`请根据老师反馈继续修改《${submission.artifactTitle}》：${submission.teacherComment || "等待老师反馈中"}`);
           }}
           onWithdraw={props.onWithdrawSubmission}
@@ -4442,11 +4982,11 @@ function StudentView(props: {
         <DefenseView
           key="student-defense"
           activeIdea={props.activeIdea}
-          messages={currentMessages}
-          generatedAssets={props.generatedAssets.filter((asset) => asset.ideaId === props.activeIdea.id)}
+          expertHandoffs={props.expertHandoffs}
           practices={props.defensePractices.filter((practice) => practice.ideaId === props.activeIdea.id)}
           studentAvatarId={props.studentAvatarId}
           onSaveDefense={props.onSaveDefense}
+          onEnsureConversation={props.onEnsureDefenseConversation}
           permissionAccess={props.permissionAccess}
         />
       )}
@@ -4466,6 +5006,7 @@ function StudentView(props: {
 
 function ChatWorkspace(props: {
   activeIdea: Idea;
+  activeConversation?: RemoteStudentConversation;
   experts: Expert[];
   selectedExpert: Expert;
   selectedSkill: Skill;
@@ -4479,6 +5020,9 @@ function ChatWorkspace(props: {
   promptKnowledgeRoutes: PromptKnowledgeRoutes;
   selectedKnowledgeSelection: StudentKnowledgeSelection;
   isGenerating: boolean;
+  artifactRecords: RemoteArtifact[];
+  expertHandoffs: RemoteExpertHandoff[];
+  confirmingArtifactId: string | null;
   studentAvatarId: StudentAvatarId;
   onExpertSelect: (expert: Expert) => void;
   onModelChange: (mode: AnswerMode) => void;
@@ -4488,6 +5032,7 @@ function ChatWorkspace(props: {
   onGenerate: (mode?: "文本" | "录音" | "语音" | "文件", uploadedFiles?: File[], promptOverride?: string) => void;
   onContextAction: (message: ChatMessage, action: ContextAction) => void | Promise<void>;
   onSubmitMessage: (message: ChatMessage) => void;
+  onConfirmArtifact: (message: ChatMessage) => void;
   permissionAccess: PermissionAccess;
 }) {
   const ExpertIcon = props.selectedExpert.icon;
@@ -4526,28 +5071,28 @@ function ChatWorkspace(props: {
       ? `已选：${selectedKnowledgeNameLabel || "资料"} / ${validKnowledgeSources.uploads.length} 份材料`
       : "选择知识库 / 材料";
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const lastScrolledIdeaIdRef = useRef<string | null>(null);
+  const lastScrolledConversationIdRef = useRef<string | null>(null);
   const studentUploadRef = useRef<HTMLInputElement | null>(null);
   const speechInput = useSpeechInput({
     value: props.prompt,
     onChange: props.onPromptChange,
-    fallbackText: `语音输入：我们小组想把《${props.activeIdea.title}》做成面向高校学生的创业实践工具，请帮我结合上海财经大学商学院课程要求继续完善。`,
   });
 
   useEffect(() => {
     const messageList = messageListRef.current;
     if (!messageList) return;
-    const firstScroll = lastScrolledIdeaIdRef.current === null;
-    const ideaChanged = lastScrolledIdeaIdRef.current !== props.activeIdea.id;
-    lastScrolledIdeaIdRef.current = props.activeIdea.id;
+    const conversationId = props.activeConversation?.id || "";
+    const firstScroll = lastScrolledConversationIdRef.current === null;
+    const conversationChanged = lastScrolledConversationIdRef.current !== conversationId;
+    lastScrolledConversationIdRef.current = conversationId;
     window.requestAnimationFrame(() => {
-      if (firstScroll || ideaChanged) {
+      if (firstScroll || conversationChanged) {
         messageList.scrollTop = messageList.scrollHeight;
         return;
       }
       messageList.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" });
     });
-  }, [props.activeIdea.id, props.messages.length, props.isGenerating]);
+  }, [props.activeConversation?.id, props.messages.length, props.isGenerating]);
 
   function handlePromptChange(value: string) {
     props.onPromptChange(value);
@@ -4594,14 +5139,14 @@ function ChatWorkspace(props: {
     <section className="buddy-chat">
       <header className="buddy-chat-head">
         <div className="buddy-idea-title-motion" key={`idea-title-${props.activeIdea.id}`}>
-          <span className="eyebrow">当前创意</span>
+          <span className="eyebrow">当前对话 · {props.activeConversation?.title || "新对话"}</span>
           <h2>{props.activeIdea.title}</h2>
           <p>{props.activeIdea.description}</p>
         </div>
       </header>
 
       <div className="buddy-message-list" ref={messageListRef}>
-        <div className="buddy-message-flow" key={`idea-messages-${props.activeIdea.id}`}>
+        <div className="buddy-message-flow" key={`conversation-messages-${props.activeConversation?.id || props.activeIdea.id}`}>
           {props.messages.length === 0 && !props.isGenerating && (
             <section className="buddy-empty-guide" aria-label="AI 起步引导">
               <div className="buddy-empty-orb">
@@ -4626,6 +5171,20 @@ function ChatWorkspace(props: {
           {props.messages.map((message) => {
             const submitted = props.submissions.find((item) => item.sourceMessageId === message.id);
             const artifactType = isArtifactType(message.artifactType) ? message.artifactType : undefined;
+            const artifactBlocks = artifactType
+              ? normalizeArtifactBlocks(message.blocks, message.content, artifactType)
+              : message.blocks;
+            const artifactRecord = artifactType
+              ? props.artifactRecords.find((item) =>
+                  item.sourceMessageId === message.id || Boolean(message.clientMessageId && item.sourceMessageId === message.clientMessageId),
+                )
+              : undefined;
+            const confirmedHandoff = artifactRecord
+              ? props.expertHandoffs.find((item) =>
+                  item.sourceArtifactId === artifactRecord.id && getConfirmedArtifactType(item.payload) === artifactType,
+                )
+              : undefined;
+            const isConfirmingArtifact = props.confirmingArtifactId === (artifactRecord?.id || message.id);
             const messageExpert = message.sender === "ai" ? resolveMessageExpert(message, props.selectedExpert) : props.selectedExpert;
             const MessageExpertIcon = messageExpert.icon;
             return (
@@ -4647,13 +5206,33 @@ function ChatWorkspace(props: {
                         <strong>{message.expertName || messageExpert.name}</strong>
                         <em>{message.skillName || props.selectedSkill.name}</em>
                       </div>
-                      {message.blocks ? (
-                        <ResultPanel result={message.blocks} expertId={messageExpert.id} />
+                      {artifactBlocks?.length ? (
+                        <>
+                          <StructuredAiResponse content={message.content} compact />
+                          <div className="artifact-result-heading">
+                            <span>本轮阶段成果</span>
+                            <strong>{getDownloadTitle(message)}</strong>
+                          </div>
+                          <ResultPanel result={artifactBlocks} expertId={messageExpert.id} skillName={message.skillName} />
+                        </>
                       ) : (
                         <StructuredAiResponse content={message.content} />
                       )}
                       {artifactType && (
-                        <div className="context-actions">
+                        <div className="context-actions artifact-result-actions">
+                          <button
+                            className={`artifact-confirm-action ${confirmedHandoff ? "is-success" : "is-primary"}`.trim()}
+                            type="button"
+                            onClick={() => props.onConfirmArtifact(message)}
+                            disabled={Boolean(confirmedHandoff) || isConfirmingArtifact}
+                          >
+                            <CheckCircle2 size={16} />
+                            {confirmedHandoff
+                              ? "已确认为当前正式成果"
+                              : isConfirmingArtifact
+                                ? "正在确认正式版本…"
+                                : "确认本版为正式阶段成果"}
+                          </button>
                           {isArtifactType(message.artifactType) && (
                             <button
                               className={submitted ? "is-success" : props.permissionAccess.can("提交老师审核") ? "" : "is-locked"}
@@ -4891,6 +5470,7 @@ function ChatWorkspace(props: {
             <button
               className={`${speechInput.isListening ? "voice-active" : ""} ${props.permissionAccess.can("AI 创意工作台") ? "" : "is-locked"}`.trim()}
               type="button"
+              aria-pressed={speechInput.isListening}
               onClick={() => {
                 if (!props.permissionAccess.can("AI 创意工作台")) {
                   props.permissionAccess.block("AI 创意工作台");
@@ -4898,9 +5478,16 @@ function ChatWorkspace(props: {
                 }
                 speechInput.toggle();
               }}
+              disabled={speechInput.status === "stopping"}
             >
               <Mic size={17} />
-              {speechInput.isListening ? "停止听写" : "语音输入"}
+              {speechInput.status === "starting"
+                ? "等待麦克风"
+                : speechInput.status === "stopping"
+                  ? "停止中"
+                  : speechInput.status === "listening"
+                    ? "停止听写"
+                    : "语音输入"}
             </button>
           </div>
           <span className="composer-key-hint">Enter 发送 / Shift+Enter 换行</span>
@@ -5222,12 +5809,12 @@ function StudentKnowledgePickerModal(props: {
   );
 }
 
-function ResultPanel(props: { result: ResultBlock[]; expertId: ExpertId }) {
+function ResultPanel(props: { result: ResultBlock[]; expertId: ExpertId; skillName?: string }) {
   return (
     <section className="result-panel">
       {props.expertId === "pitch" && (
         <div className="slide-preview-grid">
-          {parsePptSlideOutline().map((slide, index) => (
+          {parsePptSlideOutline(buildPptOutlineContent(props.result)).map((slide, index) => (
             <article className="slide-thumb" key={slide[0]}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <strong>{slide[0]}</strong>
@@ -5237,22 +5824,26 @@ function ResultPanel(props: { result: ResultBlock[]; expertId: ExpertId }) {
           ))}
         </div>
       )}
-      <div className="result-blocks">
-        {props.result.map((block) => (
-          <article className="result-block" key={block.title}>
-            <h4>{block.title}</h4>
-            {block.items.length === 1 && (block.items[0].length > 220 || /\n|#{1,6}\s|【正式回复】/.test(block.items[0])) ? (
-              <StructuredAiResponse content={block.items[0]} compact />
-            ) : (
-              <ul>
-                {block.items.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            )}
-          </article>
-        ))}
-      </div>
+      {props.expertId === "business" && props.skillName === "商业模式画布" ? (
+        <BusinessModelCanvas blocks={props.result} />
+      ) : (
+        <div className="result-blocks">
+          {props.result.map((block) => (
+            <article className="result-block" key={block.title}>
+              <h4>{block.title}</h4>
+              {block.items.length === 1 && (block.items[0].length > 220 || /\n|#{1,6}\s|【正式回复】/.test(block.items[0])) ? (
+                <StructuredAiResponse content={block.items[0]} compact />
+              ) : (
+                <ul>
+                  {block.items.map((item, itemIndex) => (
+                    <li key={`${item}-${itemIndex}`}>{item}</li>
+                  ))}
+                </ul>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -5286,6 +5877,47 @@ function IdeaDeleteConfirmModal(props: { idea: Idea; onCancel: () => void; onCon
         </footer>
       </section>
     </div>
+  );
+}
+
+function ConversationDeleteConfirmModal(props: {
+  conversation: RemoteStudentConversation;
+  expertName: string;
+  messageCount: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return createPortal(
+    <div className="modal-backdrop preview-modal-backdrop" role="presentation" onMouseDown={props.onCancel}>
+      <section
+        className="media-modal delete-confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-conversation-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <span className="eyebrow">删除对话</span>
+            <h3 id="delete-conversation-title">确认删除“{props.conversation.title}”？</h3>
+            <p>只删除这一条专家对话及其中消息，不会删除所属创意、其他对话或已保存的阶段成果。</p>
+          </div>
+          <button type="button" aria-label="关闭删除对话确认" onClick={props.onCancel}>
+            <X size={18} />
+          </button>
+        </header>
+        <div className="delete-confirm-body">
+          <strong>{props.conversation.title}</strong>
+          <p>{props.expertName} · {props.messageCount} 条消息</p>
+          <span>该操作无法通过界面撤销</span>
+        </div>
+        <footer>
+          <button className="ghost-button" type="button" onClick={props.onCancel}>取消</button>
+          <button className="danger-button solid" type="button" onClick={props.onConfirm}>确认删除对话</button>
+        </footer>
+      </section>
+    </div>,
+    document.body,
   );
 }
 
@@ -5393,31 +6025,43 @@ function KnowledgeBaseDeleteConfirmModal(props: {
   );
 }
 
-function ExpertDeleteConfirmModal(props: { expert: Expert; onCancel: () => void; onConfirm: () => void }) {
+export function ExpertDeleteConfirmModal(props: {
+  expert: Expert;
+  pending?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
   return createPortal(
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
-      <section className="media-modal delete-confirm-modal knowledge-delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-expert-title">
+      <section
+        className="media-modal delete-confirm-modal knowledge-delete-confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-expert-title"
+        aria-busy={props.pending}
+      >
         <header>
           <div>
             <span className="eyebrow">删除专家</span>
             <h3 id="delete-expert-title">确认删除“{props.expert.name}”？</h3>
-            <p>删除后，该专家会从教师端、管理端和学生端专家列表中同步移除。</p>
+            <p>确认后将删除专家并连同专属检索库、Skill 来源档案；课程共享知识库不受影响。</p>
           </div>
-          <button type="button" aria-label="关闭删除确认" onClick={props.onCancel}>
+          <button type="button" aria-label="关闭删除确认" disabled={props.pending} onClick={props.onCancel}>
             <X size={18} />
           </button>
         </header>
         <div className="delete-confirm-body">
           <strong>{props.expert.name}</strong>
           <p>{props.expert.role}</p>
-          <span>适用场景：{props.expert.scenario}</span>
+          <span>同时删除：专家配置、专属检索资料与 Skill 来源档案</span>
+          <span>继续保留：全部课程共享知识库及其中资料</span>
         </div>
         <footer>
-          <button className="ghost-button" type="button" onClick={props.onCancel}>
+          <button className="ghost-button" type="button" disabled={props.pending} onClick={props.onCancel}>
             取消
           </button>
-          <button className="danger-button solid" type="button" onClick={props.onConfirm}>
-            确认删除
+          <button className="danger-button solid" type="button" disabled={props.pending} onClick={props.onConfirm}>
+            {props.pending ? "正在删除…" : "确认删除专家及专属数据"}
           </button>
         </footer>
       </section>
@@ -5520,7 +6164,13 @@ function KnowledgeAssetActionConfirmModal(props: {
   const isDelete = props.action === "delete";
   const isEnabled = props.asset.enabled !== false;
   const actionLabel = isDelete ? "删除资料" : isEnabled ? "停用资料" : "启用资料";
-  const nextStatus = isDelete ? "从资料列表中移除" : isEnabled ? "学生端和专家提示词将暂不引用该资料" : "学生端和专家提示词可重新引用该资料";
+  const nextStatus = isDelete
+    ? props.asset.lexiangEntryId
+      ? "先删除乐享知识节点，再从平台资料列表中移除；乐享删除失败时平台资料会保留"
+      : "从平台资料列表中移除"
+    : isEnabled
+      ? "学生端、专家检索和乐享知识节点将暂停使用该资料"
+      : "学生端、专家检索和乐享知识节点可重新使用该资料";
   const confirmLabel = isDelete ? "确认删除" : isEnabled ? "确认停用" : "确认启用";
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
@@ -5556,6 +6206,17 @@ function KnowledgeAssetActionConfirmModal(props: {
 }
 
 function WordPreviewModal(props: { preview: WordPreview; onClose: () => void }) {
+  const [downloadError, setDownloadError] = useState("");
+
+  async function handleDownload() {
+    setDownloadError("");
+    try {
+      await downloadWord(`${props.preview.title}.doc`, props.preview.title, props.preview.blocks);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : "Word 文件生成失败，请稍后重试。");
+    }
+  }
+
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
       <section className="media-modal word-modal" role="dialog" aria-modal="true" aria-label="预览 Word 文档">
@@ -5584,7 +6245,8 @@ function WordPreviewModal(props: { preview: WordPreview; onClose: () => void }) 
           ))}
         </div>
         <footer className="context-actions">
-          <button type="button" onClick={() => downloadWord(`${props.preview.title}.doc`, props.preview.title, props.preview.blocks)}>
+          {downloadError && <p className="asset-hint workbuddy-error" role="alert">{downloadError}</p>}
+          <button type="button" onClick={() => void handleDownload()}>
             <Download size={15} />
             下载 Word
           </button>
@@ -5632,6 +6294,16 @@ function GenerationPendingModal(props: { pending: PendingAssetGeneration }) {
 
 function VideoPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }) {
   const hasGeneratedVideo = Boolean(props.asset.videoUrl);
+  const [downloadError, setDownloadError] = useState("");
+
+  async function handleDownloadPackage() {
+    setDownloadError("");
+    try {
+      await downloadMediaPackage(props.asset);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : "视频物料包生成失败，请稍后重试。");
+    }
+  }
 
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
@@ -5665,7 +6337,8 @@ function VideoPreviewModal(props: { asset: GeneratedAsset; onClose: () => void }
           </div>
         </div>
         <footer className="context-actions">
-          <button type="button" onClick={() => downloadMediaPackage(props.asset)}>
+          {downloadError && <p className="asset-hint workbuddy-error" role="alert">{downloadError}</p>}
+          <button type="button" onClick={() => void handleDownloadPackage()}>
             <Download size={15} />
             下载视频物料包
           </button>
@@ -5847,6 +6520,15 @@ function MediaGenerationModal(props: {
     setVideoCheckMessage("暂未找到 MP4 文件。WorkBuddy 可能仍在处理，或任务没有完成渲染。");
   }
 
+  async function handleDownloadMediaPackage() {
+    setWorkBuddyError("");
+    try {
+      await downloadMediaPackage(props.asset);
+    } catch (error) {
+      setWorkBuddyError(error instanceof Error ? error.message : "视频物料包生成失败，请稍后重试。");
+    }
+  }
+
   return (
     <div className="modal-backdrop preview-modal-backdrop" role="presentation">
       <section className="media-modal" role="dialog" aria-modal="true" aria-label="生成宣传视频">
@@ -5968,7 +6650,7 @@ function MediaGenerationModal(props: {
           )}
           {showPreview && (
             <>
-              <button type="button" onClick={() => downloadMediaPackage(props.asset)}>
+              <button type="button" onClick={() => void handleDownloadMediaPackage()}>
                 <Download size={15} />
                 下载视频物料包
               </button>
@@ -6114,7 +6796,7 @@ function FeedbackView(props: {
               <div className="submission-owner-mark">
                 <StudentCartoonAvatar avatarId={props.studentAvatarId} size={34} />
                 <div>
-                  <span>{artifactLabels[submission.artifactType]}</span>
+                  <span>{artifactLabels[submission.artifactType]} · 第 {submission.submissionVersion} 版</span>
                   <h4>{submission.artifactTitle}</h4>
                 </div>
               </div>
@@ -6131,6 +6813,10 @@ function FeedbackView(props: {
               </div>
             )}
             <dl>
+              <div>
+                <dt>提交版本</dt>
+                <dd>第 {submission.submissionVersion} 版</dd>
+              </div>
               <div>
                 <dt>提交时间</dt>
                 <dd>{formatSubmittedAt(submission.submittedAt)}</dd>
@@ -6211,7 +6897,7 @@ function WithdrawSubmissionConfirmModal(props: { submission: Submission; onCance
         <div className="delete-confirm-body">
           <strong>{props.submission.artifactTitle}</strong>
           <p>{props.submission.artifactSummary}</p>
-          <span>{artifactLabels[props.submission.artifactType]} · {formatSubmittedAt(props.submission.submittedAt)}</span>
+          <span>{artifactLabels[props.submission.artifactType]} · 第 {props.submission.submissionVersion} 版 · {formatSubmittedAt(props.submission.submittedAt)}</span>
         </div>
         <footer>
           <button className="ghost-button" type="button" onClick={props.onCancel}>
@@ -6244,7 +6930,7 @@ function DeleteWithdrawnSubmissionConfirmModal(props: { submission: Submission; 
         <div className="delete-confirm-body">
           <strong>{props.submission.artifactTitle}</strong>
           <p>{props.submission.artifactSummary}</p>
-          <span>{artifactLabels[props.submission.artifactType]} · 已撤回 · {formatSubmittedAt(props.submission.submittedAt)}</span>
+          <span>{artifactLabels[props.submission.artifactType]} · 第 {props.submission.submissionVersion} 版 · 已撤回 · {formatSubmittedAt(props.submission.submittedAt)}</span>
         </div>
         <footer>
           <button className="ghost-button" type="button" onClick={props.onCancel}>
@@ -6263,6 +6949,19 @@ function DeleteWithdrawnSubmissionConfirmModal(props: { submission: Submission; 
 function StudentSubmissionDetailModal(props: { submission: Submission; generatedAssets: GeneratedAsset[]; onClose: () => void }) {
   const blocks = props.submission.blocks || [];
   const canDownload = isSubmissionDownloadAvailable(props.submission, props.generatedAssets);
+  const [downloadError, setDownloadError] = useState("");
+
+  async function handleDownload() {
+    setDownloadError("");
+    try {
+      if (!await downloadSubmissionArtifact(props.submission, props.generatedAssets)) {
+        setDownloadError("真实文件尚未生成，当前不能下载。");
+      }
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : "成果文件生成失败，请稍后重试。");
+    }
+  }
+
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -6289,7 +6988,7 @@ function StudentSubmissionDetailModal(props: { submission: Submission; generated
             <div className="submission-overview-head">
               <div>
                 <span className="eyebrow">提交概况</span>
-                <h4>{artifactLabels[props.submission.artifactType]}</h4>
+                <h4>{artifactLabels[props.submission.artifactType]} · 第 {props.submission.submissionVersion} 版</h4>
               </div>
               <em className={`submission-status ${props.submission.status}`}>{statusLabels[props.submission.status]}</em>
             </div>
@@ -6338,6 +7037,7 @@ function StudentSubmissionDetailModal(props: { submission: Submission; generated
           </section>
         </div>
         <footer>
+          {downloadError && <p className="asset-hint workbuddy-error" role="alert">{downloadError}</p>}
           <button className="ghost-button" type="button" onClick={props.onClose}>
             关闭
           </button>
@@ -6346,7 +7046,7 @@ function StudentSubmissionDetailModal(props: { submission: Submission; generated
             type="button"
             disabled={!canDownload}
             title={canDownload ? undefined : "真实文件尚未生成"}
-            onClick={() => downloadSubmissionArtifact(props.submission, props.generatedAssets)}
+            onClick={() => void handleDownload()}
           >
             <Download size={15} />
             {canDownload ? getSubmissionDownloadLabel(props.submission) : "文件尚未生成"}
@@ -6360,37 +7060,39 @@ function StudentSubmissionDetailModal(props: { submission: Submission; generated
 
 function DefenseView(props: {
   activeIdea: Idea;
-  messages: ChatMessage[];
-  generatedAssets: GeneratedAsset[];
+  expertHandoffs: RemoteExpertHandoff[];
   practices: DefensePractice[];
   studentAvatarId: StudentAvatarId;
   onSaveDefense: (practice: DefensePractice) => void;
+  onEnsureConversation: () => Promise<string>;
   permissionAccess: PermissionAccess;
 }) {
-  const latestBpMessage = [...props.messages].reverse().find((message) => message.sender === "ai" && message.artifactType === "BP");
+  const latestBpVersion = findLatestConfirmedStageArtifact(props.expertHandoffs, props.activeIdea.id, "BP", "defense");
+  const latestBpArtifact = latestBpVersion?.artifact;
   const [turns, setTurns] = useState<DefenseTurn[]>([
     {
       id: makeId("DT"),
       sender: "ai",
-      content: latestBpMessage
-        ? "我是本轮 AI 评委。系统会自动使用当前创意最新生成的商业计划书 BP 作为答辩依据，点击“开始答辩”即可进入模拟。"
-        : "当前创意还没有商业计划书 BP。请先到商业模式/BP 专家生成 BP，再进入答辩模拟。",
+      content: latestBpArtifact
+        ? "我是本轮 AI 评委。系统只使用当前创意最新确认的商业计划书 BP，以及其他最新确认的阶段成果作为答辩依据。点击“开始答辩”即可进入模拟。"
+        : "当前创意还没有已确认的商业计划书 BP。请先到商业模式/BP 专家确认正式版本，再进入答辩模拟。",
       createdAt: nowTime(),
     },
   ]);
-  const [answer, setAnswer] = useState(() => (latestBpMessage ? getDefenseSuggestedAnswer(0) : ""));
+  const [answer, setAnswer] = useState("");
   const [evaluation, setEvaluation] = useState<ResultBlock[] | null>(null);
   const [selectedPractice, setSelectedPractice] = useState<DefensePractice | null>(null);
+  const [isAiResponding, setIsAiResponding] = useState(false);
+  const practiceIdRef = useRef(makePersistentId("D"));
   const defenseChatListRef = useRef<HTMLDivElement | null>(null);
   const defenseHasScrolledRef = useRef(false);
   const speechInput = useSpeechInput({
     value: answer,
     onChange: setAnswer,
-    fallbackText: "语音回答：我们的项目服务商学院创业实践课堂，先帮助学生把创意整理成可验证假设，再生成 BP、PPT、路演稿和答辩材料，老师端可以审核并反馈。",
   });
   const activeBlocks = selectedPractice
     ? defenseBlocks(selectedPractice)
-    : evaluation || buildDefenseEvaluation();
+    : evaluation || [];
 
   useEffect(() => {
     const chatList = defenseChatListRef.current;
@@ -6409,83 +7111,138 @@ function DefenseView(props: {
     setTurns((current) => [...current, { id: makeId("DT"), sender: "ai", content, createdAt: nowTime() }]);
   }
 
-  function handleStart() {
+  async function requestDefenseReply(content: string, artifactType?: "DEFENSE") {
+    const clientMessageId = makeId("M");
+    const conversationId = await props.onEnsureConversation();
+    await appendStudentConversationMessage(conversationId, {
+      clientMessageId,
+      sender: "USER",
+      inputMode: "文本",
+      expertId: "defense",
+      expertName: "AI 评委/答辩陪练专家",
+      skillName: artifactType ? "答辩复盘" : "模拟追问",
+      artifactType,
+      content,
+    });
+    return requestDeepSeekExpertReply({
+      ideaId: props.activeIdea.id,
+      expertId: "defense",
+      clientMessageId,
+      skillName: artifactType ? "答辩复盘" : "模拟追问",
+      artifactType,
+      ...(artifactType ? { artifactMode: "REQUIRED" as const } : {}),
+    });
+  }
+
+  async function handleStart() {
     if (!props.permissionAccess.can("答辩模拟")) {
       props.permissionAccess.block("答辩模拟");
       return;
     }
-    const basis = latestBpMessage;
+    const basis = latestBpVersion;
     if (!basis) {
-      appendAi("当前创意还没有可用的商业计划书 BP。先生成 BP 后，我会自动带入最新版本进行答辩模拟。");
+      appendAi("当前创意还没有已确认的商业计划书 BP。请先确认正式 BP；未确认的聊天回复不会进入答辩。");
       setAnswer("");
       return;
     }
+    if (isAiResponding) return;
     setSelectedPractice(null);
     setEvaluation(null);
+    practiceIdRef.current = makePersistentId("D");
     speechInput.resetVoiceInput();
-    setTurns([
-      {
-        id: makeId("DT"),
-        sender: "ai",
-        content: `本轮将基于当前创意最新的《${basis.skillName || "商业计划书 BP"}》进行答辩。第一个问题：学校为什么愿意为这个系统付费，而不是让学生自己使用通用 AI？`,
-        createdAt: nowTime(),
-      },
-    ]);
-    setAnswer(getDefenseSuggestedAnswer(0));
+    setTurns([]);
+    setAnswer("");
+    setIsAiResponding(true);
+    try {
+      const reply = await requestDefenseReply(
+        "开始一轮真实创业项目答辩模拟。请只使用系统注入的当前创意各类最新确认成果作为项目材料，只提出第一道最有价值的评委问题；不要读取未确认回复，不要给参考答案、不要提前评分、不要生成总评。",
+      );
+      setTurns([{ id: reply.assistantMessageId || makeId("DT"), sender: "ai", content: reply.content, createdAt: nowTime() }]);
+    } catch (error) {
+      appendAi(`答辩 AI 暂时无法出题：${error instanceof Error ? error.message : "请求失败"}。本次没有生成模拟问题，也不会使用固定题目代替。`);
+    } finally {
+      setIsAiResponding(false);
+    }
   }
 
-  function handleSendAnswer() {
+  async function handleSendAnswer() {
     if (!props.permissionAccess.can("答辩模拟")) {
       props.permissionAccess.block("答辩模拟");
       return;
     }
     const content = answer.trim();
-    if (!content) return;
-    const nextTurnCount = turns.filter((turn) => turn.sender === "student").length + 1;
-    setTurns((current) => [...current, { id: makeId("DT"), sender: "student", content, createdAt: nowTime() }]);
+    if (!content || isAiResponding) return;
+    const studentTurn: DefenseTurn = { id: makeId("DT"), sender: "student", content, createdAt: nowTime() };
+    setTurns((current) => [...current, studentTurn]);
     setAnswer("");
     speechInput.resetVoiceInput();
-    window.setTimeout(() => {
-      appendAi(buildFollowUpQuestion(content, nextTurnCount));
-      setAnswer(getDefenseSuggestedAnswer(nextTurnCount));
-    }, 3200);
+    setIsAiResponding(true);
+    try {
+      const reply = await requestDefenseReply(
+        `学生本轮回答如下：\n${content}\n\n请先用不超过 2 句话指出这段回答最关键的优点或证据缺口，然后只提出下一道追问。不得替学生写完整答案，不得提前生成综合评分。`,
+      );
+      appendAi(reply.content);
+    } catch (error) {
+      appendAi(`本轮追问生成失败：${error instanceof Error ? error.message : "请求失败"}。回答已经保留，可稍后继续。`);
+    } finally {
+      setIsAiResponding(false);
+    }
   }
 
-  function buildCurrentPractice(visibility: "self" | "teacher") {
-    const practice = buildDefensePractice(props.activeIdea.id, visibility);
+  function buildCurrentPractice(visibility: "self" | "teacher", transcript = turns, result = evaluation || []) {
+    const questionTranscript =
+      result.length > 0 && transcript.at(-1)?.sender === "ai"
+        ? transcript.slice(0, -1)
+        : transcript;
     return {
-      ...practice,
-      transcript: turns,
-      evaluation: evaluation || buildDefenseEvaluation(),
+      id: practiceIdRef.current,
+      ideaId: props.activeIdea.id,
+      basis: "BP + PPT + 路演稿" as const,
+      scripts: { "1分钟": "", "3分钟": "", "5分钟": "" },
+      questions: questionTranscript.filter((turn) => turn.sender === "ai").map((turn) => turn.content),
+      answerSuggestions: [],
+      expressionTips: [],
+      transcript,
+      evaluation: result,
+      visibility,
       createdAt: nowDateTime(),
     };
   }
 
-  function handleFinish() {
+  async function handleFinish() {
     if (!props.permissionAccess.can("答辩模拟")) {
       props.permissionAccess.block("答辩模拟");
       return;
     }
-    window.setTimeout(() => {
-      const nextEvaluation = buildDefenseEvaluation(turns);
+    if (isAiResponding) return;
+    if (!turns.some((turn) => turn.sender === "student")) {
+      appendAi("请至少完成一轮回答后，再结束并生成综合评价。");
+      return;
+    }
+    setIsAiResponding(true);
+    try {
+      const reply = await requestDefenseReply(
+        "结束本轮答辩。请只依据本轮已经发生的真实问答完成评分和复盘。先按项目逻辑 20 分、用户与痛点 15 分、商业模式 20 分、市场与竞争 15 分、证据可信度 20 分、表达与应答 10 分给出总分与分项分数，再生成综合评价、各维度表现、有效证据、证据缺口与风险、下一轮修改建议和下一轮答辩训练。资料不足时应降低相应分数并明确说明，不得套用固定成绩或虚构教师结论。",
+        "DEFENSE",
+      );
+      const nextEvaluation = normalizeArtifactBlocks(reply.blocks, reply.content, "DEFENSE");
       const evaluationTurn: DefenseTurn = {
-        id: makeId("DT"),
+        id: reply.assistantMessageId || makeId("DT"),
         sender: "ai",
-        content: `本轮答辩已结束，我先给出综合评价和下一轮修改建议。\n\n${formatDefenseEvaluationForChat(nextEvaluation)}`,
+        content: reply.content,
         createdAt: nowTime(),
       };
       const nextTranscript = [...turns, evaluationTurn];
       setEvaluation(nextEvaluation);
-      const savedPractice: DefensePractice = {
-        ...buildDefensePractice(props.activeIdea.id, "self"),
-        transcript: nextTranscript,
-        evaluation: nextEvaluation,
-        createdAt: nowDateTime(),
-      };
+      const savedPractice = buildCurrentPractice("self", nextTranscript, nextEvaluation);
       setTurns(nextTranscript);
       setSelectedPractice(savedPractice);
       props.onSaveDefense(savedPractice);
-    }, 4200);
+    } catch (error) {
+      appendAi(`综合评价生成失败：${error instanceof Error ? error.message : "请求失败"}。本轮问答仍保留，可重新点击“结束并生成评价”。`);
+    } finally {
+      setIsAiResponding(false);
+    }
   }
 
   function handleSave(visibility: "self" | "teacher") {
@@ -6497,14 +7254,27 @@ function DefenseView(props: {
       props.permissionAccess.block("提交老师审核");
       return;
     }
+    if (!evaluation?.length) {
+      appendAi("请先结束答辩并生成综合评价，再保存或提交记录。");
+      return;
+    }
     const practice = buildCurrentPractice(visibility);
     props.onSaveDefense(practice);
   }
 
   function selectDefensePractice(practice: DefensePractice) {
     setSelectedPractice(practice);
-    setTurns(practice.transcript?.length ? practice.transcript : buildDefensePractice(practice.ideaId, practice.visibility).transcript);
-    setEvaluation(practice.evaluation?.length ? practice.evaluation : buildDefenseEvaluation());
+    practiceIdRef.current = practice.id;
+    setTurns(practice.transcript || []);
+    setEvaluation(practice.evaluation?.length ? practice.evaluation : null);
+  }
+
+  async function handleDownloadReport() {
+    try {
+      await downloadWord("答辩模拟复盘报告.docx", "答辩模拟复盘报告", activeBlocks);
+    } catch (error) {
+      appendAi(`答辩复盘报告下载失败：${error instanceof Error ? error.message : "文件生成失败，请稍后重试。"}`);
+    }
   }
 
   return (
@@ -6517,8 +7287,8 @@ function DefenseView(props: {
         <button
           className="ghost-button soft-download-button"
           type="button"
-          onClick={() => downloadWord("答辩复盘.doc", "答辩复盘", activeBlocks)}
-          disabled={!props.permissionAccess.can("下载个人成果")}
+          onClick={() => void handleDownloadReport()}
+          disabled={!props.permissionAccess.can("下载个人成果") || activeBlocks.length === 0}
         >
           <Download size={16} />
           下载答辩复盘
@@ -6528,17 +7298,20 @@ function DefenseView(props: {
         <div className="defense-main">
           <section className="defense-chat">
             <div className="defense-chat-list" ref={defenseChatListRef}>
-              {turns.map((turn) => (
-                <article className={`defense-turn ${turn.sender}`} key={turn.id}>
-                  <div className="buddy-avatar">
-                    {turn.sender === "ai" ? <DefenseJudgeAvatar size={34} /> : <StudentCartoonAvatar avatarId={props.studentAvatarId} size={34} />}
-                  </div>
-                  <div className="buddy-bubble">
-                    <span>{turn.sender === "ai" ? "AI 评委" : "学生回答"} · {turn.createdAt}</span>
-                    <p>{turn.content}</p>
-                  </div>
-                </article>
-              ))}
+              {turns.map((turn, index) => {
+                const turnEvaluation = turn.sender === "ai" && index === turns.length - 1 && evaluation?.length ? evaluation : null;
+                return (
+                  <article className={`defense-turn ${turn.sender}${turnEvaluation ? " evaluation" : ""}`} key={turn.id}>
+                    <div className="buddy-avatar">
+                      {turn.sender === "ai" ? <DefenseJudgeAvatar size={34} /> : <StudentCartoonAvatar avatarId={props.studentAvatarId} size={34} />}
+                    </div>
+                    <div className="buddy-bubble">
+                      <span>{turnEvaluation ? "AI 评委 · 综合评价" : turn.sender === "ai" ? "AI 评委" : "学生回答"} · {turn.createdAt}</span>
+                      {turnEvaluation ? <DefenseEvaluationMessage blocks={turnEvaluation} /> : turn.sender === "ai" ? <StructuredAiResponse content={turn.content} compact /> : <p>{turn.content}</p>}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
             <div className="defense-composer">
               <textarea
@@ -6551,7 +7324,7 @@ function DefenseView(props: {
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
-                    handleSendAnswer();
+                    void handleSendAnswer();
                   }
                 }}
                 placeholder="输入你的答辩回答，例如：我们不是单点生成工具，而是把学生端生成、教师端审核和课程成果沉淀连成闭环..."
@@ -6563,35 +7336,42 @@ function DefenseView(props: {
               )}
               <div className="context-actions defense-composer-actions">
                 <div className="defense-composer-action-group">
-                  <button type="button" onClick={handleStart} disabled={!props.permissionAccess.can("答辩模拟")}>
+                  <button type="button" onClick={() => void handleStart()} disabled={!props.permissionAccess.can("答辩模拟") || isAiResponding}>
                     <Mic size={15} />
-                    开始答辩
+                    {isAiResponding && turns.length === 0 ? "AI 正在出题" : "开始答辩"}
                   </button>
-                  <button type="button" onClick={handleFinish} disabled={!props.permissionAccess.can("答辩模拟")}>
+                  <button type="button" onClick={() => void handleFinish()} disabled={!props.permissionAccess.can("答辩模拟") || isAiResponding}>
                     <CheckCircle2 size={15} />
-                    结束并生成评价
+                    {isAiResponding && turns.some((turn) => turn.sender === "student") ? "AI 正在评价" : "结束并生成评价"}
                   </button>
                 </div>
                 <div className="defense-composer-action-group right">
                   <button
                     className={`defense-voice-button ${speechInput.isListening ? "voice-active" : ""}`.trim()}
                     type="button"
+                    aria-pressed={speechInput.isListening}
                     onClick={speechInput.toggle}
-                    disabled={!props.permissionAccess.can("答辩模拟")}
+                    disabled={!props.permissionAccess.can("答辩模拟") || speechInput.status === "stopping"}
                   >
                     <Mic size={15} />
-                    {speechInput.isListening ? "停止听写" : "语音回答"}
+                    {speechInput.status === "starting"
+                      ? "等待麦克风"
+                      : speechInput.status === "stopping"
+                        ? "停止中"
+                        : speechInput.status === "listening"
+                          ? "停止听写"
+                          : "语音回答"}
                   </button>
                   <button
                     className="defense-send-button"
                     type="button"
-                    onClick={handleSendAnswer}
-                    disabled={!props.permissionAccess.can("答辩模拟")}
+                    onClick={() => void handleSendAnswer()}
+                    disabled={!props.permissionAccess.can("答辩模拟") || isAiResponding || !answer.trim()}
                     aria-keyshortcuts="Enter"
                     title="Enter 发送"
                   >
                     <Send size={15} />
-                    发送回答
+                    {isAiResponding ? "AI 生成中" : "发送回答"}
                   </button>
                 </div>
               </div>
@@ -6602,21 +7382,21 @@ function DefenseView(props: {
           <div className="detail-card defense-action-card">
             <span className="eyebrow">答辩动作</span>
             <h4>自动答辩依据</h4>
-            <p>系统会自动读取当前创意里最新生成的商业计划书 BP，不需要学生手动选择。</p>
-            <div className={`auto-basis-card ${latestBpMessage ? "" : "empty"}`}>
-              <strong>{latestBpMessage ? latestBpMessage.skillName || "商业计划书 BP" : "暂无商业计划书 BP"}</strong>
-              <span>{latestBpMessage ? `生成时间：${latestBpMessage.createdAt}` : "请先在商业模式/BP 专家里生成最终 BP 成果。"}</span>
+            <p>系统只读取当前创意各成果类型的最新确认版本，不读取未确认回复和旧确认版本。</p>
+            <div className={`auto-basis-card ${latestBpArtifact ? "" : "empty"}`}>
+              <strong>{latestBpArtifact?.title || "暂无已确认的商业计划书 BP"}</strong>
+              <span>{latestBpVersion ? `确认时间：${formatRemoteDateTime(latestBpVersion.handoff.confirmedAt)}` : "请先在商业模式/BP 专家里确认正式 BP。"}</span>
             </div>
             <div className="context-actions vertical">
-              <button type="button" onClick={() => handleSave("teacher")} disabled={!props.permissionAccess.can("答辩模拟") || !props.permissionAccess.can("提交老师审核")}>
+              <button type="button" onClick={() => handleSave("teacher")} disabled={!props.permissionAccess.can("答辩模拟") || !props.permissionAccess.can("提交老师审核") || !evaluation?.length}>
                 <Send size={15} />
                 发送给老师审核
               </button>
-              <button type="button" onClick={() => handleSave("self")} disabled={!props.permissionAccess.can("答辩模拟")}>
+              <button type="button" onClick={() => handleSave("self")} disabled={!props.permissionAccess.can("答辩模拟") || !evaluation?.length}>
                 <Save size={15} />
                 仅保存给自己
               </button>
-              <button type="button" onClick={() => downloadWord("答辩复盘.doc", "答辩复盘", activeBlocks)} disabled={!props.permissionAccess.can("下载个人成果")}>
+              <button type="button" onClick={() => void handleDownloadReport()} disabled={!props.permissionAccess.can("下载个人成果") || activeBlocks.length === 0}>
                 <Download size={15} />
                 自己下载
               </button>
@@ -6648,7 +7428,7 @@ function DefenseView(props: {
                     </div>
                   </div>
                   <div className="defense-record-action">
-                    <em>{practice.evaluation?.[0]?.items?.[0]?.match(/\d+\/100/)?.[0] || "86/100"}</em>
+                    <em>{practice.evaluation?.length ? getDefenseScoreLabel(practice.evaluation) || "已评价" : "未评价"}</em>
                     <span>{selectedPractice?.id === practice.id ? "当前" : "查看"}</span>
                     <ChevronRight size={16} />
                   </div>
@@ -6912,6 +7692,16 @@ function TeacherView(props: {
   knowledgeUploads: KnowledgeUpload[];
   knowledgeCatalog: KnowledgeBaseCatalogItem[];
   knowledgeBaseStates: KnowledgeBaseStates;
+  lexiangPullRun: LexiangPullRunRecord | null;
+  lexiangPullLoading: boolean;
+  lexiangPulling: boolean;
+  lexiangPullError: string | null;
+  lexiangPullConfigured: boolean;
+  lexiangPullConfigurationMessage: string;
+  lexiangMappings: LexiangKnowledgeMappingRecord[];
+  lexiangMappingsLoading: boolean;
+  lexiangMappingsError: string | null;
+  savingLexiangMappingBaseId: string | null;
   promptKnowledgeRoutes: PromptKnowledgeRoutes;
   customExperts: CustomExpertRecord[];
   teacherName: string;
@@ -6931,8 +7721,13 @@ function TeacherView(props: {
   onPreviewVideo: (asset: GeneratedAsset) => void;
   onPreviewWord: (preview: WordPreview) => void;
   onUploadKnowledge: (assets: KnowledgeUpload[]) => void;
+  onUploadExpertPrivateKnowledge: (expertId: string, files: File[]) => Promise<void>;
+  onDeleteExpertPrivateKnowledge: (expertId: string, assetId: string) => Promise<void>;
   onDeleteKnowledge: (id: string) => void;
   onToggleKnowledge: (id: string) => void;
+  onSyncKnowledge: (id: string) => void;
+  onPullLexiangKnowledge: () => Promise<void>;
+  onSaveLexiangMapping: (input: SaveLexiangKnowledgeMappingInput) => Promise<void>;
   onKnowledgeBaseStatesChange: (states: KnowledgeBaseStates) => void;
   onKnowledgeCatalogChange: (catalog: KnowledgeBaseCatalogItem[]) => void;
   onPromptKnowledgeRoutesChange: (routes: PromptKnowledgeRoutes) => void;
@@ -6945,7 +7740,7 @@ function TeacherView(props: {
     categories: KnowledgeCategory[],
     active: boolean,
   ) => Promise<void>;
-  onDeleteExpert: (expertId: ExpertId) => boolean;
+  onDeleteExpert: (expertId: ExpertId) => Promise<boolean>;
   onDeleteKnowledgeBase: (category: KnowledgeCategory) => boolean;
 }) {
   const pendingCount = props.allSubmissions.filter((item) => item.status === "pending").length;
@@ -6972,10 +7767,16 @@ function TeacherView(props: {
   const [knowledgeBasePreviewCategory, setKnowledgeBasePreviewCategory] = useState<KnowledgeCategory | null>(null);
   const [knowledgeSaveMessage, setKnowledgeSaveMessage] = useState<string | null>(null);
   const [pendingDeleteExpertId, setPendingDeleteExpertId] = useState<ExpertId | null>(null);
+  const [deletingExpertId, setDeletingExpertId] = useState<ExpertId | null>(null);
   const [teacherPromptExpertId, setTeacherPromptExpertId] = useState<ExpertId>("brainstorm");
   const [isTeacherExpertDetailOpen, setIsTeacherExpertDetailOpen] = useState(false);
-  const [teacherExpertListRefreshKey, setTeacherExpertListRefreshKey] = useState(0);
   const teacherManageableExperts = mergeManageableExperts(experts, props.customExperts);
+  const teacherSkillManagerExperts = teacherManageableExperts.map((expert) =>
+    toKnowledgeExpertRecord(
+      expert,
+      props.promptKnowledgeRoutes[expert.id] || getExpertKnowledgeCategories(expert.id),
+    ),
+  );
   const initialTeacherPromptExpert = teacherManageableExperts.find((expert) => expert.id === "brainstorm") || teacherManageableExperts[0];
   const initialTeacherPromptParts = buildPromptTemplateParts(
     initialTeacherPromptExpert,
@@ -7006,10 +7807,11 @@ function TeacherView(props: {
   const selectedUpload = props.knowledgeUploads.find((asset) => asset.id === selectedUploadId) || null;
   const knowledgePreviewAsset = knowledgePreviewId ? props.knowledgeUploads.find((asset) => asset.id === knowledgePreviewId) || null : null;
   const activeKnowledgeCatalog = getActiveKnowledgeCatalog(props.knowledgeCatalog);
+  const sharedKnowledgeCatalog = activeKnowledgeCatalog.filter(isCourseSharedKnowledgeBase);
   const knowledgeBasePreviewItem = knowledgeBasePreviewCategory
     ? activeKnowledgeCatalog.find((base) => base.category === knowledgeBasePreviewCategory) || null
     : null;
-  const selectedUploadKnowledgeBase = activeKnowledgeCatalog.find((base) => base.category === uploadCategory) || activeKnowledgeCatalog[0];
+  const selectedUploadKnowledgeBase = sharedKnowledgeCatalog.find((base) => base.category === uploadCategory) || sharedKnowledgeCatalog[0];
   const teacherPromptExpert = teacherManageableExperts.find((expert) => expert.id === teacherPromptExpertId) || teacherManageableExperts[0];
   const pendingDeleteExpert = pendingDeleteExpertId ? teacherManageableExperts.find((expert) => expert.id === pendingDeleteExpertId) || null : null;
   const teacherPromptKnowledgeCategories = props.promptKnowledgeRoutes[teacherPromptExpert.id] || getExpertKnowledgeCategories(teacherPromptExpert.id);
@@ -7344,10 +8146,12 @@ function TeacherView(props: {
     setKnowledgeSaveMessage(`已${nextEnabled ? "启用" : "停用"}「${category}知识库」，学生端和专家提示词会同步更新。`);
   }
 
-  function confirmTeacherDeleteExpert() {
-    if (!pendingDeleteExpert) return;
+  async function confirmTeacherDeleteExpert() {
+    if (!pendingDeleteExpert || deletingExpertId) return;
     const expertId = pendingDeleteExpert.id;
-    if (props.onDeleteExpert(expertId)) {
+    setDeletingExpertId(expertId);
+    try {
+      if (!await props.onDeleteExpert(expertId)) return;
       const nextExpert = teacherManageableExperts.find((expert) => expert.id !== expertId) || teacherManageableExperts[0];
       const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
       const nextParts = buildPromptTemplateParts(nextExpert, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
@@ -7355,11 +8159,12 @@ function TeacherView(props: {
       setTeacherSystemPromptDraft(nextParts.system);
       setTeacherUserPromptDraft(nextParts.user);
       setTeacherExpertActiveDraft(nextExpert.active !== false);
-      setKnowledgeSaveMessage("专家已删除，并同步到学生端专家列表。");
+      setKnowledgeSaveMessage("专家、专属检索库与 Skill 来源档案已删除；课程共享知识库保持不变。");
       setIsTeacherExpertDetailOpen(false);
-      setTeacherExpertListRefreshKey((current) => current + 1);
+      setPendingDeleteExpertId(null);
+    } finally {
+      setDeletingExpertId(null);
     }
-    setPendingDeleteExpertId(null);
   }
 
   function getPptAsset(submission: Submission) {
@@ -7393,9 +8198,13 @@ function TeacherView(props: {
     );
   }
 
-  function downloadSubmission(submission: Submission) {
-    if (!downloadSubmissionArtifact(submission, props.generatedAssets)) {
-      setReviewActionMessage("真实文件尚未生成，当前不能下载。");
+  async function downloadSubmission(submission: Submission) {
+    try {
+      if (!await downloadSubmissionArtifact(submission, props.generatedAssets)) {
+        setReviewActionMessage("真实文件尚未生成，当前不能下载。");
+      }
+    } catch (error) {
+      setReviewActionMessage(error instanceof Error ? error.message : "成果文件生成失败，请稍后重试。");
     }
   }
 
@@ -7514,7 +8323,7 @@ function TeacherView(props: {
           <MonitorPlay size={15} />
           {submission.artifactType === "PPT" ? "预览 PPT" : submission.artifactType === "MEDIA" ? "预览视频" : "预览 Word"}
         </button>
-        <button type="button" disabled={!canDownload} title={canDownload ? undefined : "真实文件尚未生成"} onClick={() => downloadSubmission(submission)}>
+        <button type="button" disabled={!canDownload} title={canDownload ? undefined : "真实文件尚未生成"} onClick={() => void downloadSubmission(submission)}>
           <Download size={15} />
           {canDownload ? getSubmissionDownloadLabel(submission) : "文件尚未生成"}
         </button>
@@ -7581,7 +8390,6 @@ function TeacherView(props: {
         teacherExpertActiveDraft,
       );
       setIsTeacherExpertDetailOpen(false);
-      setTeacherExpertListRefreshKey((current) => current + 1);
       setIsPromptSaveOpen(true);
     } catch (error) {
       setKnowledgeSaveMessage(error instanceof Error ? error.message : "提示词保存失败");
@@ -7836,7 +8644,7 @@ function TeacherView(props: {
                 <strong>{submission.student}</strong>
                 <small>{getStudentGroupDisplay(submission.group, submission.groupName)}</small>
               </span>
-              <span>{artifactLabels[submission.artifactType]}</span>
+              <span>{artifactLabels[submission.artifactType]} · 第 {submission.submissionVersion} 版</span>
               <span title={submission.artifactTitle}>
                 {submission.artifactTitle}
                 {submission.isExcellent && <em className="inline-excellent">优秀</em>}
@@ -7905,31 +8713,74 @@ function TeacherView(props: {
                   </form>
                 </div>
                 <div className="knowledge-base-directory-list">
-                  {knowledgeDirectoryRows.map((base) => {
-                    const fileCount = props.knowledgeUploads.filter((asset) => (asset.category || inferKnowledgeCategory(asset.name)) === base.category).length;
-                    const enabled = props.knowledgeBaseStates[base.category] !== false;
+                  {(["COURSE_SHARED", "EXPERT_PRIVATE"] as const).map((scopeType) => {
+                    const rows = knowledgeDirectoryRows.filter((base) =>
+                      scopeType === "COURSE_SHARED" ? isCourseSharedKnowledgeBase(base) : base.scopeType === "EXPERT_PRIVATE",
+                    );
+                    if (!rows.length) return null;
                     return (
-                      <article key={base.category}>
-                        <div>
-                          <strong>{base.category}知识库</strong>
-                          <span>{fileCount} 份资料 · {enabled ? "已开放" : "已停用"}</span>
+                      <div className="knowledge-directory-scope" key={scopeType}>
+                        <div className="knowledge-directory-scope-header">
+                          <strong>{scopeType === "COURSE_SHARED" ? "课程共享知识库" : "专家专属知识库"}</strong>
+                          <span>{scopeType === "COURSE_SHARED" ? "教师上传的课程资料，可按专家授权使用" : "仅保存对应专家 Skill 中勾选的知识资料"}</span>
                         </div>
-                        <div className="knowledge-directory-actions">
-                          <button type="button" onClick={() => setKnowledgeBasePreviewCategory(base.category)}>
-                            查看详情
-                          </button>
-                          <button type="button" onClick={() => handleToggleKnowledgeBaseState(base.category)}>
-                            {enabled ? "停用" : "启用"}
-                          </button>
-                          <button
-                            className="danger-text-button"
-                            type="button"
-                            onClick={() => props.onDeleteKnowledgeBase(base.category)}
-                          >
-                            删除
-                          </button>
-                        </div>
-                      </article>
+                        <LexiangPullSyncPanel
+                          scopeType={scopeType}
+                          run={props.lexiangPullRun}
+                          configured={props.lexiangPullConfigured}
+                          configurationMessage={props.lexiangPullConfigurationMessage}
+                          loading={props.lexiangPullLoading || props.lexiangMappingsLoading}
+                          syncing={props.lexiangPulling}
+                          error={props.lexiangPullError || props.lexiangMappingsError}
+                          onSync={props.onPullLexiangKnowledge}
+                        />
+                        {rows.map((base) => {
+                          const fileCount = props.knowledgeUploads.filter((asset) => (asset.category || inferKnowledgeCategory(asset.name)) === base.category).length;
+                          const enabled = props.knowledgeBaseStates[base.category] !== false;
+                          const ownerName = teacherManageableExperts.find((expert) => expert.id === base.ownerExpertId)?.name;
+                          return (
+                            <article key={base.category}>
+                              <div>
+                                <strong>{formatKnowledgeBaseName(base.category)}</strong>
+                                <span>
+                                  {fileCount} 份资料 · {enabled ? "已开放" : "已停用"}
+                                  {scopeType === "EXPERT_PRIVATE" ? ` · ${ownerName || "对应专家"}` : ""}
+                                </span>
+                              </div>
+                              <div className="knowledge-directory-actions">
+                                <button type="button" onClick={() => setKnowledgeBasePreviewCategory(base.category)}>
+                                  查看详情
+                                </button>
+                                {scopeType === "COURSE_SHARED" && (
+                                  <>
+                                    <button type="button" onClick={() => handleToggleKnowledgeBaseState(base.category)}>
+                                      {enabled ? "停用" : "启用"}
+                                    </button>
+                                    <button
+                                      className="danger-text-button"
+                                      type="button"
+                                      onClick={() => props.onDeleteKnowledgeBase(base.category)}
+                                    >
+                                      删除
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                              <LexiangKnowledgeMappingEditor
+                                key={`${base.id || base.category}:${props.lexiangMappings.find((mapping) => mapping.baseId === base.id)?.updatedAt || "new"}`}
+                                scopeType={scopeType}
+                                baseId={base.id}
+                                baseName={formatKnowledgeBaseName(base.category)}
+                                mapping={props.lexiangMappings.find((mapping) => mapping.baseId === base.id) || null}
+                                loading={props.lexiangMappingsLoading}
+                                saving={props.savingLexiangMappingBaseId === base.id}
+                                loadError={props.lexiangMappingsError}
+                                onSave={props.onSaveLexiangMapping}
+                              />
+                            </article>
+                          );
+                        })}
+                      </div>
                     );
                   })}
                 </div>
@@ -7949,7 +8800,7 @@ function TeacherView(props: {
                     <PrettySelect
                       value={uploadCategory}
                       ariaLabel="选择上传知识库"
-                      options={activeKnowledgeCatalog.map((base) => ({ value: base.category, label: `${base.category}知识库` }))}
+                      options={sharedKnowledgeCatalog.map((base) => ({ value: base.category, label: formatKnowledgeBaseName(base.category) }))}
                       onChange={(value) => setUploadCategory(value)}
                     />
                   </label>
@@ -7995,7 +8846,7 @@ function TeacherView(props: {
                       ariaLabel="筛选知识库"
                       options={[
                         { value: "ALL" as KnowledgeCategory | "ALL", label: "全部知识库" },
-                        ...activeKnowledgeCatalog.map((base) => ({ value: base.category, label: `${base.category}知识库` })),
+                        ...activeKnowledgeCatalog.map((base) => ({ value: base.category, label: formatKnowledgeBaseName(base.category) })),
                       ]}
                       onChange={(value) => setKnowledgeSearchDraft((current) => ({ ...current, category: value }))}
                     />
@@ -8049,6 +8900,7 @@ function TeacherView(props: {
                         <span className="knowledge-file-meta" title={getKnowledgeFileTypeLabel(asset)}>
                           <em>{getKnowledgeFileTypeLabel(asset)}</em>
                           <small>{asset.sizeLabel}</small>
+                          <small title={asset.lexiangSyncError}>{getLexiangSyncLabel(asset)}</small>
                         </span>
                         <span>{asset.uploadedBy || props.teacherName || "周老师"}</span>
                         <span>{formatSubmittedAt(asset.uploadedAt)}</span>
@@ -8069,6 +8921,11 @@ function TeacherView(props: {
                           <button type="button" onClick={() => props.onToggleKnowledge(asset.id)}>
                             {enabled ? "停用" : "启用"}
                           </button>
+                          {canRetryLexiangSync(asset) && (
+                            <button type="button" onClick={() => props.onSyncKnowledge(asset.id)}>
+                              重试同步
+                            </button>
+                          )}
                           <button
                             className="danger"
                             type="button"
@@ -8100,15 +8957,15 @@ function TeacherView(props: {
             <ExpertSkillManager
               actorLabel="教师端"
               knowledgeBases={props.knowledgeCatalog}
-              refreshKey={teacherExpertListRefreshKey}
-              onMessage={setKnowledgeSaveMessage}
+              experts={teacherSkillManagerExperts}
               onConfirmed={handleTeacherExpertSkillConfirmed}
               onOpenExpert={openTeacherExpertDetail}
             />
             {isTeacherExpertDetailOpen && (
               <ExpertDetailModal
                 expert={teacherPromptExpert}
-                knowledgeCatalog={activeKnowledgeCatalog}
+                knowledgeUploads={props.knowledgeUploads}
+                knowledgeCatalog={getExpertKnowledgeCatalog(activeKnowledgeCatalog, teacherPromptExpert.id)}
                 knowledgeBaseStates={props.knowledgeBaseStates}
                 selectedCategories={teacherPromptKnowledgeCategories}
                 enabledKnowledgeCount={teacherPromptMeta.enabledKnowledgeCount}
@@ -8120,6 +8977,8 @@ function TeacherView(props: {
                 onSystemPromptChange={setTeacherSystemPromptDraft}
                 onUserPromptChange={setTeacherUserPromptDraft}
                 onActiveChange={setTeacherExpertActiveDraft}
+                onUploadPrivateKnowledge={props.onUploadExpertPrivateKnowledge}
+                onDeletePrivateKnowledge={props.onDeleteExpertPrivateKnowledge}
                 onSave={() => void handleTeacherSavePrompt()}
                 onDelete={() => setPendingDeleteExpertId(teacherPromptExpert.id)}
                 onClose={() => setIsTeacherExpertDetailOpen(false)}
@@ -8274,7 +9133,7 @@ function TeacherView(props: {
               <dl>
                 <div>
                   <dt>成果类型</dt>
-                  <dd>{artifactLabels[reviewDetailSubmission.artifactType]}</dd>
+                  <dd>{artifactLabels[reviewDetailSubmission.artifactType]} · 第 {reviewDetailSubmission.submissionVersion} 版</dd>
                 </div>
                 <div>
                   <dt>学生/小组</dt>
@@ -8568,7 +9427,9 @@ function TeacherView(props: {
                     <MonitorPlay size={15} />
                     预览资料
                   </button>
-                  <button type="button" onClick={() => downloadKnowledgeAsset(knowledgePreviewAsset)}>
+                  <button type="button" onClick={() => void downloadKnowledgeAsset(knowledgePreviewAsset).catch((error) => {
+                    setKnowledgeSaveMessage(error instanceof Error ? error.message : "资料说明生成失败，请稍后重试。");
+                  })}>
                     <Download size={15} />
                     {knowledgePreviewAsset.fileDataUrl ? "下载原文件" : "下载资料说明"}
                   </button>
@@ -8595,8 +9456,9 @@ function TeacherView(props: {
       {pendingDeleteExpert && (
         <ExpertDeleteConfirmModal
           expert={pendingDeleteExpert}
+          pending={deletingExpertId === pendingDeleteExpert.id}
           onCancel={() => setPendingDeleteExpertId(null)}
-          onConfirm={confirmTeacherDeleteExpert}
+          onConfirm={() => void confirmTeacherDeleteExpert()}
         />
       )}
       {isPromptSaveOpen && <PromptSaveSuccessModal onClose={() => setIsPromptSaveOpen(false)} />}
@@ -8614,6 +9476,16 @@ function AdminView(props: {
   knowledgeUploads: KnowledgeUpload[];
   knowledgeCatalog: KnowledgeBaseCatalogItem[];
   knowledgeBaseStates: KnowledgeBaseStates;
+  lexiangPullRun: LexiangPullRunRecord | null;
+  lexiangPullLoading: boolean;
+  lexiangPulling: boolean;
+  lexiangPullError: string | null;
+  lexiangPullConfigured: boolean;
+  lexiangPullConfigurationMessage: string;
+  lexiangMappings: LexiangKnowledgeMappingRecord[];
+  lexiangMappingsLoading: boolean;
+  lexiangMappingsError: string | null;
+  savingLexiangMappingBaseId: string | null;
   promptKnowledgeRoutes: PromptKnowledgeRoutes;
   customExperts: CustomExpertRecord[];
   adminName: string;
@@ -8629,11 +9501,16 @@ function AdminView(props: {
     categories: KnowledgeCategory[],
     active: boolean,
   ) => Promise<void>;
-  onDeleteExpert: (expertId: ExpertId) => boolean;
+  onDeleteExpert: (expertId: ExpertId) => Promise<boolean>;
   onDeleteKnowledgeBase: (category: KnowledgeCategory) => boolean;
   onUploadKnowledge: (assets: KnowledgeUpload[]) => void;
+  onUploadExpertPrivateKnowledge: (expertId: string, files: File[]) => Promise<void>;
+  onDeleteExpertPrivateKnowledge: (expertId: string, assetId: string) => Promise<void>;
   onDeleteKnowledge: (id: string) => void;
   onToggleKnowledge: (id: string) => void;
+  onSyncKnowledge: (id: string) => void;
+  onPullLexiangKnowledge: () => Promise<void>;
+  onSaveLexiangMapping: (input: SaveLexiangKnowledgeMappingInput) => Promise<void>;
   submissions: Submission[];
 }) {
   const { onAccountRecordsChange, onStudentGroupsChange } = props;
@@ -8642,6 +9519,7 @@ function AdminView(props: {
   const [selectedGroupDetailId, setSelectedGroupDetailId] = useState<string | null>(null);
   const [promptExpertId, setPromptExpertId] = useState<ExpertId>("brainstorm");
   const [pendingDeleteExpertId, setPendingDeleteExpertId] = useState<ExpertId | null>(null);
+  const [deletingExpertId, setDeletingExpertId] = useState<ExpertId | null>(null);
   const [isAdminExpertDetailOpen, setIsAdminExpertDetailOpen] = useState(false);
   const accountRecords = props.accountRecords;
   const [selectedAccountId, setSelectedAccountId] = useState(() => accountRecords[0]?.id || "");
@@ -8653,7 +9531,9 @@ function AdminView(props: {
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountLogin, setNewAccountLogin] = useState("");
   const [newAccountPassword, setNewAccountPassword] = useState("");
-  const [newAccountQuota, setNewAccountQuota] = useState("240");
+  const [newAccountQuota, setNewAccountQuota] = useState("2000");
+  const [newAccountLexiangPptQuota, setNewAccountLexiangPptQuota] = useState("100");
+  const [newAccountWorkbuddyVideoQuota, setNewAccountWorkbuddyVideoQuota] = useState("20");
   const [newAccountGroupId, setNewAccountGroupId] = useState(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
   const [newGroupLabel, setNewGroupLabel] = useState("");
   const [newGroupProjectName, setNewGroupProjectName] = useState("");
@@ -8663,6 +9543,8 @@ function AdminView(props: {
     name: "",
     account: "",
     quota: "",
+    lexiangPptQuota: "",
+    workbuddyVideoQuota: "",
     groupId: "",
   });
   const [adminUploadCategory, setAdminUploadCategory] = useState<KnowledgeCategory>("教学大纲");
@@ -8674,8 +9556,13 @@ function AdminView(props: {
   const [adminKnowledgeDirectorySearch, setAdminKnowledgeDirectorySearch] = useState("");
   const [adminKnowledgeBasePreviewCategory, setAdminKnowledgeBasePreviewCategory] = useState<KnowledgeCategory | null>(null);
   const [knowledgeSaveMessage, setKnowledgeSaveMessage] = useState<string | null>(null);
-  const [adminExpertListRefreshKey, setAdminExpertListRefreshKey] = useState(0);
   const adminManageableExperts = mergeManageableExperts(experts, props.customExperts);
+  const adminSkillManagerExperts = adminManageableExperts.map((expert) =>
+    toKnowledgeExpertRecord(
+      expert,
+      props.promptKnowledgeRoutes[expert.id] || getExpertKnowledgeCategories(expert.id),
+    ),
+  );
   const initialAdminPromptExpert = adminManageableExperts.find((expert) => expert.id === "brainstorm") || adminManageableExperts[0];
   const initialAdminPromptParts = buildPromptTemplateParts(
     initialAdminPromptExpert,
@@ -8741,11 +9628,23 @@ function AdminView(props: {
     };
   }, [adminTab]);
 
+  async function refreshOperationsReport() {
+    try {
+      const report = await getAdminOperations();
+      setOperationsReport(report);
+      setOperationsError("");
+    } catch (error) {
+      setOperationsError(error instanceof Error ? error.message : "运行数据刷新失败");
+    }
+  }
+
   function openAccountDetail(account: AccountRecord) {
     setAccountEditDraft({
       name: account.name,
       account: account.account,
       quota: String(account.quota),
+      lexiangPptQuota: String(account.lexiangPptQuota ?? getDefaultAccountQuotas(account.role).lexiangPpt),
+      workbuddyVideoQuota: String(account.workbuddyVideoQuota ?? getDefaultAccountQuotas(account.role).workbuddyVideo),
       groupId: account.groupId || "",
     });
     setAccountDetailId(account.id);
@@ -8756,13 +9655,6 @@ function AdminView(props: {
   const revisionCount = props.submissions.filter((item) => item.status === "revision").length;
   const excellentCount = props.submissions.filter((item) => item.isExcellent).length;
   const processedRate = Math.min(100, Math.round(((approvedCount + revisionCount) / Math.max(1, props.submissions.length)) * 100));
-  const passRate = Math.round((approvedCount / Math.max(1, props.submissions.length)) * 100);
-  const evaluationSubmissionCount = operationsReport?.submissions.total ?? props.submissions.length;
-  const evaluationApprovedCount = operationsReport?.submissions.approved ?? approvedCount;
-  const evaluationRevisionCount = operationsReport?.submissions.revision ?? revisionCount;
-  const evaluationExcellentCount = operationsReport?.submissions.excellent ?? excellentCount;
-  const evaluationProcessedRate = operationsReport?.submissions.processedRate ?? processedRate;
-  const evaluationPassRate = operationsReport?.submissions.passRate ?? passRate;
   const tabs = [
     ["resources", "账号与权限管理", Settings2],
     ["audit", "AI 用量统计", BarChart3],
@@ -8815,6 +9707,7 @@ function AdminView(props: {
     ? props.knowledgeUploads.find((asset) => asset.id === adminKnowledgePreviewId) || null
     : null;
   const adminActiveKnowledgeCatalog = getActiveKnowledgeCatalog(props.knowledgeCatalog);
+  const adminSharedKnowledgeCatalog = adminActiveKnowledgeCatalog.filter(isCourseSharedKnowledgeBase);
   const adminKnowledgeBasePreviewItem = adminKnowledgeBasePreviewCategory
     ? adminActiveKnowledgeCatalog.find((base) => base.category === adminKnowledgeBasePreviewCategory) || null
     : null;
@@ -8824,13 +9717,17 @@ function AdminView(props: {
     return `${base.category} ${base.description} ${base.usedBy}`.toLowerCase().includes(keyword);
   });
   const selectedAdminUploadKnowledgeBase =
-    adminActiveKnowledgeCatalog.find((base) => base.category === adminUploadCategory) ||
-    adminActiveKnowledgeCatalog[0];
+    adminSharedKnowledgeCatalog.find((base) => base.category === adminUploadCategory) ||
+    adminSharedKnowledgeCatalog[0];
   const accountRoleSummary = [
     ["学生账号", accountRecords.filter((account) => account.role === "student").length, "按账号配置可调用专家、答辩模拟、成果提交"],
     ["教师账号", accountRecords.filter((account) => account.role === "teacher").length, "审核、退回修改、优秀成果标记、资料上传"],
     ["管理员账号", accountRecords.filter((account) => account.role === "admin").length, "账号权限、知识库、提示词和看板维护"],
-    ["总调用配额", accountRecords.reduce((sum, account) => sum + account.quota, 0), "按账号分配，可人工调整"],
+    [
+      "平台服务总额度",
+      `PPT ${accountRecords.reduce((sum, account) => sum + (account.lexiangPptQuota || 0), 0).toLocaleString("zh-CN")} 次 · 视频 ${accountRecords.reduce((sum, account) => sum + (account.workbuddyVideoQuota || 0), 0).toLocaleString("zh-CN")} 次`,
+      "按账号分配，由 Java 后端校验并统计已用次数",
+    ],
   ] as const;
   const monitorRows = [
     [
@@ -8954,92 +9851,6 @@ function AdminView(props: {
   function openBigscreen() {
     window.open("/bigscreen/index.html", "_blank", "noopener,noreferrer");
   }
-  const evaluationIssueEntries = Object.entries(buildTeacherIssueDetails(props.submissions));
-  const groupsWithSubmission = kanbanProjects.filter((project) => project.submissions.length > 0).length;
-  const groupsAtBpOrLater = kanbanProjects.filter((project) => project.latestSubmission && project.stageIndex >= 4).length;
-  const diagnosedSubmissionCount = props.submissions.filter((submission) => submission.aiDiagnosis).length;
-  const teacherFeedbackCount = props.submissions.filter((submission) => submission.teacherComment?.trim()).length;
-  const effectRows = [
-    [
-      "小组阶段参与率",
-      `${kanbanProjects.length ? Math.round((groupsWithSubmission / kanbanProjects.length) * 100) : 0}%`,
-      `${groupsWithSubmission}/${kanbanProjects.length} 组`,
-      "按至少提交过一项阶段成果的小组统计",
-    ],
-    ["成果通过率", `${evaluationPassRate}%`, `${evaluationApprovedCount}/${evaluationSubmissionCount} 项`, "按当前未撤回成果与审核状态统计"],
-    ["退回修改数", `${evaluationRevisionCount} 项`, "当前记录", "退回原因以教师反馈和 AI 参考诊断为准"],
-    ["优秀案例数", `${evaluationExcellentCount} 项`, "教师标记", "只统计教师已标记的优秀成果"],
-  ];
-  const aiEvaluationBlocks = [
-    {
-      title: "系统数据汇总",
-      items: [
-        `当前数据库有 ${operationsReport?.accounts.students ?? dashboardStudentCount} 个学生账号、${operationsReport?.groupCount ?? kanbanProjects.length} 个项目小组。`,
-        `累计保存 ${evaluationSubmissionCount} 项未撤回成果，审核处理率 ${evaluationProcessedRate}%，通过率 ${evaluationPassRate}%。`,
-        `${groupsAtBpOrLater} 个小组已提交 BP 或更后阶段成果；教师标记优秀成果 ${evaluationExcellentCount} 项。`,
-      ],
-    },
-    {
-      title: "当前可验证成效",
-      items: [
-        `教师反馈已保存 ${teacherFeedbackCount} 项，AI 参考诊断已保存 ${diagnosedSubmissionCount} 项。`,
-        `启用知识库 ${operationsReport?.knowledge.activeBases ?? enabledKnowledgeCatalogCount} 个，启用知识资料 ${operationsReport?.knowledge.activeAssets ?? enabledKnowledgeAssetCount} 份。`,
-        `近 30 天 DeepSeek ${operationsReport?.providers.deepSeekCalls ?? 0} 次、乐享 PPT ${operationsReport?.providers.lexiangPptCalls ?? 0} 次、WorkBuddy 视频任务 ${operationsReport?.providers.workBuddyVideoJobs ?? 0} 次。`,
-      ],
-    },
-    {
-      title: "下一步建议",
-      items: [
-        evaluationIssueEntries.length
-          ? `当前有证据的首要共性问题是“${evaluationIssueEntries[0][0]}”，建议回到对应成果逐项核验。`
-          : "当前缺少已保存的诊断或教师反馈，暂不生成共性问题判断。",
-        `当前仍有 ${operationsReport?.submissions.pending ?? pendingCount} 项待审核，应先完成教师确认再形成试点评估结论。`,
-        "供应商能力只按真实成功记录计数，未调用时不能据此判断 PPT 或视频生成质量。",
-      ],
-    },
-  ];
-  const evaluationReviewBlocks = [
-    {
-      title: "阶段进展",
-      tag: "数据库实时",
-      items: [
-        `${groupsWithSubmission} 个小组有阶段成果记录，${groupsAtBpOrLater} 个小组进入 BP 或更后阶段。`,
-        `当前 ${evaluationApprovedCount} 项通过、${evaluationRevisionCount} 项退回修改、${operationsReport?.submissions.pending ?? pendingCount} 项待审核。`,
-        `知识库已有 ${operationsReport?.knowledge.assets ?? props.knowledgeUploads.length} 份资料，其中 ${operationsReport?.knowledge.activeAssets ?? enabledKnowledgeAssetCount} 份启用。`,
-      ],
-    },
-    {
-      title: "关键发现",
-      tag: `${evaluationIssueEntries.length} 类有证据问题`,
-      items: evaluationIssueEntries.length
-        ? evaluationIssueEntries.slice(0, 3).map(([label, detail]) => `${label}：${detail.trend}，${detail.affectedGroups}。`)
-        : ["尚无足够的 AI 诊断或教师反馈，不能判断高频问题。"],
-    },
-    {
-      title: "风险跟踪",
-      tag: "需干预",
-      items: [
-        `${kanbanProjects.length - groupsWithSubmission} 个小组尚无阶段成果记录。`,
-        `${operationsReport?.submissions.pending ?? pendingCount} 项成果等待教师审核，未确认前不应计入通过结论。`,
-        `${operationsReport?.providers.failedJobs ?? 0} 个生成任务失败；需要从运行记录继续排查。`,
-      ],
-    },
-    {
-      title: "下阶段动作",
-      tag: "按当前数据",
-      items: [
-        evaluationIssueEntries[0]?.[1].guidance[0] || "先积累真实诊断和教师反馈，再制定集中讲评主题。",
-        "优先处理待审核成果，并由教师确认 AI 参考评分和反馈草稿。",
-        evaluationExcellentCount ? `复核 ${evaluationExcellentCount} 项优秀成果是否具备进入课程案例库的条件。` : "当前暂无优秀成果标记，暂不进入案例沉淀。",
-      ],
-    },
-  ];
-  const evaluationEvidenceRows = [
-    ["阶段成果", `${evaluationSubmissionCount} 项`, "来自 MySQL 中未撤回的成果提交"],
-    ["教师反馈", `${teacherFeedbackCount} 条`, "来自教师已保存的审核意见"],
-    ["AI 参考诊断", `${diagnosedSubmissionCount} 项`, "由教师主动触发并持久化"],
-    ["待重点跟进", `${operationsReport?.submissions.pending ?? pendingCount} 项`, "当前仍处于待审核状态"],
-  ];
 
   function applyAdminKnowledgeSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -9062,10 +9873,12 @@ function AdminView(props: {
     setKnowledgeSaveMessage(`已${nextEnabled ? "启用" : "停用"}「${category}知识库」，学生端、教师端和提示词配置会同步更新。`);
   }
 
-  function confirmAdminDeleteExpert() {
-    if (!pendingDeleteExpert) return;
+  async function confirmAdminDeleteExpert() {
+    if (!pendingDeleteExpert || deletingExpertId) return;
     const expertId = pendingDeleteExpert.id;
-    if (props.onDeleteExpert(expertId)) {
+    setDeletingExpertId(expertId);
+    try {
+      if (!await props.onDeleteExpert(expertId)) return;
       const nextExpert = adminManageableExperts.find((expert) => expert.id !== expertId) || adminManageableExperts[0];
       const nextCategories = props.promptKnowledgeRoutes[nextExpert.id] || getExpertKnowledgeCategories(nextExpert.id);
       const nextParts = buildPromptTemplateParts(nextExpert, props.knowledgeUploads, props.knowledgeBaseStates, nextCategories);
@@ -9073,11 +9886,12 @@ function AdminView(props: {
       setAdminSystemPromptDraft(nextParts.system);
       setAdminUserPromptDraft(nextParts.user);
       setAdminExpertActiveDraft(nextExpert.active !== false);
-      setKnowledgeSaveMessage("专家已删除，并同步到教师端和学生端专家列表。");
+      setKnowledgeSaveMessage("专家、专属检索库与 Skill 来源档案已删除；课程共享知识库保持不变。");
       setIsAdminExpertDetailOpen(false);
-      setAdminExpertListRefreshKey((current) => current + 1);
+      setPendingDeleteExpertId(null);
+    } finally {
+      setDeletingExpertId(null);
     }
-    setPendingDeleteExpertId(null);
   }
 
   function handleAdminPromptKnowledgeToggle(category: KnowledgeCategory) {
@@ -9119,7 +9933,6 @@ function AdminView(props: {
         adminExpertActiveDraft,
       );
       setIsAdminExpertDetailOpen(false);
-      setAdminExpertListRefreshKey((current) => current + 1);
       setIsPromptSaveOpen(true);
     } catch (error) {
       setKnowledgeSaveMessage(error instanceof Error ? error.message : "提示词保存失败");
@@ -9219,9 +10032,15 @@ function AdminView(props: {
   }
 
   function getDefaultQuota(role: Role) {
-    if (role === "student") return 240;
-    if (role === "teacher") return 520;
-    return 1500;
+    return getDefaultAccountQuotas(role).aiCalls;
+  }
+
+  function getDefaultLexiangPptQuota(role: Role) {
+    return getDefaultAccountQuotas(role).lexiangPpt;
+  }
+
+  function getDefaultWorkbuddyVideoQuota(role: Role) {
+    return getDefaultAccountQuotas(role).workbuddyVideo;
   }
 
   function getPermissionDescription(permission: string, role: Role) {
@@ -9353,7 +10172,9 @@ function AdminView(props: {
     const name = newAccountName.trim() || (newAccountRole === "student" ? `学生${accountRecords.length + 1}` : newAccountRole === "teacher" ? `教师${accountRecords.length + 1}` : `管理员${accountRecords.length + 1}`);
     const prefix = newAccountRole === "student" ? "student" : newAccountRole === "teacher" ? "teacher" : "admin";
     const loginAccount = newAccountLogin.trim() || `${prefix}${accountRecords.length + 1}@sufe.demo`;
-    const quota = Math.max(0, Number.parseInt(newAccountQuota, 10) || getDefaultQuota(newAccountRole));
+    const quota = parseQuotaValue(newAccountQuota, getDefaultQuota(newAccountRole));
+    const lexiangPptQuota = parseQuotaValue(newAccountLexiangPptQuota, getDefaultLexiangPptQuota(newAccountRole));
+    const workbuddyVideoQuota = parseQuotaValue(newAccountWorkbuddyVideoQuota, getDefaultWorkbuddyVideoQuota(newAccountRole));
     const groupPatch = newAccountRole === "student" ? buildStudentGroupPatch(newAccountGroupId) : {};
     if (newAccountRole === "student" && !("groupId" in groupPatch)) {
       setAccountSaveMessage("请先为学生账号选择所属项目小组。");
@@ -9371,6 +10192,8 @@ function AdminView(props: {
         displayName: name,
         title: getRoleTitle(newAccountRole),
         quotaRemaining: quota,
+        lexiangPptQuota,
+        workbuddyVideoQuota,
         groupId: newAccountRole === "student" ? newAccountGroupId : undefined,
       });
       const next = mapAdminAccount(remoteAccount, props.studentGroups);
@@ -9380,6 +10203,8 @@ function AdminView(props: {
       setNewAccountLogin("");
       setNewAccountPassword("");
       setNewAccountQuota(String(getDefaultQuota(newAccountRole)));
+      setNewAccountLexiangPptQuota(String(getDefaultLexiangPptQuota(newAccountRole)));
+      setNewAccountWorkbuddyVideoQuota(String(getDefaultWorkbuddyVideoQuota(newAccountRole)));
       setNewAccountGroupId(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
       setIsAccountCreateOpen(false);
       setAccountSaveMessage("账号已创建并可使用后端认证登录，密码未在前端保存。");
@@ -9398,6 +10223,8 @@ function AdminView(props: {
         title: target.title,
         status: target.status === "已开通" ? "DISABLED" : "ACTIVE",
         quotaRemaining: target.quota,
+        lexiangPptQuota: target.lexiangPptQuota ?? getDefaultLexiangPptQuota(target.role),
+        workbuddyVideoQuota: target.workbuddyVideoQuota ?? getDefaultWorkbuddyVideoQuota(target.role),
         disabledPermissions: target.disabledPermissions || [],
         groupId: target.role === "student" ? target.groupId : undefined,
       });
@@ -9437,6 +10264,8 @@ function AdminView(props: {
         title: targetAccount.title,
         status: targetAccount.status === "已停用" ? "DISABLED" : "ACTIVE",
         quotaRemaining: targetAccount.quota,
+        lexiangPptQuota: targetAccount.lexiangPptQuota ?? getDefaultLexiangPptQuota(targetAccount.role),
+        workbuddyVideoQuota: targetAccount.workbuddyVideoQuota ?? getDefaultWorkbuddyVideoQuota(targetAccount.role),
         disabledPermissions: nextDisabledPermissions,
         groupId: targetAccount.role === "student" ? targetAccount.groupId : undefined,
       });
@@ -9450,7 +10279,9 @@ function AdminView(props: {
   async function handleSaveAccountDetail() {
     if (!accountDetail) return;
     const name = accountEditDraft.name.trim();
-    const quota = Math.max(0, Number.parseInt(accountEditDraft.quota, 10) || 0);
+    const quota = parseQuotaValue(accountEditDraft.quota, accountDetail.quota);
+    const lexiangPptQuota = parseQuotaValue(accountEditDraft.lexiangPptQuota, accountDetail.lexiangPptQuota || 0);
+    const workbuddyVideoQuota = parseQuotaValue(accountEditDraft.workbuddyVideoQuota, accountDetail.workbuddyVideoQuota || 0);
     if (!name) {
       setAccountSaveMessage("姓名不能为空。");
       return;
@@ -9462,6 +10293,8 @@ function AdminView(props: {
         title: accountDetail.title,
         status: accountDetail.status === "已停用" ? "DISABLED" : "ACTIVE",
         quotaRemaining: quota,
+        lexiangPptQuota,
+        workbuddyVideoQuota,
         disabledPermissions: accountDetail.disabledPermissions || [],
         groupId: accountDetail.role === "student" ? accountEditDraft.groupId : undefined,
       });
@@ -9600,7 +10433,7 @@ function AdminView(props: {
                 <span>角色</span>
                 <span>登录账号</span>
                 <span>认证方式</span>
-                <span>调用配额</span>
+                <span>服务调用额度</span>
                 <span>状态</span>
                 <span>操作</span>
               </div>
@@ -9613,7 +10446,11 @@ function AdminView(props: {
                   <span>{account.role === "student" ? "学生端" : account.role === "teacher" ? "教师端" : "管理端"}</span>
                   <span title={account.account}>{account.account}</span>
                   <span>平台后端认证</span>
-                  <span>{account.quota} 次</span>
+                  <span className="account-quota-compact">
+                    <small>AI {account.aiCallsRemaining ?? account.quota}/{account.quota}</small>
+                    <small>PPT {account.lexiangPptRemaining ?? account.lexiangPptQuota ?? 0}/{account.lexiangPptQuota ?? 0}</small>
+                    <small>视频 {account.workbuddyVideoRemaining ?? account.workbuddyVideoQuota ?? 0}/{account.workbuddyVideoQuota ?? 0}</small>
+                  </span>
                   <span>
                     <button
                       className={`account-status-toggle ${account.status === "已开通" ? "enabled" : "disabled"}`}
@@ -9889,31 +10726,74 @@ function AdminView(props: {
                 </button>
               </form>
               <div className="knowledge-base-directory-list">
-                  {adminKnowledgeDirectoryRows.map((base) => {
-                  const fileCount = props.knowledgeUploads.filter((asset) => (asset.category || inferKnowledgeCategory(asset.name)) === base.category).length;
-                  const enabled = props.knowledgeBaseStates[base.category] !== false;
+                {(["COURSE_SHARED", "EXPERT_PRIVATE"] as const).map((scopeType) => {
+                  const rows = adminKnowledgeDirectoryRows.filter((base) =>
+                    scopeType === "COURSE_SHARED" ? isCourseSharedKnowledgeBase(base) : base.scopeType === "EXPERT_PRIVATE",
+                  );
+                  if (!rows.length) return null;
                   return (
-                    <article key={base.category}>
-                      <div>
-                        <strong>{base.category}知识库</strong>
-                        <span>{fileCount} 份资料 · {enabled ? "已开放" : "已停用"}</span>
+                    <div className="knowledge-directory-scope" key={scopeType}>
+                      <div className="knowledge-directory-scope-header">
+                        <strong>{scopeType === "COURSE_SHARED" ? "课程共享知识库" : "专家专属知识库"}</strong>
+                        <span>{scopeType === "COURSE_SHARED" ? "教师上传的课程资料，可按专家授权使用" : "由专家 Skill 配置自动维护，普通上传入口不可写入"}</span>
                       </div>
-                      <div className="knowledge-directory-actions">
-                        <button type="button" onClick={() => setAdminKnowledgeBasePreviewCategory(base.category)}>
-                          查看详情
-                        </button>
-                        <button type="button" onClick={() => handleAdminToggleKnowledgeBaseState(base.category)}>
-                          {enabled ? "停用" : "启用"}
-                        </button>
-                        <button
-                          className="danger-text-button"
-                          type="button"
-                          onClick={() => props.onDeleteKnowledgeBase(base.category)}
-                        >
-                          删除
-                        </button>
-                      </div>
-                    </article>
+                      <LexiangPullSyncPanel
+                        scopeType={scopeType}
+                        run={props.lexiangPullRun}
+                        configured={props.lexiangPullConfigured}
+                        configurationMessage={props.lexiangPullConfigurationMessage}
+                        loading={props.lexiangPullLoading || props.lexiangMappingsLoading}
+                        syncing={props.lexiangPulling}
+                        error={props.lexiangPullError || props.lexiangMappingsError}
+                        onSync={props.onPullLexiangKnowledge}
+                      />
+                      {rows.map((base) => {
+                        const fileCount = props.knowledgeUploads.filter((asset) => (asset.category || inferKnowledgeCategory(asset.name)) === base.category).length;
+                        const enabled = props.knowledgeBaseStates[base.category] !== false;
+                        const ownerName = adminManageableExperts.find((expert) => expert.id === base.ownerExpertId)?.name;
+                        return (
+                          <article key={base.category}>
+                            <div>
+                              <strong>{formatKnowledgeBaseName(base.category)}</strong>
+                              <span>
+                                {fileCount} 份资料 · {enabled ? "已开放" : "已停用"}
+                                {scopeType === "EXPERT_PRIVATE" ? ` · ${ownerName || "对应专家"}` : ""}
+                              </span>
+                            </div>
+                            <div className="knowledge-directory-actions">
+                              <button type="button" onClick={() => setAdminKnowledgeBasePreviewCategory(base.category)}>
+                                查看详情
+                              </button>
+                              {scopeType === "COURSE_SHARED" && (
+                                <>
+                                  <button type="button" onClick={() => handleAdminToggleKnowledgeBaseState(base.category)}>
+                                    {enabled ? "停用" : "启用"}
+                                  </button>
+                                  <button
+                                    className="danger-text-button"
+                                    type="button"
+                                    onClick={() => props.onDeleteKnowledgeBase(base.category)}
+                                  >
+                                    删除
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                            <LexiangKnowledgeMappingEditor
+                              key={`${base.id || base.category}:${props.lexiangMappings.find((mapping) => mapping.baseId === base.id)?.updatedAt || "new"}`}
+                              scopeType={scopeType}
+                              baseId={base.id}
+                              baseName={formatKnowledgeBaseName(base.category)}
+                              mapping={props.lexiangMappings.find((mapping) => mapping.baseId === base.id) || null}
+                              loading={props.lexiangMappingsLoading}
+                              saving={props.savingLexiangMappingBaseId === base.id}
+                              loadError={props.lexiangMappingsError}
+                              onSave={props.onSaveLexiangMapping}
+                            />
+                          </article>
+                        );
+                      })}
+                    </div>
                   );
                 })}
               </div>
@@ -9934,7 +10814,7 @@ function AdminView(props: {
                 <PrettySelect
                   value={adminUploadCategory}
                   ariaLabel="选择上传知识库"
-                  options={adminActiveKnowledgeCatalog.map((base) => ({ value: base.category, label: `${base.category}知识库` }))}
+                  options={adminSharedKnowledgeCatalog.map((base) => ({ value: base.category, label: formatKnowledgeBaseName(base.category) }))}
                   onChange={(value) => setAdminUploadCategory(value)}
                 />
               </label>
@@ -9975,7 +10855,7 @@ function AdminView(props: {
                   ariaLabel="筛选知识库"
                   options={[
                     { value: "ALL" as KnowledgeCategory | "ALL", label: "全部知识库" },
-                    ...adminActiveKnowledgeCatalog.map((base) => ({ value: base.category, label: `${base.category}知识库` })),
+                    ...adminActiveKnowledgeCatalog.map((base) => ({ value: base.category, label: formatKnowledgeBaseName(base.category) })),
                   ]}
                   onChange={(value) => setAdminKnowledgeSearchDraft((current) => ({ ...current, category: value }))}
                 />
@@ -10029,6 +10909,7 @@ function AdminView(props: {
                     <span className="knowledge-file-meta" title={getKnowledgeFileTypeLabel(asset)}>
                       <em>{getKnowledgeFileTypeLabel(asset)}</em>
                       <small>{asset.sizeLabel}</small>
+                      <small title={asset.lexiangSyncError}>{getLexiangSyncLabel(asset)}</small>
                     </span>
                     <span>{asset.uploadedBy || props.adminName || "平台管理员"}</span>
                     <span>{formatSubmittedAt(asset.uploadedAt)}</span>
@@ -10043,6 +10924,11 @@ function AdminView(props: {
                       <button type="button" onClick={() => props.onToggleKnowledge(asset.id)}>
                         {enabled ? "停用" : "启用"}
                       </button>
+                      {canRetryLexiangSync(asset) && (
+                        <button type="button" onClick={() => props.onSyncKnowledge(asset.id)}>
+                          重试同步
+                        </button>
+                      )}
                       <button
                         className="danger"
                         type="button"
@@ -10076,15 +10962,15 @@ function AdminView(props: {
             <ExpertSkillManager
               actorLabel="管理端"
               knowledgeBases={props.knowledgeCatalog}
-              refreshKey={adminExpertListRefreshKey}
-              onMessage={setKnowledgeSaveMessage}
+              experts={adminSkillManagerExperts}
               onConfirmed={handleAdminExpertSkillConfirmed}
               onOpenExpert={openAdminExpertDetail}
             />
             {isAdminExpertDetailOpen && (
               <ExpertDetailModal
                 expert={promptExpert}
-                knowledgeCatalog={adminActiveKnowledgeCatalog}
+                knowledgeUploads={props.knowledgeUploads}
+                knowledgeCatalog={getExpertKnowledgeCatalog(adminActiveKnowledgeCatalog, promptExpert.id)}
                 knowledgeBaseStates={props.knowledgeBaseStates}
                 selectedCategories={adminPromptKnowledgeCategories}
                 enabledKnowledgeCount={enabledKnowledgeCount}
@@ -10096,6 +10982,8 @@ function AdminView(props: {
                 onSystemPromptChange={setAdminSystemPromptDraft}
                 onUserPromptChange={setAdminUserPromptDraft}
                 onActiveChange={setAdminExpertActiveDraft}
+                onUploadPrivateKnowledge={props.onUploadExpertPrivateKnowledge}
+                onDeletePrivateKnowledge={props.onDeleteExpertPrivateKnowledge}
                 onSave={() => void handleAdminSavePrompt()}
                 onDelete={() => setPendingDeleteExpertId(promptExpert.id)}
                 onClose={() => setIsAdminExpertDetailOpen(false)}
@@ -10107,50 +10995,11 @@ function AdminView(props: {
 
       {adminTab === "evaluation" && (
         <div className="admin-page" key="admin-evaluation">
-          <div className="effect-grid">
-            {effectRows.map(([name, value, target, detail]) => (
-              <article key={name}>
-                <strong>{value}</strong>
-                <span>{name}</span>
-                <em>{target}</em>
-                <p>{detail}</p>
-              </article>
-            ))}
-          </div>
-          <div className="ai-evaluation-panel">
-            <ResultPanel result={aiEvaluationBlocks} expertId="business" />
-          </div>
-          <div className="evaluation-review-board">
-            <div className="evaluation-review-heading">
-              <span className="eyebrow">运营复盘</span>
-              <h4>试点运行补充说明</h4>
-              <p>围绕学生成果质量、教师审核闭环和正式试点准备度，补充管理端可汇报的过程性内容。</p>
-            </div>
-            <div className="evaluation-review-grid">
-              {evaluationReviewBlocks.map((block) => (
-                <section key={block.title} className="evaluation-review-card">
-                  <header>
-                    <strong>{block.title}</strong>
-                    <span>{block.tag}</span>
-                  </header>
-                  <ul>
-                    {block.items.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
-              ))}
-            </div>
-            <div className="evaluation-evidence-strip">
-              {evaluationEvidenceRows.map(([name, value, detail]) => (
-                <article key={name}>
-                  <strong>{value}</strong>
-                  <span>{name}</span>
-                  <p>{detail}</p>
-                </article>
-              ))}
-            </div>
-          </div>
+          <AdminOperationsEvaluation
+            report={operationsReport}
+            error={operationsError}
+            onRefresh={refreshOperationsReport}
+          />
         </div>
       )}
       {adminKnowledgePreviewAsset && (
@@ -10199,7 +11048,9 @@ function AdminView(props: {
                 <span className="eyebrow">资料预览</span>
                 <p>{adminKnowledgePreviewAsset.preview}</p>
                 <div className="teacher-file-actions">
-                  <button type="button" onClick={() => downloadKnowledgeAsset(adminKnowledgePreviewAsset)}>
+                  <button type="button" onClick={() => void downloadKnowledgeAsset(adminKnowledgePreviewAsset).catch((error) => {
+                    setKnowledgeSaveMessage(error instanceof Error ? error.message : "资料说明生成失败，请稍后重试。");
+                  })}>
                     <Download size={15} />
                     {adminKnowledgePreviewAsset.fileDataUrl ? "下载原文件" : "下载资料说明"}
                   </button>
@@ -10228,8 +11079,9 @@ function AdminView(props: {
       {pendingDeleteExpert && (
         <ExpertDeleteConfirmModal
           expert={pendingDeleteExpert}
+          pending={deletingExpertId === pendingDeleteExpert.id}
           onCancel={() => setPendingDeleteExpertId(null)}
-          onConfirm={confirmAdminDeleteExpert}
+          onConfirm={() => void confirmAdminDeleteExpert()}
         />
       )}
       {isPromptSaveOpen && <PromptSaveSuccessModal onClose={() => setIsPromptSaveOpen(false)} />}
@@ -10465,6 +11317,8 @@ function AdminView(props: {
                   onChange={(nextRole) => {
                     setNewAccountRole(nextRole);
                     setNewAccountQuota(String(getDefaultQuota(nextRole)));
+                    setNewAccountLexiangPptQuota(String(getDefaultLexiangPptQuota(nextRole)));
+                    setNewAccountWorkbuddyVideoQuota(String(getDefaultWorkbuddyVideoQuota(nextRole)));
                     if (nextRole === "student" && !newAccountGroupId) {
                       setNewAccountGroupId(props.studentGroups[2]?.id || props.studentGroups[0]?.id || "");
                     }
@@ -10490,13 +11344,33 @@ function AdminView(props: {
                 />
               </label>
               <label>
-                <span>调用配额</span>
+                <span>AI 对话调用额度</span>
                 <input
                   min="0"
                   type="number"
                   value={newAccountQuota}
                   onChange={(event) => setNewAccountQuota(event.target.value)}
-                  placeholder="输入调用配额"
+                  placeholder="输入 AI 对话调用次数"
+                />
+              </label>
+              <label>
+                <span>乐享 PPT 生成额度</span>
+                <input
+                  min="0"
+                  type="number"
+                  value={newAccountLexiangPptQuota}
+                  onChange={(event) => setNewAccountLexiangPptQuota(event.target.value)}
+                  placeholder="输入 PPT 生成次数"
+                />
+              </label>
+              <label>
+                <span>WorkBuddy 视频额度</span>
+                <input
+                  min="0"
+                  type="number"
+                  value={newAccountWorkbuddyVideoQuota}
+                  onChange={(event) => setNewAccountWorkbuddyVideoQuota(event.target.value)}
+                  placeholder="输入视频生成次数"
                 />
               </label>
               {newAccountRole === "student" && (
@@ -10513,6 +11387,10 @@ function AdminView(props: {
               <div className="account-create-permissions">
                 <span>{newAccountRole === "student" ? "默认可用专家" : "默认权限"}</span>
                 <strong>{getDefaultPermissions(newAccountRole).join("、")}</strong>
+              </div>
+              <div className="account-create-permissions">
+                <span>额度说明</span>
+                <strong>额度由 Java 后端统一校验；刷新、重复提交或查看已有结果不会重复扣减。</strong>
               </div>
               <div className="account-create-permissions">
                 <span>登录能力</span>
@@ -10560,14 +11438,32 @@ function AdminView(props: {
                     <strong>{accountDetail.role === "student" ? "学生端" : accountDetail.role === "teacher" ? "教师端" : "管理端"}</strong>
                   </article>
                   <article>
-                    <span>调用配额</span>
-                    <strong>{accountEditDraft.quota || accountDetail.quota}</strong>
+                    <span>服务额度</span>
+                    <strong>3 类</strong>
                   </article>
                   <article>
                     <span>账号状态</span>
                     <strong className={accountDetail.status === "已开通" ? "enabled" : "disabled"}>{accountDetail.status}</strong>
                   </article>
                 </div>
+              </section>
+              <section className="account-quota-summary" aria-label="账号服务调用额度">
+                <article>
+                  <span>乐享 PPT 生成</span>
+                  <strong>
+                    {Math.max(0, parseQuotaValue(accountEditDraft.lexiangPptQuota, accountDetail.lexiangPptQuota || 0) - (accountDetail.lexiangPptUsed || 0))}
+                    <small> / {accountEditDraft.lexiangPptQuota || accountDetail.lexiangPptQuota || 0} 次</small>
+                  </strong>
+                  <p>已用 {accountDetail.lexiangPptUsed || 0} 次</p>
+                </article>
+                <article>
+                  <span>WorkBuddy 视频生成</span>
+                  <strong>
+                    {Math.max(0, parseQuotaValue(accountEditDraft.workbuddyVideoQuota, accountDetail.workbuddyVideoQuota || 0) - (accountDetail.workbuddyVideoUsed || 0))}
+                    <small> / {accountEditDraft.workbuddyVideoQuota || accountDetail.workbuddyVideoQuota || 0} 次</small>
+                  </strong>
+                  <p>已用 {accountDetail.workbuddyVideoUsed || 0} 次</p>
+                </article>
               </section>
               <div className="account-edit-grid">
                 <label>
@@ -10584,13 +11480,31 @@ function AdminView(props: {
                     value={accountEditDraft.account}
                   />
                 </label>
-                <label>
-                  <span>调用配额</span>
+              <label>
+                  <span>AI 对话调用额度</span>
                   <input
                     min="0"
                     type="number"
                     value={accountEditDraft.quota}
                     onChange={(event) => setAccountEditDraft((current) => ({ ...current, quota: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  <span>乐享 PPT 生成额度</span>
+                  <input
+                    min="0"
+                    type="number"
+                    value={accountEditDraft.lexiangPptQuota}
+                    onChange={(event) => setAccountEditDraft((current) => ({ ...current, lexiangPptQuota: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  <span>WorkBuddy 视频额度</span>
+                  <input
+                    min="0"
+                    type="number"
+                    value={accountEditDraft.workbuddyVideoQuota}
+                    onChange={(event) => setAccountEditDraft((current) => ({ ...current, workbuddyVideoQuota: event.target.value }))}
                   />
                 </label>
                 {accountDetail.role === "student" && (

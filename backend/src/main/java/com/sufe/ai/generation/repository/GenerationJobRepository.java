@@ -23,6 +23,8 @@ public interface GenerationJobRepository extends JpaRepository<GenerationJob, St
 
     long countByProviderAndStatus(GenerationProvider provider, GenerationJobStatus status);
 
+    long countByUserIdAndProvider(String userId, GenerationProvider provider);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<GenerationJob> findFirstByProviderAndStatusOrderByCreatedAtAscQueueSequenceAsc(
             GenerationProvider provider,

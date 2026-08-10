@@ -11,6 +11,7 @@ public record LexiangProperties(
         String appKey,
         String appSecret,
         String staffId,
+        String knowledgeStaffId,
         String spaceId,
         int maxConcurrency
 ) {
@@ -22,6 +23,10 @@ public record LexiangProperties(
 
     public boolean configured() {
         return enabled && hasText(appKey) && hasText(appSecret);
+    }
+
+    public boolean knowledgeConfigured() {
+        return configured() && hasText(knowledgeStaffId);
     }
 
     private static boolean hasText(String value) {

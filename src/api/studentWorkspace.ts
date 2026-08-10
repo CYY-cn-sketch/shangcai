@@ -11,6 +11,7 @@ export type RemoteConversationMessage = {
   id: string;
   clientMessageId: string;
   ideaId: string;
+  conversationId: string;
   sender: "USER" | "AI";
   inputMode?: string;
   expertId?: string;
@@ -25,11 +26,15 @@ export type RemoteConversationMessage = {
 export type RemoteStudentConversation = {
   id: string;
   ideaId: string;
+  title: string;
+  status: "ACTIVE" | "ARCHIVED";
   selectedExpertId: string;
   selectedSkillId: string;
   modelMode: string;
   knowledgeSelection: unknown;
   messages: RemoteConversationMessage[];
+  createdAt: string;
+  lastMessageAt?: string | null;
   updatedAt: string;
 };
 
@@ -44,6 +49,12 @@ export type ConversationSettingsInput = {
   modelMode: string;
   knowledgeSelection: unknown;
 };
+
+export type CreateConversationInput = ConversationSettingsInput & {
+  title: string;
+};
+
+export type UpdateConversationInput = Partial<CreateConversationInput>;
 
 export type AppendMessageInput = {
   clientMessageId: string;
@@ -152,9 +163,43 @@ export function saveStudentConversation(ideaId: string, input: ConversationSetti
   );
 }
 
+export function createStudentConversation(ideaId: string, input: CreateConversationInput) {
+  return mutateJson<RemoteStudentConversation>(
+    "/api/student/ideas/" + encodeURIComponent(ideaId) + "/conversations",
+    "POST",
+    input,
+  );
+}
+
+export function updateStudentConversation(conversationId: string, input: UpdateConversationInput) {
+  return mutateJson<RemoteStudentConversation>(
+    "/api/student/conversations/" + encodeURIComponent(conversationId),
+    "PATCH",
+    input,
+  );
+}
+
+export async function deleteStudentConversation(conversationId: string) {
+  const csrf = await getCsrfToken();
+  const response = await fetch("/api/student/conversations/" + encodeURIComponent(conversationId), {
+    method: "DELETE",
+    credentials: "include",
+    headers: { [csrf.headerName]: csrf.token },
+  });
+  if (!response.ok) throw new Error(await parseError(response));
+}
+
 export function appendStudentMessage(ideaId: string, input: AppendMessageInput) {
   return mutateJson<RemoteConversationMessage>(
     "/api/student/ideas/" + encodeURIComponent(ideaId) + "/messages",
+    "POST",
+    input,
+  );
+}
+
+export function appendStudentConversationMessage(conversationId: string, input: AppendMessageInput) {
+  return mutateJson<RemoteConversationMessage>(
+    "/api/student/conversations/" + encodeURIComponent(conversationId) + "/messages",
     "POST",
     input,
   );

@@ -15,4 +15,10 @@ public interface AiUsageRecordRepository extends JpaRepository<AiUsageRecord, St
     List<AiUsageRecord> findByRecordedAtGreaterThanEqualOrderByRecordedAtDesc(Instant recordedAt);
 
     List<AiUsageRecord> findAllByOrderByRecordedAtDesc();
+
+    long countByUserIdAndProviderAndOperation(
+            String userId,
+            GenerationProvider provider,
+            String operation
+    );
 }

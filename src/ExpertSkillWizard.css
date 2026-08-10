@@ -41,7 +41,10 @@
 
 .expert-skill-list {
   grid-column: 1 / -1;
-  overflow: hidden;
+  max-height: min(620px, calc(100vh - 280px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
@@ -58,6 +61,9 @@
 }
 
 .expert-skill-list > header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   grid-template-columns: minmax(0, 1fr) auto;
   background: var(--surface-soft);
 }
@@ -493,7 +499,7 @@
   font-weight: 700;
 }
 
-.skill-wizard-form-grid input,
+.skill-wizard-form-grid input:not([type="checkbox"]):not([type="radio"]),
 .skill-wizard-form-grid textarea,
 .skill-wizard-prompt-grid textarea,
 .skill-wizard-field select {
@@ -656,8 +662,20 @@
   gap: 0.2rem;
 }
 
+.skill-wizard-visible-toggle > input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  accent-color: var(--blue-2);
+  cursor: pointer;
+}
+
 .skill-wizard-visible-toggle small {
   color: var(--muted);
+  font-weight: 400;
+  line-height: 1.45;
 }
 
 .skill-wizard-atomic-note {
